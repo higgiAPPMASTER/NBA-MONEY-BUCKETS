@@ -539,7 +539,7 @@ MAIN_HTML = """<!DOCTYPE html>
 <style>
 /* ─── Reset ─── */
 *{box-sizing:border-box;margin:0;padding:0}
-:root{--orange:#FDB827;--gold:#FDB827;--blue:#FDB827;--green:#22c55e;--navy:#0a0f1e;--dark:#0d0d0d;--card:#1a1a1a;--border:#2a2a2a;--text:#e0e6f0;--muted:#4b5563}
+:root{--orange:#FDB827;--gold:#FDB827;--green:#22c55e;--navy:#0d0d0d;--dark:#0d0d0d;--card:#1a1a1a;--border:#2a2a2a;--text:#e0e6f0;--muted:#4b5563}
 body{
   background:var(--dark);
   background-image:
@@ -739,7 +739,6 @@ footer{text-align:center;margin-top:32px;color:#0a1525;font-size:.68rem;padding:
 </header>
 
 <div class="games-bar" id="gamesBar">
-  <div class="game-chip" style="color:#1a1a1a">Hit Run Picks to load today's games →</div>
 </div>
 
 <div id="filterBar" style="display:none" class="filter-bar">
