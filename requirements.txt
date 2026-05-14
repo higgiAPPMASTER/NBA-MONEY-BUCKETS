@@ -1,6 +1,3 @@
 fastapi
 uvicorn
 httpx
-python-multipart
-curl_cffi
-playwright
