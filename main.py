@@ -14,7 +14,7 @@ import httpx
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
-app = FastAPI(title="NBA Money Buckets")
+app = FastAPI(title="Money Buckets")
 
 # ─── Auth ─────────────────────────────────────────────────────────────────────
 USERS_RAW = os.environ.get("USERS", "admin:buckets")
@@ -416,23 +416,23 @@ LOGIN_HTML = """<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>NBA Money Buckets</title>
+<title>🏀 Money Buckets</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{
-  background:#050a14;
-  background-image:radial-gradient(ellipse at 50% 0%,rgba(249,115,22,.1) 0%,transparent 55%);
-  color:#e0e6f0;font-family:'Segoe UI',system-ui,sans-serif;
+  background:#0d0d0d;
+  background-image:radial-gradient(ellipse at 50% 0%,rgba(253,184,39,.1) 0%,transparent 55%);
+  color:#f0e6c8;font-family:'Segoe UI',system-ui,sans-serif;
   min-height:100vh;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:0;
 }
 /* ── Spinning basketball ── */
 .spin-ball{
   width:80px;height:80px;border-radius:50%;
-  background:radial-gradient(circle at 38% 35%,#fb923c 0%,#ea580c 55%,#7c2d12 100%);
-  border:2px solid #7c2d12;
+  background:radial-gradient(circle at 38% 35%,#FDB827 0%,#FDB827 55%,#8B6914 100%);
+  border:2px solid #8B6914;
   position:relative;margin-bottom:24px;
   animation:spinBall 6s linear infinite;
-  box-shadow:0 0 40px rgba(249,115,22,.5),0 0 80px rgba(249,115,22,.15);
+  box-shadow:0 0 40px rgba(253,184,39,.5),0 0 80px rgba(253,184,39,.15);
 }
 .spin-ball::before{
   content:'';position:absolute;inset:-1px;border-radius:50%;
@@ -449,19 +449,19 @@ body{
 /* ── Card ── */
 .card{
   background:linear-gradient(145deg,rgba(15,23,42,.97),rgba(8,12,24,.99));
-  border:1px solid rgba(30,58,95,.8);border-radius:24px;
+  border:1px solid rgba(42,42,42,.8);border-radius:24px;
   padding:40px 40px 36px;width:390px;text-align:center;
-  box-shadow:0 30px 80px rgba(0,0,0,.7),0 0 0 1px rgba(249,115,22,.04),inset 0 1px 0 rgba(255,255,255,.03);
+  box-shadow:0 30px 80px rgba(0,0,0,.7),0 0 0 1px rgba(253,184,39,.04),inset 0 1px 0 rgba(255,255,255,.03);
   position:relative;overflow:hidden;
 }
 .card::before{
   content:'';position:absolute;top:0;left:0;right:0;height:2px;
-  background:linear-gradient(90deg,transparent,#f59e0b,#ea580c,#f59e0b,transparent);
+  background:linear-gradient(90deg,transparent,#FDB827,#FDB827,#FDB827,transparent);
 }
 .logo-line{display:flex;align-items:center;justify-content:center;gap:8px;margin-bottom:4px}
 h1{
   font-size:1.65rem;font-weight:900;letter-spacing:-.5px;
-  background:linear-gradient(135deg,#f59e0b 0%,#fb923c 100%);
+  background:linear-gradient(135deg,#FDB827 0%,#FDB827 100%);
   -webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;
 }
 .sub{color:#374151;font-size:.75rem;margin-bottom:30px;letter-spacing:1.5px;text-transform:uppercase}
@@ -469,30 +469,30 @@ h1{
 .fi{position:absolute;left:14px;top:50%;transform:translateY(-50%);opacity:.35;font-size:.9rem;pointer-events:none}
 input{
   width:100%;background:rgba(15,23,42,.8);
-  border:1px solid rgba(30,58,95,.8);color:#d1d5db;
+  border:1px solid rgba(42,42,42,.8);color:#d1d5db;
   padding:13px 16px 13px 42px;border-radius:12px;
   font-size:.95rem;outline:none;transition:border-color .2s,box-shadow .2s;
 }
-input:focus{border-color:#f59e0b;box-shadow:0 0 0 3px rgba(245,158,11,.12)}
+input:focus{border-color:#FDB827;box-shadow:0 0 0 3px rgba(253,184,39,.12)}
 input::placeholder{color:#374151}
 .btn-in{
   width:100%;margin-top:8px;
-  background:linear-gradient(135deg,#f59e0b,#ea580c);color:#050a14;
+  background:linear-gradient(135deg,#FDB827,#FDB827);color:#0d0d0d;
   border:none;padding:14px;border-radius:12px;
   font-size:1rem;font-weight:900;letter-spacing:.5px;cursor:pointer;
-  box-shadow:0 4px 20px rgba(245,158,11,.35);transition:transform .15s,box-shadow .15s;
+  box-shadow:0 4px 20px rgba(253,184,39,.35);transition:transform .15s,box-shadow .15s;
 }
-.btn-in:hover{transform:translateY(-2px);box-shadow:0 8px 30px rgba(245,158,11,.45)}
+.btn-in:hover{transform:translateY(-2px);box-shadow:0 8px 30px rgba(253,184,39,.45)}
 .btn-in:active{transform:translateY(0)}
 .err{color:#f87171;font-size:.83rem;margin-top:14px;background:rgba(127,29,29,.3);padding:10px 14px;border-radius:10px;border:1px solid rgba(239,68,68,.2)}
-.tagline{color:#0f1d2e;font-size:.68rem;margin-top:22px;letter-spacing:2px;text-transform:uppercase}
+.tagline{color:#1a1a1a;font-size:.68rem;margin-top:22px;letter-spacing:2px;text-transform:uppercase}
 </style>
 </head>
 <body>
 <div class="spin-ball"></div>
 <div class="card">
   <div class="logo-line">
-    <h1>NBA Money Buckets</h1>
+    <h1>Money Buckets</h1>
   </div>
   <p class="sub">Pattern-Based Matchup Intelligence</p>
   <form method="post" action="/login">
@@ -505,26 +505,26 @@ input::placeholder{color:#374151}
 
   <div style="overflow-x:auto">
     <table style="width:100%;border-collapse:collapse;font-size:.82rem">
-      <thead><tr style="border-bottom:1px solid rgba(249,115,22,.25)">
-        <th style="padding:7px 10px;text-align:left;color:#fb923c;font-size:.72rem">#</th>
-        <th style="padding:7px 10px;text-align:left;color:#fb923c;font-size:.72rem">Player</th>
-        <th style="padding:7px 10px;text-align:left;color:#fb923c;font-size:.72rem">Stat</th>
-        <th style="padding:7px 10px;text-align:left;color:#fb923c;font-size:.72rem">H/A</th>
-        <th style="padding:7px 10px;text-align:left;color:#fb923c;font-size:.72rem">Opponent</th>
-        <th style="padding:7px 10px;text-align:left;color:#fb923c;font-size:.72rem">Line</th>
-        <th style="padding:7px 10px;text-align:left;color:#fb923c;font-size:.72rem">Avg vs Opp</th>
-        <th style="padding:7px 10px;text-align:left;color:#fb923c;font-size:.72rem">Gap</th>
-        <th style="padding:7px 10px;text-align:left;color:#fb923c;font-size:.72rem">Games</th>
-        <th style="padding:7px 10px;text-align:left;color:#fb923c;font-size:.72rem">History</th>
-        <th style="padding:7px 10px;text-align:left;color:#fb923c;font-size:.72rem">Pick</th>
+      <thead><tr style="border-bottom:1px solid rgba(253,184,39,.25)">
+        <th style="padding:7px 10px;text-align:left;color:#FDB827;font-size:.72rem">#</th>
+        <th style="padding:7px 10px;text-align:left;color:#FDB827;font-size:.72rem">Player</th>
+        <th style="padding:7px 10px;text-align:left;color:#FDB827;font-size:.72rem">Stat</th>
+        <th style="padding:7px 10px;text-align:left;color:#FDB827;font-size:.72rem">H/A</th>
+        <th style="padding:7px 10px;text-align:left;color:#FDB827;font-size:.72rem">Opponent</th>
+        <th style="padding:7px 10px;text-align:left;color:#FDB827;font-size:.72rem">Line</th>
+        <th style="padding:7px 10px;text-align:left;color:#FDB827;font-size:.72rem">Avg vs Opp</th>
+        <th style="padding:7px 10px;text-align:left;color:#FDB827;font-size:.72rem">Gap</th>
+        <th style="padding:7px 10px;text-align:left;color:#FDB827;font-size:.72rem">Games</th>
+        <th style="padding:7px 10px;text-align:left;color:#FDB827;font-size:.72rem">History</th>
+        <th style="padding:7px 10px;text-align:left;color:#FDB827;font-size:.72rem">Pick</th>
       </tr></thead>
       <tbody id="props-body"></tbody>
     </table>
   </div>
   <p style="font-size:.72rem;color:#6b7280;margin-top:10px">
-    <strong style="color:#fb923c">Avg vs Opp</strong> = career H/A avg vs today's opponent &nbsp;|&nbsp;
-    <strong style="color:#fb923c">History</strong> = individual game totals vs that team &nbsp;|&nbsp;
-    <strong style="color:#fb923c">Pick</strong> = OVER if avg &gt; line, UNDER if avg &lt; line
+    <strong style="color:#FDB827">Avg vs Opp</strong> = career H/A avg vs today's opponent &nbsp;|&nbsp;
+    <strong style="color:#FDB827">History</strong> = individual game totals vs that team &nbsp;|&nbsp;
+    <strong style="color:#FDB827">Pick</strong> = OVER if avg &gt; line, UNDER if avg &lt; line
   </p>
 </div>
 </div>
@@ -535,25 +535,25 @@ MAIN_HTML = """<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>NBA Money Buckets</title>
+<title>🏀 Money Buckets</title>
 <style>
 /* ─── Reset ─── */
 *{box-sizing:border-box;margin:0;padding:0}
-:root{--orange:#f97316;--gold:#f59e0b;--blue:#3b82f6;--green:#22c55e;--navy:#0a0f1e;--dark:#050a14;--card:#0f172a;--border:#1e3a5f;--text:#e0e6f0;--muted:#4b5563}
+:root{--orange:#FDB827;--gold:#FDB827;--blue:#FDB827;--green:#22c55e;--navy:#0a0f1e;--dark:#0d0d0d;--card:#1a1a1a;--border:#2a2a2a;--text:#e0e6f0;--muted:#4b5563}
 body{
   background:var(--dark);
   background-image:
-    radial-gradient(ellipse 100% 35% at 50% 0%,rgba(249,115,22,.07) 0%,transparent 70%),
-    linear-gradient(rgba(30,58,95,.1) 1px,transparent 1px),
-    linear-gradient(90deg,rgba(30,58,95,.1) 1px,transparent 1px);
+    radial-gradient(ellipse 100% 35% at 50% 0%,rgba(253,184,39,.07) 0%,transparent 70%),
+    linear-gradient(rgba(42,42,42,.1) 1px,transparent 1px),
+    linear-gradient(90deg,rgba(42,42,42,.1) 1px,transparent 1px);
   background-size:100% 100%,52px 52px,52px 52px;
   color:var(--text);font-family:'Segoe UI',system-ui,sans-serif;padding:20px;min-height:100vh;
 }
 /* ─── Basketball SVG animation ─── */
-.ball-svg{width:54px;height:54px;animation:spinBall 8s linear infinite;filter:drop-shadow(0 0 10px rgba(249,115,22,.5));flex-shrink:0}
+.ball-svg{width:54px;height:54px;animation:spinBall 8s linear infinite;filter:drop-shadow(0 0 10px rgba(253,184,39,.5));flex-shrink:0}
 @keyframes spinBall{from{transform:rotate(0)}to{transform:rotate(360deg)}}
 /* Loading bounce */
-.loading-ball{width:58px;height:58px;border-radius:50%;margin:0 auto 6px;animation:ballBounce .65s ease-in-out infinite;background:radial-gradient(circle at 38% 35%,#fb923c 0%,#ea580c 55%,#7c2d12 100%);border:2px solid #7c2d12;box-shadow:0 0 25px rgba(249,115,22,.45);position:relative}
+.loading-ball{width:58px;height:58px;border-radius:50%;margin:0 auto 6px;animation:ballBounce .65s ease-in-out infinite;background:radial-gradient(circle at 38% 35%,#FDB827 0%,#FDB827 55%,#8B6914 100%);border:2px solid #8B6914;box-shadow:0 0 25px rgba(253,184,39,.45);position:relative}
 .loading-ball::before{content:'';position:absolute;inset:-1px;border-radius:50%;border:2.5px solid rgba(124,45,18,.85);border-left-color:transparent;border-right-color:transparent;transform:rotate(30deg)}
 .loading-ball::after{content:'';position:absolute;inset:14px;border-radius:50%;border:2px solid rgba(124,45,18,.75);border-top-color:transparent;border-bottom-color:transparent}
 @keyframes ballBounce{0%,100%{transform:translateY(0)}50%{transform:translateY(-22px)}}
@@ -564,88 +564,88 @@ header{
   display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:14px;
   margin-bottom:22px;padding:18px 26px;
   background:linear-gradient(135deg,rgba(13,20,38,.97),rgba(8,12,24,.99));
-  border-radius:22px;border:1px solid rgba(30,58,95,.8);
+  border-radius:22px;border:1px solid rgba(42,42,42,.8);
   box-shadow:0 10px 50px rgba(0,0,0,.6),inset 0 1px 0 rgba(255,255,255,.03);
   position:relative;overflow:hidden;
 }
-header::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;background:linear-gradient(90deg,transparent,#f59e0b 30%,#ea580c 70%,transparent)}
-.brand{display:flex;align-items:center;gap:14px}
+header::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;background:linear-gradient(90deg,transparent,#FDB827 30%,#FDB827 70%,transparent)}
+.brand{display:flex;align-items:center;gap:18px}
 .brand-text h1{
-  font-size:1.38rem;font-weight:900;letter-spacing:-.5px;
-  background:linear-gradient(135deg,#f59e0b,#fb923c);
+  font-size:3.2rem;font-weight:900;letter-spacing:-1.5px;line-height:1;
+  background:linear-gradient(135deg,#FDB827,#FDB827);
   -webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;
 }
-.brand-text .sub{font-size:.7rem;color:#1e3a5f;letter-spacing:1.5px;text-transform:uppercase;margin-top:3px}
+.brand-text .sub{font-size:.7rem;color:#2a2a2a;letter-spacing:1.5px;text-transform:uppercase;margin-top:3px}
 .actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
-.date-badge{background:rgba(30,58,95,.5);color:#60a5fa;padding:7px 16px;border-radius:20px;font-size:.81rem;font-weight:600;border:1px solid rgba(59,130,246,.2)}
+.date-badge{background:rgba(42,42,42,.5);color:#FDB827;padding:7px 16px;border-radius:20px;font-size:.81rem;font-weight:600;border:1px solid rgba(253,184,39,.2)}
 .btn{padding:10px 22px;border-radius:12px;font-size:.875rem;font-weight:800;cursor:pointer;border:none;transition:all .2s;text-decoration:none;display:inline-block;letter-spacing:.3px}
-.btn-run{background:linear-gradient(135deg,#f59e0b,#ea580c);color:#050a14;box-shadow:0 4px 18px rgba(245,158,11,.35)}
-.btn-run:hover{transform:translateY(-2px);box-shadow:0 8px 28px rgba(245,158,11,.5)}
+.btn-run{background:linear-gradient(135deg,#FDB827,#FDB827);color:#0d0d0d;box-shadow:0 4px 18px rgba(253,184,39,.35)}
+.btn-run:hover{transform:translateY(-2px);box-shadow:0 8px 28px rgba(253,184,39,.5)}
 @keyframes pulse-gold{0%,100%{opacity:1}50%{opacity:.4}}
 /* ─── Games bar ─── */
 .games-bar{display:flex;gap:8px;overflow-x:auto;padding-bottom:4px;margin-bottom:20px;scrollbar-width:thin;scrollbar-color:var(--border) transparent}
 .game-chip{
   background:linear-gradient(135deg,rgba(13,20,38,.9),rgba(8,12,24,.95));
-  border:1px solid rgba(30,58,95,.7);border-radius:12px;
+  border:1px solid rgba(42,42,42,.7);border-radius:12px;
   padding:9px 18px;white-space:nowrap;font-size:.82rem;flex-shrink:0;
   transition:border-color .2s,box-shadow .2s;cursor:default;
 }
-.game-chip:hover{border-color:rgba(59,130,246,.5);box-shadow:0 0 14px rgba(59,130,246,.1)}
-.game-chip b{color:#e0e6f0;font-weight:700}
-.game-chip .sep{color:#1e3a5f;margin:0 5px}
+.game-chip:hover{border-color:rgba(253,184,39,.5);box-shadow:0 0 14px rgba(253,184,39,.1)}
+.game-chip b{color:#f0e6c8;font-weight:700}
+.game-chip .sep{color:#2a2a2a;margin:0 5px}
 /* ─── Filter bar ─── */
 .filter-bar{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:20px}
-.filter-btn{padding:7px 18px;border-radius:20px;border:1px solid rgba(30,58,95,.6);background:rgba(13,20,38,.7);color:#374151;font-size:.81rem;cursor:pointer;transition:all .2s;font-weight:600}
-.filter-btn.active,.filter-btn:hover{background:rgba(30,58,95,.9);color:#93c5fd;border-color:rgba(59,130,246,.4);box-shadow:0 0 12px rgba(59,130,246,.1)}
+.filter-btn{padding:7px 18px;border-radius:20px;border:1px solid rgba(42,42,42,.6);background:rgba(13,20,38,.7);color:#374151;font-size:.81rem;cursor:pointer;transition:all .2s;font-weight:600}
+.filter-btn.active,.filter-btn:hover{background:rgba(42,42,42,.9);color:#f0e6c8;border-color:rgba(253,184,39,.4);box-shadow:0 0 12px rgba(253,184,39,.1)}
 /* ─── Section headers ─── */
 .section-hdr{display:flex;align-items:center;justify-content:space-between;margin-bottom:18px}
-.section-title{font-size:1rem;font-weight:900;letter-spacing:-.3px;display:flex;align-items:center;gap:8px;background:linear-gradient(135deg,#f59e0b,#fb923c);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
-.count-pill{background:rgba(30,58,95,.5);color:#60a5fa;padding:4px 14px;border-radius:20px;font-size:.78rem;font-weight:700;border:1px solid rgba(59,130,246,.2)}
+.section-title{font-size:1rem;font-weight:900;letter-spacing:-.3px;display:flex;align-items:center;gap:8px;background:linear-gradient(135deg,#FDB827,#FDB827);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
+.count-pill{background:rgba(42,42,42,.5);color:#FDB827;padding:4px 14px;border-radius:20px;font-size:.78rem;font-weight:700;border:1px solid rgba(253,184,39,.2)}
 /* ─── Pick cards ─── */
 .picks-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:16px;margin-bottom:10px}
 .pick-card{
   background:linear-gradient(145deg,rgba(13,20,38,.96),rgba(8,12,24,.99));
-  border:1px solid rgba(30,58,95,.7);border-radius:20px;padding:22px;
+  border:1px solid rgba(42,42,42,.7);border-radius:20px;padding:22px;
   position:relative;overflow:hidden;
   transition:border-color .25s,transform .22s,box-shadow .25s;
 }
-.pick-card:hover{border-color:rgba(245,158,11,.55);transform:translateY(-3px);box-shadow:0 14px 45px rgba(0,0,0,.55),0 0 22px rgba(245,158,11,.1)}
-.pick-card::before{content:'';position:absolute;top:0;left:0;right:0;height:1px;background:linear-gradient(90deg,transparent,rgba(245,158,11,.25),transparent);opacity:0;transition:opacity .25s}
+.pick-card:hover{border-color:rgba(253,184,39,.55);transform:translateY(-3px);box-shadow:0 14px 45px rgba(0,0,0,.55),0 0 22px rgba(253,184,39,.1)}
+.pick-card::before{content:'';position:absolute;top:0;left:0;right:0;height:1px;background:linear-gradient(90deg,transparent,rgba(253,184,39,.25),transparent);opacity:0;transition:opacity .25s}
 .pick-card:hover::before{opacity:1}
 /* Rank medals */
 .pick-rank{position:absolute;top:14px;right:15px;width:32px;height:32px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:.82rem;font-weight:900}
-.rank-1{background:linear-gradient(135deg,#92400e,#f59e0b);color:#050a14;box-shadow:0 0 14px rgba(245,158,11,.5)}
-.rank-2{background:linear-gradient(135deg,#374151,#9ca3af);color:#050a14;box-shadow:0 0 8px rgba(156,163,175,.2)}
-.rank-3{background:linear-gradient(135deg,#7c2d12,#c2410c);color:#fff0e0;box-shadow:0 0 10px rgba(194,65,12,.3)}
-.rank-other{background:rgba(15,23,42,.8);color:#1e3a5f;font-size:.75rem}
+.rank-1{background:linear-gradient(135deg,#92400e,#FDB827);color:#0d0d0d;box-shadow:0 0 14px rgba(253,184,39,.5)}
+.rank-2{background:linear-gradient(135deg,#374151,#9ca3af);color:#0d0d0d;box-shadow:0 0 8px rgba(156,163,175,.2)}
+.rank-3{background:linear-gradient(135deg,#8B6914,#c2410c);color:#fff0e0;box-shadow:0 0 10px rgba(194,65,12,.3)}
+.rank-other{background:rgba(15,23,42,.8);color:#2a2a2a;font-size:.75rem}
 .pick-emoji{font-size:1.6rem;margin-bottom:10px;display:block}
 .pick-player{font-size:1.08rem;font-weight:800;color:#f0f6ff;margin-bottom:3px;letter-spacing:-.3px;padding-right:38px}
 .pick-team{font-size:.75rem;color:#374151;margin-bottom:12px;display:flex;align-items:center;gap:6px}
-.loc-badge{background:rgba(15,23,42,.8);padding:2px 9px;border-radius:10px;font-size:.7rem;color:#4b5563;border:1px solid rgba(30,58,95,.5)}
+.loc-badge{background:rgba(15,23,42,.8);padding:2px 9px;border-radius:10px;font-size:.7rem;color:#4b5563;border:1px solid rgba(42,42,42,.5)}
 .stat-strip{display:flex;gap:6px;margin-bottom:10px;flex-wrap:wrap}
 .stat-tag{padding:3px 10px;border-radius:10px;font-size:.7rem;font-weight:700;letter-spacing:.3px}
 .tag-pts{background:rgba(109,40,217,.15);color:#a78bfa;border:1px solid rgba(109,40,217,.25)}
-.tag-reb{background:rgba(37,99,235,.15);color:#60a5fa;border:1px solid rgba(37,99,235,.25)}
+.tag-reb{background:rgba(37,99,235,.15);color:#FDB827;border:1px solid rgba(37,99,235,.25)}
 .tag-ast{background:rgba(5,150,105,.15);color:#34d399;border:1px solid rgba(5,150,105,.25)}
 .tag-fg3m{background:rgba(220,38,38,.15);color:#f87171;border:1px solid rgba(220,38,38,.25)}
 .pick-pattern{font-size:.9rem;color:#7dd3fc;font-weight:700;margin-bottom:4px;line-height:1.4}
-.l10vthr-desc{font-size:.88rem;color:#f59e0b;font-weight:700;margin-bottom:5px;line-height:1.4}
+.l10vthr-desc{font-size:.88rem;color:#FDB827;font-weight:700;margin-bottom:5px;line-height:1.4}
 .fd-line-badge{display:inline-block;background:#1a2a0a;border:1px solid #22c55e;color:#22c55e;
   border-radius:6px;padding:3px 10px;font-size:.78rem;font-weight:700;margin-bottom:6px}
 .fd-inline{color:#22c55e;font-weight:700}
-.l10vthr-inline{color:#f59e0b;font-weight:700}
-.pick-matchup{font-size:.72rem;color:#1e3a5f;margin-bottom:16px}
-.bar-wrap{background:rgba(15,23,42,.7);border-radius:6px;height:8px;overflow:hidden;margin-bottom:10px;border:1px solid rgba(30,58,95,.3)}
+.l10vthr-inline{color:#FDB827;font-weight:700}
+.pick-matchup{font-size:.72rem;color:#2a2a2a;margin-bottom:16px}
+.bar-wrap{background:rgba(15,23,42,.7);border-radius:6px;height:8px;overflow:hidden;margin-bottom:10px;border:1px solid rgba(42,42,42,.3)}
 .bar-fill{height:100%;border-radius:5px}
 .bar-green{background:linear-gradient(90deg,#15803d,#22c55e)}
-.bar-yellow{background:linear-gradient(90deg,#b45309,#f59e0b)}
-.bar-orange{background:linear-gradient(90deg,#c2410c,#f97316)}
+.bar-yellow{background:linear-gradient(90deg,#FDB827,#FDB827)}
+.bar-orange{background:linear-gradient(90deg,#c2410c,#FDB827)}
 .stats-row{display:flex;justify-content:space-between;align-items:center}
-.games-chip{background:rgba(15,23,42,.7);padding:4px 12px;border-radius:20px;font-size:.75rem;color:#1e3a5f;border:1px solid rgba(30,58,95,.3)}
+.games-chip{background:rgba(15,23,42,.7);padding:4px 12px;border-radius:20px;font-size:.75rem;color:#2a2a2a;border:1px solid rgba(42,42,42,.3)}
 .pct{font-size:1.2rem;font-weight:900;letter-spacing:-.5px}
 .pct-green{color:#22c55e;text-shadow:0 0 14px rgba(34,197,94,.45)}
-.pct-yellow{color:#f59e0b;text-shadow:0 0 14px rgba(245,158,11,.45)}
-.pct-orange{color:#f97316;text-shadow:0 0 12px rgba(249,115,22,.35)}
+.pct-yellow{color:#FDB827;text-shadow:0 0 14px rgba(253,184,39,.45)}
+.pct-orange{color:#FDB827;text-shadow:0 0 12px rgba(253,184,39,.35)}
 /* ─── Total Banner ─── */
 .total-banner{
   display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;
@@ -660,46 +660,46 @@ header::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;back
 .tb-count{font-size:2.2rem;font-weight:900;color:#22c55e;text-shadow:0 0 20px rgba(34,197,94,.5);letter-spacing:-1.5px}
 /* ─── All Patterns ─── */
 .all-section-hdr{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;flex-wrap:wrap;gap:10px}
-.all-section-title{font-size:.95rem;font-weight:800;color:#60a5fa;display:flex;align-items:center;gap:8px}
+.all-section-title{font-size:.95rem;font-weight:800;color:#FDB827;display:flex;align-items:center;gap:8px}
 .game-group{margin-bottom:14px}
 .game-group-hdr{
   display:flex;align-items:center;justify-content:space-between;
   background:linear-gradient(135deg,rgba(13,20,38,.9),rgba(8,12,24,.95));
-  border:1px solid rgba(30,58,95,.65);border-radius:13px;
+  border:1px solid rgba(42,42,42,.65);border-radius:13px;
   padding:12px 18px;margin-bottom:6px;cursor:pointer;user-select:none;
   transition:border-color .2s,box-shadow .2s;
 }
-.game-group-hdr:hover{border-color:rgba(59,130,246,.45);box-shadow:0 0 15px rgba(59,130,246,.08)}
-.gg-label{font-size:.88rem;font-weight:800;color:#93c5fd;display:flex;align-items:center;gap:8px}
+.game-group-hdr:hover{border-color:rgba(253,184,39,.45);box-shadow:0 0 15px rgba(253,184,39,.08)}
+.gg-label{font-size:.88rem;font-weight:800;color:#f0e6c8;display:flex;align-items:center;gap:8px}
 .gg-meta{display:flex;align-items:center;gap:8px}
-.gg-chevron{color:#1e3a5f;font-size:.85rem;transition:transform .2s}
+.gg-chevron{color:#2a2a2a;font-size:.85rem;transition:transform .2s}
 .compact-picks{display:flex;flex-direction:column;gap:5px;margin-bottom:4px}
 .compact-row{
   display:flex;align-items:center;gap:12px;
   background:rgba(8,12,24,.8);border:1px solid rgba(20,30,50,.8);border-radius:11px;padding:10px 15px;
   transition:border-color .2s,background .2s;
 }
-.compact-row:hover{border-color:rgba(59,130,246,.35);background:rgba(13,20,38,.9)}
+.compact-row:hover{border-color:rgba(253,184,39,.35);background:rgba(13,20,38,.9)}
 .cr-emoji{font-size:1.05rem;flex-shrink:0;width:22px;text-align:center}
 .cr-info{flex:1;min-width:0}
 .cr-player{font-size:.86rem;font-weight:700;color:#94a3b8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.cr-pattern{font-size:.76rem;color:#3b82f6;font-weight:600;margin-top:2px}
+.cr-pattern{font-size:.76rem;color:#FDB827;font-weight:600;margin-top:2px}
 .cr-right{display:flex;flex-direction:column;align-items:flex-end;gap:3px;flex-shrink:0}
 .cr-bar-wrap{background:rgba(15,23,42,.8);border-radius:4px;height:4px;width:68px;overflow:hidden}
 .cr-bar-fill{height:100%;border-radius:4px}
 .cr-pct{font-size:.9rem;font-weight:900}
-.cr-sample{font-size:.65rem;color:#1e3a5f}
+.cr-sample{font-size:.65rem;color:#2a2a2a}
 /* ─── Messages ─── */
 .msg-card{
   background:linear-gradient(145deg,rgba(13,20,38,.95),rgba(8,12,24,.99));
-  border:1px solid rgba(30,58,95,.65);border-radius:22px;padding:60px 30px;text-align:center;
+  border:1px solid rgba(42,42,42,.65);border-radius:22px;padding:60px 30px;text-align:center;
   box-shadow:0 20px 70px rgba(0,0,0,.5);
 }
 .msg-card .ico{font-size:3.8rem;margin-bottom:16px;display:block}
-.msg-card h2{color:#e0e6f0;font-size:1.2rem;font-weight:800;margin-bottom:10px}
+.msg-card h2{color:#f0e6c8;font-size:1.2rem;font-weight:800;margin-bottom:10px}
 .msg-card p{color:#374151;font-size:.88rem;line-height:1.75}
 /* ─── Log ─── */
-.log-box{background:rgba(3,6,14,.8);border:1px solid rgba(20,30,50,.8);border-radius:12px;padding:16px;font-size:.74rem;color:#1e3a5f;font-family:'Courier New',monospace;margin-top:20px;max-height:160px;overflow-y:auto;line-height:1.9;scrollbar-width:thin;scrollbar-color:#0f1d2e transparent}
+.log-box{background:rgba(3,6,14,.8);border:1px solid rgba(20,30,50,.8);border-radius:12px;padding:16px;font-size:.74rem;color:#2a2a2a;font-family:'Courier New',monospace;margin-top:20px;max-height:160px;overflow-y:auto;line-height:1.9;scrollbar-width:thin;scrollbar-color:#1a1a1a transparent}
 footer{text-align:center;margin-top:32px;color:#0a1525;font-size:.68rem;padding:10px;letter-spacing:1.5px;text-transform:uppercase}
 </style>
 </head>
@@ -708,16 +708,16 @@ footer{text-align:center;margin-top:32px;color:#0a1525;font-size:.68rem;padding:
 <header>
   <!-- Animated basketball SVG -->
   <div class="brand">
-    <svg class="ball-svg" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+    <svg class="ball-svg" style="width:72px;height:72px" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
       <defs>
         <radialGradient id="ballG" cx="38%" cy="35%" r="65%">
-          <stop offset="0%" stop-color="#fb923c"/>
-          <stop offset="55%" stop-color="#ea580c"/>
-          <stop offset="100%" stop-color="#7c2d12"/>
+          <stop offset="0%" stop-color="#FDB827"/>
+          <stop offset="55%" stop-color="#e6a800"/>
+          <stop offset="100%" stop-color="#8B6914"/>
         </radialGradient>
         <clipPath id="ballC"><circle cx="50" cy="50" r="46"/></clipPath>
       </defs>
-      <circle cx="50" cy="50" r="47" fill="url(#ballG)" stroke="#7c2d12" stroke-width="1.5"/>
+      <circle cx="50" cy="50" r="47" fill="url(#ballG)" stroke="#8B6914" stroke-width="1.5"/>
       <g clip-path="url(#ballC)" fill="none" stroke="rgba(124,45,18,.88)" stroke-width="2.8" stroke-linecap="round">
         <path d="M50 4 C63 20 67 35 67 50 C67 65 63 80 50 96"/>
         <path d="M50 4 C37 20 33 35 33 50 C33 65 37 80 50 96"/>
@@ -728,18 +728,18 @@ footer{text-align:center;margin-top:32px;color:#0a1525;font-size:.68rem;padding:
       <circle cx="50" cy="50" r="46" fill="none" stroke="rgba(124,45,18,.5)" stroke-width="1.5"/>
     </svg>
     <div class="brand-text">
-      <h1>NBA Money Buckets</h1>
+      <h1>Money Buckets</h1>
       <div class="sub">Pattern Picks · Pts · Reb · Ast · 3PM</div>
     </div>
   </div>
   <div class="actions">
-    <input type="date" id="datePicker" value="__TODAY__" style="background:rgba(30,58,95,.5);color:#60a5fa;border:1px solid rgba(59,130,246,.3);border-radius:10px;padding:7px 12px;font-size:.82rem;font-weight:600;outline:none;cursor:pointer;">
+    <input type="date" id="datePicker" value="__TODAY__" style="background:rgba(42,42,42,.5);color:#FDB827;border:1px solid rgba(253,184,39,.3);border-radius:10px;padding:7px 12px;font-size:.82rem;font-weight:600;outline:none;cursor:pointer;">
     <button class="btn btn-run" onclick="runPicks()">⚡ Run Picks</button>
   </div>
 </header>
 
 <div class="games-bar" id="gamesBar">
-  <div class="game-chip" style="color:#0f1d2e">Hit Run Picks to load today's games →</div>
+  <div class="game-chip" style="color:#1a1a1a">Hit Run Picks to load today's games →</div>
 </div>
 
 <div id="filterBar" style="display:none" class="filter-bar">
@@ -754,7 +754,7 @@ footer{text-align:center;margin-top:32px;color:#0a1525;font-size:.68rem;padding:
   <div class="msg-card">
     <span class="ico">🏀</span>
     <h2>Welcome to NBA Money Buckets</h2>
-    <p>Hit <strong style="color:#f59e0b">Run Picks</strong> to scan today's matchups.<br>
+    <p>Hit <strong style="color:#FDB827">Run Picks</strong> to scan today's matchups.<br>
     Finds players hitting <strong style="color:#22c55e">75%+</strong> in Pts, Reb, Ast, or 3PM<br>
     against today's specific opponent — home or away.</p>
   </div>
@@ -872,7 +872,7 @@ function renderAllByGame(picks){
       html+=`<div class="compact-row">
         <span class="cr-emoji">${p.emoji}</span>
         <div class="cr-info">
-          <div class="cr-player">${p.player} <span style="color:#1e3a5f;font-size:.65rem">${p.team}·${p.location==='Home'?'🏠':'✈️'}</span></div>
+          <div class="cr-player">${p.player} <span style="color:#2a2a2a;font-size:.65rem">${p.team}·${p.location==='Home'?'🏠':'✈️'}</span></div>
           <div class="cr-pattern">${p.threshold}+ ${p.stat_label} · ${p.hits}/${p.games} ${p.location.toLowerCase()} vs ${p.opp}${p.fd_line ? ` · <span class="fd-inline">🏙️ ${p.fd_line}</span>` : ''}</div>
           ${(p.fd_line !== null && p.fd_line !== undefined && p.l10vthr_hits !== null && p.l10vthr_hits !== undefined) ? `<div class="l10vthr-desc" style="font-size:.76rem;margin-top:2px">${Math.ceil(p.fd_line)}+ ${p.stat_label}: ${p.l10vthr_hits}/${p.l10vthr_games} vs ${p.opp}</div>` : ''}
         </div>
@@ -912,9 +912,9 @@ async function runPicks(){
     <div class="msg-card">
       <div class="loading-ball"></div>
       <div class="ball-shadow"></div>
-      <h2 style="color:#f59e0b">Analyzing Matchup Patterns</h2>
-      <p>Pulling data for <strong style="color:#60a5fa">${selectedDate}</strong> from NBA Stats API.<br>
-      <span style="color:#1e3a5f">This takes ~45 seconds — worth the wait.</span></p>
+      <h2 style="color:#FDB827">Analyzing Matchup Patterns</h2>
+      <p>Pulling data for <strong style="color:#FDB827">${selectedDate}</strong> from NBA Stats API.<br>
+      <span style="color:#2a2a2a">This takes ~45 seconds — worth the wait.</span></p>
     </div>`;
   document.getElementById('allPicksWrap').style.display='none';
   try{
@@ -957,11 +957,11 @@ function renderPropsSection(picks, nopick) {
     const clr  = isOver?'#4ade80':isUnder?'#f87171':'#9ca3af';
     const gap  = p.gap!=null?(p.gap>0?'+':'')+p.gap:'—';
     const odds = p.fd_odds ? `<br><span style="color:#6b7280;font-size:.65rem">${p.fd_odds}</span>` : '';
-    const sideBg = p.side==='HOME'?'rgba(249,115,22,.15)':'rgba(99,102,241,.15)';
-    return `<tr style="border-bottom:1px solid rgba(249,115,22,.07)">
+    const sideBg = p.side==='HOME'?'rgba(253,184,39,.15)':'rgba(99,102,241,.15)';
+    return `<tr style="border-bottom:1px solid rgba(253,184,39,.07)">
       <td style="padding:8px 10px;color:#6b7280">${i+1}</td>
       <td style="padding:8px 10px;font-weight:700">${p.player}</td>
-      <td style="padding:8px 10px;color:#fb923c;font-size:.8rem">${p.emoji} ${p.stat_label}</td>
+      <td style="padding:8px 10px;color:#FDB827;font-size:.8rem">${p.emoji} ${p.stat_label}</td>
       <td style="padding:8px 10px"><span style="background:${sideBg};padding:2px 7px;border-radius:4px;font-size:.75rem">${p.side}</span></td>
       <td style="padding:8px 10px;color:#9ca3af;font-size:.8rem">${p.opp_name}</td>
       <td style="padding:8px 10px;font-family:monospace;font-weight:700">${p.line}</td>
