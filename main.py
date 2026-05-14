@@ -581,20 +581,7 @@ header::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;back
 .btn{padding:10px 22px;border-radius:12px;font-size:.875rem;font-weight:800;cursor:pointer;border:none;transition:all .2s;text-decoration:none;display:inline-block;letter-spacing:.3px}
 .btn-run{background:linear-gradient(135deg,#f59e0b,#ea580c);color:#050a14;box-shadow:0 4px 18px rgba(245,158,11,.35)}
 .btn-run:hover{transform:translateY(-2px);box-shadow:0 8px 28px rgba(245,158,11,.5)}
-.btn-refresh{background:rgba(30,58,95,.5);color:#60a5fa;border:1px solid rgba(59,130,246,.3);
-  border-radius:10px;padding:7px 14px;font-size:.82rem;font-weight:600;cursor:pointer;transition:all .2s}
-.btn-refresh:hover{background:rgba(59,130,246,.2);color:#93c5fd}
-.fd-indicator{display:flex;align-items:center;gap:6px;background:rgba(15,23,42,.7);
-  border:1px solid rgba(59,130,246,.2);border-radius:20px;padding:5px 12px;cursor:default}
-.fd-dot{width:10px;height:10px;border-radius:50%;background:#334155;flex-shrink:0;
-  transition:background .4s;box-shadow:0 0 0 0 transparent}
-.fd-dot.checking{background:#f59e0b;animation:pulse-gold .8s infinite}
-.fd-dot.connected{background:#22c55e;box-shadow:0 0 8px rgba(34,197,94,.6)}
-.fd-dot.disconnected{background:#ef4444}
-.fd-label{font-size:.72rem;font-weight:700;color:#64748b;letter-spacing:.5px;text-transform:uppercase}
 @keyframes pulse-gold{0%,100%{opacity:1}50%{opacity:.4}}
-.btn-out{background:rgba(15,23,42,.8);color:#374151;border:1px solid rgba(30,58,95,.5)}
-.btn-out:hover{color:#64748b;border-color:#334155}
 /* ─── Games bar ─── */
 .games-bar{display:flex;gap:8px;overflow-x:auto;padding-bottom:4px;margin-bottom:20px;scrollbar-width:thin;scrollbar-color:var(--border) transparent}
 .game-chip{
@@ -748,12 +735,6 @@ footer{text-align:center;margin-top:32px;color:#0a1525;font-size:.68rem;padding:
   <div class="actions">
     <input type="date" id="datePicker" value="__TODAY__" style="background:rgba(30,58,95,.5);color:#60a5fa;border:1px solid rgba(59,130,246,.3);border-radius:10px;padding:7px 12px;font-size:.82rem;font-weight:600;outline:none;cursor:pointer;">
     <button class="btn btn-run" onclick="runPicks()">⚡ Run Picks</button>
-    <button class="btn btn-refresh" onclick="clearAndRun()" title="Clear cache and re-fetch with FanDuel lines">🔄 Refresh</button>
-    <a href="/logout" class="btn btn-out">Sign Out</a>
-    <div class="fd-indicator" id="fdIndicator" title="FanDuel Status">
-      <span class="fd-dot" id="fdDot"></span>
-      <span class="fd-label" id="fdLabel">FanDuel</span>
-    </div>
   </div>
 </header>
 
@@ -922,44 +903,8 @@ function renderGames(games){
     `<div class="game-chip"><b>${g.away}</b><span class="sep">@</span><b>${g.home}</b></div>`
   ).join('');
 }
-// FanDuel status indicator
-async function checkFD(){
-  const dot   = document.getElementById('fdDot');
-  const label = document.getElementById('fdLabel');
-  if(!dot) return;
-  dot.className = 'fd-dot checking';
-  label.textContent = 'FanDuel...';
-  try{
-    const r = await fetch('/fd-status');
-    const d = await r.json();
-    if(d.fanduel === 'connected'){
-      dot.className = 'fd-dot connected';
-      label.style.color = '#22c55e';
-      label.textContent = 'FanDuel ✓';
-    } else if(d.fanduel === 'disconnected'){
-      dot.className = 'fd-dot disconnected';
-      label.style.color = '#ef4444';
-      label.textContent = 'FanDuel ✗';
-    } else {
-      dot.className = 'fd-dot';
-      label.style.color = '#475569';
-      label.textContent = 'FanDuel';
-    }
-  } catch(e){
-    dot.className = 'fd-dot';
-    label.textContent = 'FanDuel';
-  }
-}
-document.addEventListener('DOMContentLoaded', checkFD);
 
-async function clearAndRun(){
-  const btn = document.querySelector('.btn-refresh');
-  if(btn){ btn.textContent = '⏳ Clearing...'; btn.disabled = true; }
-  await fetch('/clear-cache');
-  await checkFD();
-  if(btn){ btn.textContent = '🔄 Refresh'; btn.disabled = false; }
-  // Just clears cache — user hits Run Picks when ready
-}
+
 
 async function runPicks(){
   const selectedDate=document.getElementById('datePicker').value;
@@ -1052,12 +997,6 @@ async def login_post(request: Request):
         resp.set_cookie("session", make_token(u), httponly=True, samesite="lax", max_age=86400*7)
         return resp
     return HTMLResponse(LOGIN_HTML.replace('{error}', '<p class="err">⚠️ Invalid username or password</p>'), status_code=401)
-
-@app.get("/logout")
-async def logout():
-    resp = RedirectResponse("/login")
-    resp.delete_cookie("session")
-    return resp
 
 @app.post("/run")
 async def run(request: Request):
