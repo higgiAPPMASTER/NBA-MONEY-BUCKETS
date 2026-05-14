@@ -591,8 +591,68 @@ async def run_analysis(selected_date: str = None) -> Dict:
         log.append(f"{with_lines} picks have sportsbook lines attached")
 
     odds_loaded = bool(odds_props)
+
+    # ── Props vs Opponent History ─────────────────────────────────────
+    # For every player with a sportsbook line today, calculate their
+    # career H/A avg vs today's opponent and compare to the line.
+    props_picks   = []
+    props_nopick  = []
+
+    for game in games:
+        h, a = game['home'], game['away']
+        h_name, a_name = game['home_name'], game['away_name']
+
+        for loc, my_team_id, my_name, opp_id, opp_name, side in [
+            ('Home', game['home_id'], h_name, a, a_name, 'HOME'),
+            ('Away', game['away_id'], a_name, h, h_name, 'AWAY'),
+        ]:
+            for player in rosters.get(my_team_id, []):
+                pname = player['name']
+                pid   = player['id']
+                for sk, sc in STAT_CONFIG.items():
+                    ob = odds_lookup.get((_nn(pname), sk), {})
+                    if not ob or ob.get('line') is None:
+                        continue
+                    line = float(ob['line'])
+                    # All career H/A logs vs today's opponent
+                    opp_logs = [l for l in logs_by_player.get(pid, [])
+                                if l['location'] == loc and l['opp'] == opp_id]
+                    if not opp_logs:
+                        props_nopick.append({
+                            'player': pname, 'stat': sk, 'stat_label': sc['label'],
+                            'emoji': sc['emoji'], 'side': side, 'opp_name': opp_name,
+                            'line': line, 'avg': None, 'games': 0,
+                            'history': '—', 'gap': None, 'pick': None,
+                            'pick_note': f'No {loc} history vs {opp_name}',
+                            'fd_odds': ob.get('odds', ''),
+                        })
+                        continue
+                    vals    = [float(l[sk]) for l in opp_logs]
+                    avg     = round(sum(vals) / len(vals), 1)
+                    history = ', '.join(str(int(v)) for v in vals[:8])
+                    gap     = round(avg - line, 1)
+                    pick    = 'OVER' if avg > line else ('UNDER' if avg < line else None)
+                    entry   = {
+                        'player': pname, 'stat': sk, 'stat_label': sc['label'],
+                        'emoji': sc['emoji'], 'side': side, 'opp_name': opp_name,
+                        'line': line, 'avg': avg, 'games': len(vals),
+                        'history': history, 'gap': gap, 'pick': pick,
+                        'pick_note': f'avg {avg} vs line {line}',
+                        'fd_odds': ob.get('odds', ''),
+                        'matchup': f'{a_name} @ {h_name}',
+                    }
+                    if pick:
+                        props_picks.append(entry)
+                    else:
+                        props_nopick.append(entry)
+
+    props_picks.sort(key=lambda x: abs(x.get('gap') or 0), reverse=True)
+    log.append(f"⚡ Props vs history: {len(props_picks)} picks found")
+
     result = {'date': today_str, 'picks': top_picks, 'all_picks': picks,
-              'games': games, 'log': log, 'total': len(picks), 'odds_loaded': odds_loaded}
+              'games': games, 'log': log, 'total': len(picks),
+              'odds_loaded': odds_loaded,
+              'props_picks': props_picks, 'props_nopick': props_nopick}
     _cache.update(result)
     return result
 
@@ -687,6 +747,34 @@ input::placeholder{color:#374151}
     {error}
   </form>
   <p class="tagline">No Lines · Just Patterns · 75% Threshold</p>
+
+<!-- Props vs Opponent History -->
+<div id="props-section" style="display:none;margin-top:28px">
+  <div class="section-title" style="margin-bottom:12px">⚡ Player Props vs Opponent History</div>
+  <div style="overflow-x:auto">
+    <table style="width:100%;border-collapse:collapse;font-size:.82rem">
+      <thead><tr style="border-bottom:1px solid rgba(249,115,22,.25)">
+        <th style="padding:7px 10px;text-align:left;color:#fb923c;font-size:.72rem">#</th>
+        <th style="padding:7px 10px;text-align:left;color:#fb923c;font-size:.72rem">Player</th>
+        <th style="padding:7px 10px;text-align:left;color:#fb923c;font-size:.72rem">Stat</th>
+        <th style="padding:7px 10px;text-align:left;color:#fb923c;font-size:.72rem">H/A</th>
+        <th style="padding:7px 10px;text-align:left;color:#fb923c;font-size:.72rem">Opponent</th>
+        <th style="padding:7px 10px;text-align:left;color:#fb923c;font-size:.72rem">Line</th>
+        <th style="padding:7px 10px;text-align:left;color:#fb923c;font-size:.72rem">Avg vs Opp</th>
+        <th style="padding:7px 10px;text-align:left;color:#fb923c;font-size:.72rem">Gap</th>
+        <th style="padding:7px 10px;text-align:left;color:#fb923c;font-size:.72rem">Games</th>
+        <th style="padding:7px 10px;text-align:left;color:#fb923c;font-size:.72rem">History</th>
+        <th style="padding:7px 10px;text-align:left;color:#fb923c;font-size:.72rem">Pick</th>
+      </tr></thead>
+      <tbody id="props-body"></tbody>
+    </table>
+  </div>
+  <p style="font-size:.72rem;color:#6b7280;margin-top:10px">
+    <strong style="color:#fb923c">Avg vs Opp</strong> = career H/A avg vs today's opponent &nbsp;|&nbsp;
+    <strong style="color:#fb923c">History</strong> = individual game totals vs that team &nbsp;|&nbsp;
+    <strong style="color:#fb923c">Pick</strong> = OVER if avg &gt; line, UNDER if avg &lt; line
+  </p>
+</div>
 </div>
 </body>
 </html>"""
@@ -1153,6 +1241,35 @@ async function runPicks(){
   }catch(e){
     document.getElementById('content').innerHTML=`<div class="msg-card"><span class="ico">❌</span><h2 style="color:#ef4444">Something went wrong</h2><p>${e.message}</p></div>`;
   }
+}
+
+function renderPropsSection(picks, nopick) {
+  const section = document.getElementById('props-section');
+  const body    = document.getElementById('props-body');
+  if (!section || !body) return;
+  const all = [...(picks||[]), ...(nopick||[]).filter(p=>p.games>0)];
+  if (all.length === 0) { section.style.display='none'; return; }
+  section.style.display = '';
+  body.innerHTML = all.map((p,i) => {
+    const isOver  = p.pick==='OVER', isUnder = p.pick==='UNDER';
+    const clr  = isOver?'#4ade80':isUnder?'#f87171':'#9ca3af';
+    const gap  = p.gap!=null?(p.gap>0?'+':'')+p.gap:'—';
+    const odds = p.fd_odds ? `<br><span style="color:#6b7280;font-size:.65rem">${p.fd_odds}</span>` : '';
+    const sideBg = p.side==='HOME'?'rgba(249,115,22,.15)':'rgba(99,102,241,.15)';
+    return `<tr style="border-bottom:1px solid rgba(249,115,22,.07)">
+      <td style="padding:8px 10px;color:#6b7280">${i+1}</td>
+      <td style="padding:8px 10px;font-weight:700">${p.player}</td>
+      <td style="padding:8px 10px;color:#fb923c;font-size:.8rem">${p.emoji} ${p.stat_label}</td>
+      <td style="padding:8px 10px"><span style="background:${sideBg};padding:2px 7px;border-radius:4px;font-size:.75rem">${p.side}</span></td>
+      <td style="padding:8px 10px;color:#9ca3af;font-size:.8rem">${p.opp_name}</td>
+      <td style="padding:8px 10px;font-family:monospace;font-weight:700">${p.line}</td>
+      <td style="padding:8px 10px;font-family:monospace;font-weight:700;color:${clr};font-size:1rem">${p.avg??'—'}</td>
+      <td style="padding:8px 10px;font-family:monospace;color:${clr};font-weight:700">${gap}</td>
+      <td style="padding:8px 10px;color:#6b7280">${p.games}g</td>
+      <td style="padding:8px 10px;font-family:monospace;font-size:.7rem;color:#6b7280;max-width:140px">${p.history||'—'}</td>
+      <td style="padding:8px 10px"><span style="color:${clr};font-weight:900;font-size:.95rem">${p.pick||'—'}</span>${odds}</td>
+    </tr>`;
+  }).join('');
 }
 </script>
 </body>
