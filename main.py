@@ -1,1023 +1,1075 @@
-# NBA Money Buckets — main.py (v2 — 100% ESPN API, no NBA Stats API)
-# NBA Stats API blocks server IPs. ESPN gives schedule + rosters + player game logs free.
+#!/usr/bin/env python3
+"""
+NHL Shots on Goal Picks — main.py
+Step 1 : The Odds API  (player shots on goal lines ≥ 1.5)
+Step 2 : NHL Stats API (career H/A shots vs today's opponent ≥ 80%)
+Step 3 : NHL Stats API (last 10 H/A games shots ≥ 80%)
+Step 4 : Rank & top 10
+Deployed on Render (FastAPI + httpx — no logins needed)
+"""
 
-import asyncio
-import json
-import os
-import hashlib
-import re
-import unicodedata
+import os, asyncio
 from datetime import date, datetime
-from typing import Dict, List, Optional, Any
+from typing import List, Dict, Optional, Tuple
 
 import httpx
-from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi import FastAPI, HTTPException, status
+from fastapi.responses import HTMLResponse, JSONResponse
 
-app = FastAPI(title="Money Buckets")
+# ─────────────────────────────────────────────────────────────────────────────
+#  Config
+# ─────────────────────────────────────────────────────────────────────────────
 
-# ─── Auth ─────────────────────────────────────────────────────────────────────
-USERS_RAW = os.environ.get("USERS", "admin:buckets")
-USERS: Dict[str, str] = {}
-for _pair in USERS_RAW.split(","):
-    if ":" in _pair.strip():
-        _u, _p = _pair.strip().split(":", 1)
-        USERS[_u.strip()] = _p.strip()
+app = FastAPI(title="NHL Shots Picks")
 
-SECRET = os.environ.get("SECRET_KEY", "nba-money-buckets-2026")
+NHL_API      = "https://api-web.nhle.com/v1"
+NHL_STATS    = "https://api.nhle.com/stats/rest/en"
+ODDS_API     = "https://api.the-odds-api.com/v4"
+DK_BASE      = "https://sportsbook.draftkings.com/sites/US-NJ-SB/api/v5"
+NHL_EG_ID    = 42648
 
-def make_token(username: str) -> str:
-    return hashlib.sha256(f"{username}:{SECRET}".encode()).hexdigest()
+MIN_SPG       = 1.5   # shots/game season average to qualify
+MIN_GP        = 10    # minimum games played for valid average
 
-def get_user(request: Request) -> Optional[str]:
-    return 'higgi'  # Auth handled by Money Picks Arena hub
+MIN_GAMES     = 2     # min games required for hit-rate calc
+HIT_THRESH    = 70.0  # % hit rate to qualify (shots)
+HIT_THRESH_PTS= 60.0  # % hit rate to qualify (points)
+PTS_LINE      = 0.5   # 1+ point = hit
+SEASONS       = ["20252026","20242025","20232024","20222023","20212022"]  # for points game logs
+TOP_N       = 10     # final picks count
+SEM_NHL     = 8      # concurrent NHL API calls
+
+# StatMuse team slugs  (abbrev → URL slug)
+TEAM_SLUGS: Dict[str, str] = {
+    "ANA": "anaheim-ducks",       "BOS": "boston-bruins",
+    "BUF": "buffalo-sabres",      "CGY": "calgary-flames",
+    "CAR": "carolina-hurricanes", "CHI": "chicago-blackhawks",
+    "COL": "colorado-avalanche",  "CBJ": "columbus-blue-jackets",
+    "DAL": "dallas-stars",        "DET": "detroit-red-wings",
+    "EDM": "edmonton-oilers",     "FLA": "florida-panthers",
+    "LAK": "los-angeles-kings",   "MIN": "minnesota-wild",
+    "MTL": "montreal-canadiens",  "NSH": "nashville-predators",
+    "NJD": "new-jersey-devils",   "NYI": "new-york-islanders",
+    "NYR": "new-york-rangers",    "OTT": "ottawa-senators",
+    "PHI": "philadelphia-flyers", "PIT": "pittsburgh-penguins",
+    "SJS": "san-jose-sharks",     "STL": "st-louis-blues",
+    "TBL": "tampa-bay-lightning", "TOR": "toronto-maple-leafs",
+    "UTA": "utah-hockey-club",    "VAN": "vancouver-canucks",
+    "VGK": "vegas-golden-knights","WSH": "washington-capitals",
+    "WPG": "winnipeg-jets",       "SEA": "seattle-kraken",
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Auth handled by Money Picks Arena hub — no per-app login needed
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  NHL API helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def _fetch(url: str, client: httpx.AsyncClient) -> Optional[Dict]:
+    try:
+        r = await client.get(url, timeout=20)
+        if r.status_code == 200:
+            return r.json()
+    except Exception as e:
+        print(f"[NHL] {url} → {e}")
     return None
 
-# ─── Stat Config ──────────────────────────────────────────────────────────────
-# ESPN gamelog stats array order:
-# [0]=MIN [1]=FG [2]=FG% [3]=3PT [4]=3P% [5]=FT [6]=FT% [7]=REB [8]=AST
-# [9]=BLK [10]=STL [11]=PF [12]=TO [13]=PTS
-STAT_CONFIG = {
-    'PTS':  {'label': 'Points',     'emoji': '🏀', 'idx': 13, 'thresholds': list(range(45, 4, -1))},
-    'REB':  {'label': 'Rebounds',   'emoji': '📊', 'idx': 7,  'thresholds': list(range(20, 1, -1))},
-    'AST':  {'label': 'Assists',    'emoji': '🎯', 'idx': 8,  'thresholds': list(range(15, 1, -1))},
-    'FG3M': {'label': '3-Pointers', 'emoji': '🔥', 'idx': 3,  'thresholds': list(range(8,  0, -1))},
-}
 
-HIT_RATE_MIN  = 0.75
-MIN_GAMES     = 2
-MIN_MINUTES   = 10.0
-ESPN_SEASONS  = [2026, 2025, 2024]
-TOP_N         = 10
+def get_season_for_date(d: date) -> str:
+    """Return NHL season ID for a given date e.g. 20242025"""
+    if d.month >= 10:
+        return f"{d.year}{d.year + 1}"
+    return f"{d.year - 1}{d.year}"
 
-ODDS_API_BASE   = "https://api.the-odds-api.com/v4"
-ODDS_MARKET_MAP = {
-    "player_points":        "PTS",
-    "player_rebounds":      "REB",
-    "player_assists":       "AST",
-    "player_threes_scored": "FG3M",
-}
-MIN_GAMES     = 3
-MIN_MINUTES   = 10.0
-ESPN_SEASONS  = [2026, 2025, 2024]   # ESPN uses season END year
-TOP_N         = 10
 
-# ─── Cache ────────────────────────────────────────────────────────────────────
-_cache: Dict[str, Any] = {}
-
-async def get_today_games(date_str: str = None) -> List[Dict]:
-    if date_str:
-        today_fmt = datetime.strptime(date_str, '%Y-%m-%d').strftime('%Y%m%d')
-    else:
-        today_fmt = date.today().strftime('%Y%m%d')
-
-    url = f"https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?dates={today_fmt}"
-    async with httpx.AsyncClient(timeout=30) as c:
-        r = await c.get(url)
-        data = r.json()
-
+async def get_today_games(target_date: str = None) -> List[Dict]:
+    target_date = target_date or date.today().isoformat()
+    async with httpx.AsyncClient(follow_redirects=True) as c:
+        data = await _fetch(f"{NHL_API}/schedule/{target_date}", c)
+    if not data:
+        return []
     games = []
-    for event in data.get('events', []):
-        comps = event['competitions'][0]['competitors']
-        home = next((c for c in comps if c['homeAway'] == 'home'), None)
-        away = next((c for c in comps if c['homeAway'] == 'away'), None)
-        if not home or not away:
-            continue
-        games.append({
-            'home':      home['team']['abbreviation'],
-            'away':      away['team']['abbreviation'],
-            'home_id':   home['team']['id'],
-            'away_id':   away['team']['id'],
-            'home_name': home['team']['displayName'],
-            'away_name': away['team']['displayName'],
-        })
+    seen_pairs = set()
+    for day in data.get("gameWeek", []):
+        if day.get("date") == target_date:
+            for g in day.get("games", []):
+                if g.get("gameState", "") in ("FUT", "PRE", "LIVE", "CRIT", "OFF", "FINAL"):
+                    ht = g["homeTeam"]["abbrev"]
+                    at = g["awayTeam"]["abbrev"]
+                    pair = tuple(sorted([ht, at]))
+                    if pair in seen_pairs:
+                        continue
+                    seen_pairs.add(pair)
+                    games.append({
+                        "gameId":    g["id"],
+                        "homeTeam":  ht,
+                        "awayTeam":  at,
+                        "homeFull":  g["homeTeam"].get("commonName", {}).get("default", ""),
+                        "awayFull":  g["awayTeam"].get("commonName", {}).get("default", ""),
+                        "startTime": g.get("startTimeUTC", ""),
+                    })
     return games
 
 
-async def get_team_roster_espn(team_id: str) -> List[Dict]:
-    url = f"https://site.api.espn.com/apis/site/v2/sports/basketball/nba/teams/{team_id}/roster"
-    try:
-        async with httpx.AsyncClient(timeout=20) as c:
-            await asyncio.sleep(0.1)
-            r = await c.get(url)
-            data = r.json()
-        return [{'id': p['id'], 'name': p.get('displayName', '')}
-                for p in data.get('athletes', [])]
-    except Exception as e:
-        print(f"  Roster error {team_id}: {e}")
-        return []
+async def get_team_sa_map(season: str = "20242025") -> Dict[str, float]:
+    """Shots Against Per Game — joins /standings (abbrev) + /team/summary (SA/G)."""
+    import urllib.parse
+    sort_p = urllib.parse.quote('[{"property":"shotsAgainstPerGame","direction":"DESC"}]')
+    summary_url = (
+        f"{NHL_STATS}/team/summary"
+        f"?isAggregate=false&isGame=false&sort={sort_p}"
+        f"&start=0&limit=50&factCayenneExp=gamesPlayed>=1"
+        f"&cayenneExp=gameTypeId=2 and seasonId<={season} and seasonId>={season}"
+    )
+    async with httpx.AsyncClient(follow_redirects=True, timeout=20) as c:
+        sd, md = await asyncio.gather(
+            _fetch(f"{NHL_API}/standings/now", c),
+            _fetch(summary_url, c),
+        )
+    if not sd or not md:
+        return {}
+    name_to_abbrev = {
+        t.get("teamName", {}).get("default", ""): t.get("teamAbbrev", {}).get("default", "")
+        for t in sd.get("standings", [])
+    }
+    return {
+        name_to_abbrev[t["teamFullName"]]: float(t.get("shotsAgainstPerGame") or 0)
+        for t in md.get("data", [])
+        if t.get("teamFullName") in name_to_abbrev
+    }
 
 
-async def get_player_gamelogs_espn(player_id: str, season: int,
-                                    sem: asyncio.Semaphore) -> List[Dict]:
-    """Fetch one player's game logs for one season from ESPN."""
-    url = (f"https://site.web.api.espn.com/apis/common/v3/sports/"
-           f"basketball/nba/athletes/{player_id}/gamelog")
+async def get_roster(team: str, sem: asyncio.Semaphore) -> List[Dict]:
     async with sem:
-        try:
-            async with httpx.AsyncClient(timeout=20) as c:
-                r = await c.get(url, params={'season': season})
-                if r.status_code != 200:
-                    return []
-                gl = r.json()
-        except Exception:
-            return []
-
-    events = gl.get('events', {})
-
-    # Build eventId → stats map from seasonTypes → categories → events
-    stats_map: Dict[str, List] = {}
-    for st in gl.get('seasonTypes', []):
-        for cat in st.get('categories', []):
-            if cat is None:
-                continue
-            for ev in cat.get('events', []):
-                eid = ev.get('eventId')
-                if eid and ev.get('stats') and eid not in stats_map:
-                    stats_map[eid] = ev['stats']
-
-    games = []
-    for eid, ev_info in events.items():
-        if eid not in stats_map:
-            continue
-        stats = stats_map[eid]
-        if len(stats) < 14:
-            continue
-
-        # Skip garbage time / DNP games
-        if parse_min(stats[0]) < MIN_MINUTES:
-            continue
-
-        opp_info = ev_info.get('opponent', {})
-        opp_abbr = opp_info.get('abbreviation', '') if isinstance(opp_info, dict) else ''
-        location = 'Away' if ev_info.get('atVs', '') == '@' else 'Home'
-
-        games.append({
-            'opp':      opp_abbr,
-            'location': location,
-            'PTS':      parse_stat(stats[13]),
-            'REB':      parse_stat(stats[7]),
-            'AST':      parse_stat(stats[8]),
-            'FG3M':     parse_stat(stats[3]),
-        })
-    return games
-
-# ─── Analysis ─────────────────────────────────────────────────────────────────
-
-def _nn(n):
-    import unicodedata as ud, re
-    s = ud.normalize('NFD', n).encode('ascii','ignore').decode().lower()
-    return re.sub(r'[^a-z ]', '', s).strip()
-
-def _nm(a, b):
-    na, nb = _nn(a), _nn(b)
-    if na == nb: return True
-    pa, pb = na.split(), nb.split()
-    return len(pa) >= 2 and len(pb) >= 2 and pa[0][0] == pb[0][0] and pa[-1] == pb[-1]
-
-async def get_odds_lines(today_str):
-    api_key = os.environ.get('ODDS_API_KEY', '')
-    if not api_key:
+        async with httpx.AsyncClient(follow_redirects=True, timeout=20) as c:
+            data = await _fetch(f"{NHL_API}/roster/{team}/current", c)
+    if not data:
         return []
-    props = []
+    players = []
+    for pos in ("forwards", "defensemen"):
+        for p in data.get(pos, []):
+            players.append({
+                "id":   p["id"],
+                "name": f"{p['firstName']['default']} {p['lastName']['default']}",
+            })
+    return players
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Sportsbook Lines — tries Odds API, then DraftKings, then estimates
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def get_odds_nhl_lines(target_date: str) -> Dict[str, Dict]:
+    """Fetch NHL player shots on goal lines from The Odds API.
+    Returns {player_name: {line, odds}}
+    """
+    api_key = os.environ.get("ODDS_API_KEY", "")
+    if not api_key:
+        return {}
+    lines: Dict[str, Dict] = {}
     try:
         async with httpx.AsyncClient(timeout=20) as c:
-            r = await c.get(f"{ODDS_API_BASE}/sports/basketball_nba/events",
-                            params={'apiKey': api_key, 'dateFormat': 'iso'})
+            r = await c.get(
+                f"{ODDS_API}/sports/icehockey_nhl/events",
+                params={"apiKey": api_key, "dateFormat": "iso"})
             if r.status_code != 200:
-                print(f'[OddsAPI] events status {r.status_code}')
-                return []
-            events = [e for e in r.json() if e.get('commence_time','')[:10] == today_str]
-            print(f'[OddsAPI] {len(events)} NBA events today')
-            markets = ','.join(ODDS_MARKET_MAP.keys())
+                print(f"[OddsAPI NHL] events {r.status_code}")
+                return {}
+            events = [e for e in r.json()
+                      if e.get("commence_time", "")[:10] == target_date]
+            print(f"[OddsAPI NHL] {len(events)} games for {target_date}")
+            seen: set = set()
             for ev in events:
                 r2 = await c.get(
-                    f"{ODDS_API_BASE}/sports/basketball_nba/events/{ev['id']}/odds",
-                    params={'apiKey': api_key, 'regions': 'us,us2',
-                            'markets': markets, 'oddsFormat': 'american'})
+                    f"{ODDS_API}/sports/icehockey_nhl/events/{ev['id']}/odds",
+                    params={"apiKey": api_key, "regions": "us",
+                            "markets": "player_shots_on_goal",
+                            "oddsFormat": "american"})
                 if r2.status_code != 200:
                     continue
-                data = r2.json()
-                seen = set()
-                for book in data.get('bookmakers', []):
-                    for mkt in book.get('markets', []):
-                        stat = ODDS_MARKET_MAP.get(mkt.get('key', ''))
-                        if not stat:
+                for book in r2.json().get("bookmakers", []):
+                    for mkt in book.get("markets", []):
+                        if mkt.get("key") != "player_shots_on_goal":
                             continue
-                        for oc in mkt.get('outcomes', []):
-                            if oc.get('name') != 'Over':
+                        for oc in mkt.get("outcomes", []):
+                            if oc.get("name") != "Over":
                                 continue
-                            player = oc.get('description', '').strip()
-                            line   = float(oc.get('point') or 0)
-                            key    = f"{player}|{stat}"
-                            if player and line > 0 and key not in seen:
-                                seen.add(key)
-                                props.append({
-                                    'player': player, 'stat': stat, 'line': line,
-                                    'odds': str(oc.get('price', '')),
-                                    'home': data.get('home_team', ''),
-                                    'away': data.get('away_team', ''),
-                                })
-                    break  # first bookmaker only
+                            player = oc.get("description", "").strip()
+                            line   = float(oc.get("point") or 0)
+                            if player and line > 0 and player not in seen:
+                                seen.add(player)
+                                lines[player] = {
+                                    "line":   line,
+                                    "odds":   str(oc.get("price", "")),
+                                    "source": "OddsAPI",
+                                }
+                    break  # first bookmaker
     except Exception as e:
-        print(f'[OddsAPI] error: {e}')
-    print(f'[OddsAPI] {len(props)} NBA prop lines fetched')
-    return props
+        print(f"[OddsAPI NHL] error: {e}")
+    print(f"[OddsAPI NHL] {len(lines)} shot lines fetched")
+    return lines
 
-async def run_analysis(selected_date: str = None) -> Dict:
-    today_str = selected_date if selected_date else date.today().isoformat()
-    if _cache.get('date') == today_str and _cache.get('picks') is not None and _cache.get('odds_loaded'):
-        return _cache
 
-    log = []
-    log.append(f"Fetching schedule + sportsbook lines for {today_str}...")
+async def get_shot_lines() -> Dict[str, Dict]:
+    """Fetch real shots on goal lines.
+    Tries: 1) The Odds API  2) DraftKings  3) Estimates
+    """
+    # 1 — The Odds API (if key is set)
+    api_key = os.environ.get("ODDS_API_KEY", "")
+    if api_key:
+        try:
+            lines = await _lines_from_odds_api(api_key)
+            if lines:
+                print(f"[Lines] {len(lines)} lines from The Odds API")
+                return lines
+        except Exception as e:
+            print(f"[Lines] Odds API error: {e}")
 
-    # Fetch games + Odds API lines concurrently
+    # 2 — DraftKings (public endpoint, may work from Render)
     try:
-        games, odds_props = await asyncio.gather(
-            get_today_games(today_str),
-            get_odds_lines(today_str),
-        )
+        lines = await _lines_from_draftkings()
+        if lines:
+            print(f"[Lines] {len(lines)} lines from DraftKings")
+            return lines
     except Exception as e:
-        return {'date': today_str, 'picks': [], 'all_picks': [], 'games': [],
-                'log': [f'Error: {e}'], 'total': 0}
+        print(f"[Lines] DraftKings error: {e}")
+
+    print("[Lines] No sportsbook lines — using season avg estimates")
+    return {}
+
+
+async def _lines_from_odds_api(api_key: str) -> Dict[str, Dict]:
+    lines = {}
+    today = date.today().isoformat()
+    async with httpx.AsyncClient(timeout=20) as c:
+        r = await c.get(f"{ODDS_API}/sports/icehockey_nhl/events",
+                        params={"apiKey": api_key, "dateFormat": "iso"})
+        if r.status_code != 200:
+            return {}
+        events = [e for e in r.json() if e.get("commence_time","").startswith(today)]
+        for ev in events:
+            r2 = await c.get(
+                f"{ODDS_API}/sports/icehockey_nhl/events/{ev['id']}/odds",
+                params={"apiKey": api_key, "regions": "us",
+                        "markets": "player_shots_on_goal", "oddsFormat": "american"})
+            if r2.status_code != 200:
+                continue
+            for book in r2.json().get("bookmakers", []):
+                for mkt in book.get("markets", []):
+                    if mkt.get("key") != "player_shots_on_goal":
+                        continue
+                    for outcome in mkt.get("outcomes", []):
+                        if outcome.get("name") == "Over":
+                            player = outcome.get("description","").strip()
+                            line   = float(outcome.get("point") or 0)
+                            if player and line >= 1.5:
+                                lines[player] = {
+                                    "line":   line,
+                                    "odds":   str(outcome.get("price","")),
+                                    "source": "OddsAPI",
+                                }
+                break
+    return lines
+
+
+
+async def _lines_from_draftkings() -> Dict[str, Dict]:
+    hdrs = {"Accept": "application/json",
+            "Referer": "https://sportsbook.draftkings.com/leagues/hockey/nhl"}
+    lines = {}
+    async with CFSession(impersonate="chrome120") as s:
+        r = await s.get(f"{DK_BASE}/eventgroups/{NHL_EG_ID}?format=json", headers=hdrs)
+        if r.status_code != 200:
+            return {}
+        eg = r.json().get("eventGroup", {})
+        cat_id = sub_id = None
+        for cat in eg.get("offerCategories", []):
+            for sub in cat.get("offerSubcategoryDescriptors", []):
+                if "shot" in sub.get("name", "").lower():
+                    cat_id, sub_id = cat["id"], sub["subcategoryId"]
+                    break
+            if cat_id:
+                break
+        if not cat_id:
+            return {}
+        r2 = await s.get(
+            f"{DK_BASE}/eventgroups/{NHL_EG_ID}/categories/{cat_id}/subcategories/{sub_id}?format=json",
+            headers=hdrs)
+        if r2.status_code != 200:
+            return {}
+        for cat in r2.json().get("eventGroup", {}).get("offerCategories", []):
+            for sub_desc in cat.get("offerSubcategoryDescriptors", []):
+                for event_offers in sub_desc.get("offerSubcategory", {}).get("offers", []):
+                    for offer in event_offers:
+                        player = offer.get("label", "").strip()
+                        for outcome in offer.get("outcomes", []):
+                            if outcome.get("label", "").lower() == "over":
+                                line_val = float(outcome.get("line") or 0)
+                                if line_val >= 1.5 and player:
+                                    lines[player] = {
+                                        "line":   line_val,
+                                        "odds":   outcome.get("oddsAmerican", ""),
+                                        "source": "DraftKings",
+                                    }
+    return lines
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  NHL Skater Stats — season shot averages (replaces sportsbook props)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _match_odds_name(odds_name: str, roster: List[Dict]) -> Optional[Dict]:
+    """Match Odds API player name to NHL roster player."""
+    def norm(n): return n.lower().replace(".","").replace("-"," ").replace("'","").strip()
+    on = norm(odds_name)
+    for p in roster:
+        if norm(p["name"]) == on: return p
+    parts = on.split()
+    if len(parts) >= 2:
+        fi, last = parts[0][0], parts[-1]
+        for p in roster:
+            pp = norm(p["name"]).split()
+            if len(pp) >= 2 and pp[0][0] == fi and pp[-1] == last:
+                return p
+    return None
+
+
+async def get_shot_qualified_players(
+    games: List[Dict],
+    sa_map: Dict[str, float],
+    sem: asyncio.Semaphore,
+    season: str = "20252026",
+    lines_map: Dict = None,   # {player_name: {line, odds}} from Odds API
+) -> List[Dict]:
+    """Build player pool from Odds API lines (primary) or season averages (fallback)."""
+    if lines_map is None:
+        lines_map = {}
+
+    team_ctx: Dict[str, Dict] = {}
+    for g in games:
+        team_ctx[g["homeTeam"]] = {"opponent": g["awayTeam"], "homeRoad": "H"}
+        team_ctx[g["awayTeam"]] = {"opponent": g["homeTeam"],  "homeRoad": "R"}
+
+    # Get rosters for all playing teams
+    roster_vals = await asyncio.gather(
+        *[get_roster(t, sem) for t in team_ctx], return_exceptions=True)
+    rosters = {t: (r if isinstance(r, list) else [])
+               for t, r in zip(team_ctx.keys(), roster_vals)}
+
+    pool: List[Dict] = []
+    seen: set = set()
+
+    # PRIMARY: build from Odds API lines (sportsbook line = threshold)
+    if lines_map:
+        for odds_name, sb_info in lines_map.items():
+            line     = sb_info["line"]
+            real_odds = sb_info.get("odds", "")
+            matched  = None
+            team     = None
+            for t, roster in rosters.items():
+                p = _match_odds_name(odds_name, roster)
+                if p:
+                    matched = p
+                    team    = t
+                    break
+            if not matched or team not in team_ctx or matched["id"] in seen:
+                continue
+            seen.add(matched["id"])
+            opp = team_ctx[team]["opponent"]
+            pool.append({
+                "name":      odds_name,
+                "pid":       matched["id"],
+                "team":      team,
+                "opponent":  opp,
+                "homeRoad":  team_ctx[team]["homeRoad"],
+                "line":      line,           # REAL sportsbook line as threshold
+                "realLine":  line,
+                "realOdds":  real_odds,
+                "lineSource": "OddsAPI",
+                "estLine":   line,
+                "spg":       line,           # use line as display value
+                "oppSA":     sa_map.get(opp, 0.0),
+            })
+        print(f"[NHL] {len(pool)} players with Odds API shot lines")
+
+    # SUPPLEMENT: always add season-average players not already in Odds API pool
+    if True:
+        if not pool:
+            print("[NHL] No Odds API lines — using season averages")
+        else:
+            print(f"[NHL] Supplementing {len(pool)} Odds API players with season averages")
+        async def _fetch_team(team: str):
+            async with sem:
+                async with httpx.AsyncClient(timeout=20) as c:
+                    r = await c.get(f"{NHL_STATS}/skater/summary",
+                                    params={"limit":100,"start":0,
+                                            "cayenneExp":f"gameTypeId=2 and seasonId={season} and teamAbbrevs='{team}'"})
+            if r.status_code != 200: return
+            ctx = team_ctx.get(team, {})
+            opp, hr = ctx.get("opponent",""), ctx.get("homeRoad","")
+            for p in r.json().get("data",[]):
+                pid, gp, shots = p.get("playerId"), p.get("gamesPlayed",0), p.get("shots",0)
+                if p.get("positionCode") == "G" or gp < MIN_GP: continue
+                spg = shots / gp
+                if spg < MIN_SPG or pid in seen: continue
+                seen.add(pid)
+                name = p["skaterFullName"]
+                est  = _est_line(spg)
+                pool.append({"name":name,"pid":pid,"team":team,"opponent":opp,
+                             "homeRoad":hr,"line":1.5,"realLine":None,"realOdds":"",
+                             "lineSource":"Est","estLine":est,"spg":round(spg,2),
+                             "oppSA":sa_map.get(opp,0.0)})
+        await asyncio.gather(*[_fetch_team(t) for t in team_ctx], return_exceptions=True)
+        print(f"[NHL] {len(pool)} skaters from season averages (fallback)")
+
+    pool.sort(key=lambda x: x["oppSA"], reverse=True)
+    return pool
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Points picks — NHL Stats API game logs (independent of shots)
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def _pts_season_logs(pid: int, season: str, c: httpx.AsyncClient) -> List[Dict]:
+    data = await _fetch(f"{NHL_API}/player/{pid}/game-log/{season}/2", c)
+    if not data:
+        return []
+    logs = []
+    for g in data.get("gameLog", []):
+        goals   = int(g.get("goals",   0) or 0)
+        assists = int(g.get("assists", 0) or 0)
+        logs.append({
+            "date":     g.get("gameDate",     ""),
+            "points":   goals + assists,
+            "homeRoad": g.get("homeRoadFlag", ""),
+            "opponent": g.get("opponentAbbrev", ""),
+        })
+    return logs
+
+
+async def get_pts_picks(
+    games: List[Dict],
+    sa_map: Dict[str, float],
+    sem: asyncio.Semaphore,
+    season: str = "20252026",
+) -> List[Dict]:
+    """Independent points picks using NHL Stats API game logs."""
+
+    # Build team context
+    team_ctx: Dict[str, Dict] = {}
+    for g in games:
+        team_ctx[g["homeTeam"]] = {"opponent": g["awayTeam"], "homeRoad": "H"}
+        team_ctx[g["awayTeam"]] = {"opponent": g["homeTeam"],  "homeRoad": "R"}
+
+    # Get all skaters on today's teams
+    roster_vals = await asyncio.gather(
+        *[get_roster(t, sem) for t in team_ctx], return_exceptions=True
+    )
+    rosters = {t: (r if isinstance(r, list) else []) for t, r in zip(team_ctx.keys(), roster_vals)}
+
+    # Fetch multi-season game logs for all players concurrently
+    all_players = []
+    seen_pts = set()
+    for team, players in rosters.items():
+        ctx = team_ctx[team]
+        for p in players:
+            if p["id"] not in seen_pts:
+                seen_pts.add(p["id"])
+                all_players.append((p, team, ctx["opponent"], ctx["homeRoad"]))
+
+    async def fetch_logs(pid):
+        async with sem:
+            async with httpx.AsyncClient(timeout=30) as c:
+                results = await asyncio.gather(
+                    *[_pts_season_logs(pid, s, c) for s in SEASONS],
+                    return_exceptions=True
+                )
+        logs = []
+        for r in results:
+            if isinstance(r, list):
+                logs.extend(r)
+        logs.sort(key=lambda x: x["date"], reverse=True)
+        return logs
+
+    log_tasks = {p["id"]: fetch_logs(p["id"]) for p, *_ in all_players}
+    log_results = await asyncio.gather(*log_tasks.values(), return_exceptions=True)
+    logs_map = {pid: (r if isinstance(r, list) else []) for pid, r in zip(log_tasks.keys(), log_results)}
+
+    picks = []
+    for player, team, opp, hr in all_players:
+        logs = logs_map.get(player["id"], [])
+
+        # Career H/A vs today's opponent
+        c_logs = [g for g in logs if g["homeRoad"] == hr and g["opponent"] == opp]
+        # Last 10 H/A any opponent
+        r_logs = [g for g in logs if g["homeRoad"] == hr][:10]
+
+        if len(r_logs) < 1:
+            continue
+
+        h3 = sum(1 for g in r_logs if g["points"] > PTS_LINE)
+        r3 = round(h3 / len(r_logs) * 100, 1)
+        avg3 = round(sum(g["points"] for g in r_logs) / len(r_logs), 2)
+
+        h2 = sum(1 for g in c_logs if g["points"] > PTS_LINE) if c_logs else 0
+        r2 = round(h2 / len(c_logs) * 100, 1) if c_logs else 0
+        avg2 = round(sum(g["points"] for g in c_logs) / len(c_logs), 2) if c_logs else 0
+
+        s2_ok = (len(c_logs) < MIN_GAMES) or (r2 >= HIT_THRESH_PTS)
+        s3_ok = r3 >= HIT_THRESH_PTS
+        if not s2_ok or not s3_ok:
+            continue
+
+        score = round((r2 + r3) / 2 if c_logs else r3, 1)
+
+        picks.append({
+            "name":     player["name"],
+            "pid":      player["id"],
+            "team":     team,
+            "opponent": opp,
+            "homeRoad": hr,
+            "oppSA":    sa_map.get(opp, 0.0),
+            "ptsOppAvg":  avg2,
+            "ptsHa10avg": avg3,
+            "pts2Hits":  h2, "pts2Total": len(c_logs), "pts2Rate": r2,
+            "pts3Hits":  h3, "pts3Total": len(r_logs), "pts3Rate": r3,
+            "ptsScore":  score,
+        })
+
+    picks.sort(key=lambda x: (x["ptsScore"], x["oppSA"]), reverse=True)
+    print(f"[PTS] {len(picks)} players qualifying at {HIT_THRESH_PTS}%+ hit rate")
+    return picks
+
+
+
+def _hit_rate(totals: list, line: float):
+    """Legacy helper for points picks."""
+    total = len(totals)
+    if total == 0:
+        return 0, 0, 0.0
+    hits = sum(1 for s in totals if s >= line)
+    return hits, total, round(hits / total * 100, 1)
+
+
+def _est_line(spg: float) -> float:
+    """Estimate sportsbook line from season shots/game average."""
+    if spg >= 3.0:
+        return 3.5
+    elif spg >= 2.0:
+        return 2.5
+    return 1.5
+
+def _hit_rate(totals: List[int], line: float) -> Tuple[int, int, float]:
+    total = len(totals)
+    if total == 0:
+        return 0, 0, 0.0
+    hits = sum(1 for s in totals if s > line)
+    return hits, total, round(hits / total * 100, 1)
+
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Main algorithm
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  NHL Stats API — Game Log helpers (replaces StatMuse, no login needed)
+# ─────────────────────────────────────────────────────────────────────────────
+
+GAME_LOG_SEASONS = ["20252026", "20242025", "20232024", "20222023", "20212022"]
+
+async def _nhl_player_gamelogs(pid: int, sem: asyncio.Semaphore) -> list:
+    """Fetch player game logs using NHL web API across multiple seasons."""
+    all_logs = []
+    async with sem:
+        async with httpx.AsyncClient(timeout=20) as c:
+            for season in GAME_LOG_SEASONS:
+                try:
+                    r = await c.get(f"{NHL_API}/player/{pid}/game-log/{season}/2")
+                    if r.status_code == 200:
+                        logs = r.json().get("gameLog", [])
+                        # Normalize opponentAbbrev field name
+                        for g in logs:
+                            if "opponentAbbrev" in g and "opponentTeamAbbrev" not in g:
+                                g["opponentTeamAbbrev"] = g["opponentAbbrev"]
+                        all_logs.extend(logs)
+                except Exception as e:
+                    print(f"[NHL] Game log error pid={pid} season={season}: {e}")
+    return all_logs
+
+def _calc_hit_rate(logs: list, line: float, home_road: str,
+                   opponent: str = None, last_n: int = None) -> tuple:
+    """Calculate shot hit rate from NHL API game logs."""
+    filtered = [g for g in logs
+                if g.get("homeRoadFlag","")[:1].upper() == home_road[:1].upper()]
+    if opponent:
+        filtered = [g for g in filtered
+                    if g.get("opponentTeamAbbrev","").upper() == opponent.upper()]
+    if last_n:
+        filtered = sorted(filtered, key=lambda x: x.get("gameDate",""), reverse=True)[:last_n]
+    total = len(filtered)
+    if total == 0:
+        return 0, 0, 0.0
+    hits = sum(1 for g in filtered if (g.get("shots") or 0) >= line)
+    return hits, total, round(hits / total * 100, 1)
+
+
+
+async def run_picks(target_date: str = None) -> Dict:
+    global _progress
+    sem_nhl = asyncio.Semaphore(SEM_NHL)
+
+    target_date = target_date or date.today().isoformat()
+    season = get_season_for_date(date.fromisoformat(target_date))
+
+    _progress = {"stage": "Fetching games & sportsbook lines...", "done": 0, "total": 0, "pct": 10}
+
+    # ── Step 1 — fetch games, SA map, Odds API lines in parallel ──────────────────────
+    games, sa_map, lines_map = await asyncio.gather(
+        get_today_games(target_date),
+        get_team_sa_map(season),
+        get_odds_nhl_lines(target_date),
+    )
+    _progress = {"stage": "Building player pool from sportsbook lines...", "done": 0, "total": 0, "pct": 25}
 
     if not games:
-        return {'date': today_str, 'picks': [], 'all_picks': [], 'games': [],
-                'log': [f'No NBA games found for {today_str}.'], 'total': 0}
+        return {"error": f"No NHL games found for {target_date}.", "picks": [], "games": []}
 
-    log.append("Games: " + " | ".join(f"{g['away']} @ {g['home']}" for g in games))
-    log.append(f"{len(odds_props)} sportsbook prop lines loaded")
+    # SA rankings for display
+    playing = list({g["homeTeam"] for g in games} | {g["awayTeam"] for g in games})
+    sa_ranks = sorted(
+        [(t, sa_map.get(t, 0.0)) for t in playing],
+        key=lambda x: x[1], reverse=True
+    )
 
-    # Build Odds API lookup: (normalised_name, stat) -> {line, odds}
-    odds_lookup: Dict[tuple, Dict] = {}
-    for prop in odds_props:
-        key = (_nn(prop['player']), prop['stat'])
-        odds_lookup[key] = {'line': prop['line'], 'odds': str(prop.get('odds', ''))}
+    # Build player pool from NHL skater season averages
+    pool = await get_shot_qualified_players(games, sa_map, sem_nhl, season, lines_map)
+    _progress = {"stage": f"Fetching game logs for {len(pool)} players...", "done": 0, "total": len(pool), "pct": 35}
 
-    # Rosters
-    team_ids = list({g['home_id'] for g in games} | {g['away_id'] for g in games})
-    roster_results = await asyncio.gather(
-        *[get_team_roster_espn(tid) for tid in team_ids], return_exceptions=True)
-    rosters: Dict[str, List[Dict]] = {}
-    for tid, res in zip(team_ids, roster_results):
-        rosters[tid] = res if isinstance(res, list) else []
-    total_players = sum(len(v) for v in rosters.values())
-    log.append(f"{total_players} players loaded")
+    if not pool:
+        return {"error": f"No skaters averaging ≥{MIN_SPG} S/G on today's teams.", "picks": [], "games": games}
 
-    # Fetch game logs (all players, 3 seasons)
-    all_player_ids = list({p['id'] for players in rosters.values() for p in players})
-    log.append(f"Fetching game logs for {len(all_player_ids)} players x {len(ESPN_SEASONS)} seasons...")
-    sem = asyncio.Semaphore(10)
+    # ── Steps 2 & 3 — NHL Stats API game log hit-rate analysis ─────────────────
+    sem_logs = asyncio.Semaphore(8)
 
-    async def fetch_player_logs(pid: str):
-        season_results = await asyncio.gather(
-            *[get_player_gamelogs_espn(pid, s, sem) for s in ESPN_SEASONS],
-            return_exceptions=True)
-        all_logs = [g for res in season_results if isinstance(res, list) for g in res]
-        return pid, all_logs
+    async def analyze(p: Dict) -> Optional[Dict]:
+        logs = await _nhl_player_gamelogs(p["pid"], sem_logs)
+        if not logs:
+            return None
 
-    log_results = await asyncio.gather(*[fetch_player_logs(pid) for pid in all_player_ids])
-    logs_by_player = dict(log_results)
-    total_entries = sum(len(v) for v in logs_by_player.values())
-    log.append(f"{total_entries:,} historical game entries loaded")
+        line, home_road, opp = p["line"], p["homeRoad"], p["opponent"]
+        hr_line = 1.5  # always check hit rate vs 1.5 shots (sportsbook line is for display only)
 
-    # Pattern analysis — original algorithm (find best threshold >=75%)
-    log.append("Scanning matchup patterns (75%+ threshold)...")
-    picks = []
+        h2, t2, r2 = _calc_hit_rate(logs, hr_line, home_road, opponent=opp)
+        h3, t3, r3 = _calc_hit_rate(logs, hr_line, home_road, last_n=10)
 
-    for game in games:
-        h, a = game['home'], game['away']
-        h_name, a_name = game['home_name'], game['away_name']
+        s2_ok = (t2 < MIN_GAMES) or (r2 >= HIT_THRESH)
+        s3_ok = (t3 < MIN_GAMES) or (r3 >= HIT_THRESH)
+        if not s2_ok or not s3_ok:
+            return None
 
-        for player in rosters.get(game['home_id'], []):
-            pid, pname = player['id'], player['name']
-            opp_logs = [l for l in logs_by_player.get(pid, [])
-                        if l['location'] == 'Home' and l['opp'] == a]
-            for sk, sc in STAT_CONFIG.items():
-                vals = [float(l[sk]) for l in opp_logs]
-                result = find_best_threshold(vals, sc['thresholds'])
-                if result:
-                    last10    = opp_logs[:10]
-                    l10h      = sum(1 for l in last10 if float(l[sk]) >= result['threshold'])
-                    # Odds API line for this player+stat
-                    sb        = odds_lookup.get((_nn(pname), sk), {})
-                    fd_line   = sb.get('line')
-                    fd_odds   = sb.get('odds', '')
-                    # Last 10 vs team over sportsbook line
-                    l10_sb_hits = sum(1 for l in last10 if float(l[sk]) > fd_line) if fd_line and last10 else None
-                    picks.append({**result, 'player': pname, 'player_id': pid, 'team': h,
-                                  'team_name': h_name, 'stat': sk,
-                                  'stat_label': sc['label'], 'emoji': sc['emoji'],
-                                  'location': 'Home', 'opp': a, 'opp_name': a_name,
-                                  'matchup': f"{a_name} @ {h_name}",
-                                  'l10_hits': l10h, 'l10_games': len(last10),
-                                  'fd_line': fd_line, 'fd_odds': fd_odds,
-                                  'l10_sb_hits': l10_sb_hits})
+        opp_g  = [g for g in logs if g.get("homeRoadFlag","")[:1].upper() == home_road[:1].upper()
+                  and g.get("opponentTeamAbbrev","").upper() == opp.upper()]
+        ha10_g = sorted([g for g in logs if g.get("homeRoadFlag","")[:1].upper() == home_road[:1].upper()],
+                        key=lambda x: x.get("gameDate",""), reverse=True)[:10]
+        opp_avg = round(sum(g.get("shots",0) for g in opp_g) / len(opp_g), 2) if opp_g else p["spg"]
+        ha10avg = round(sum(g.get("shots",0) for g in ha10_g) / len(ha10_g), 2) if ha10_g else p["spg"]
+        score   = round((r2 + r3) / 2 if t2 >= MIN_GAMES else r3, 1)
 
-        for player in rosters.get(game['away_id'], []):
-            pid, pname = player['id'], player['name']
-            opp_logs = [l for l in logs_by_player.get(pid, [])
-                        if l['location'] == 'Away' and l['opp'] == h]
-            for sk, sc in STAT_CONFIG.items():
-                vals = [float(l[sk]) for l in opp_logs]
-                result = find_best_threshold(vals, sc['thresholds'])
-                if result:
-                    last10    = opp_logs[:10]
-                    l10h      = sum(1 for l in last10 if float(l[sk]) >= result['threshold'])
-                    sb        = odds_lookup.get((_nn(pname), sk), {})
-                    fd_line   = sb.get('line')
-                    fd_odds   = sb.get('odds', '')
-                    l10_sb_hits = sum(1 for l in last10 if float(l[sk]) > fd_line) if fd_line and last10 else None
-                    picks.append({**result, 'player': pname, 'player_id': pid, 'team': a,
-                                  'team_name': a_name, 'stat': sk,
-                                  'stat_label': sc['label'], 'emoji': sc['emoji'],
-                                  'location': 'Away', 'opp': h, 'opp_name': h_name,
-                                  'matchup': f"{a_name} @ {h_name}",
-                                  'l10_hits': l10h, 'l10_games': len(last10),
-                                  'fd_line': fd_line, 'fd_odds': fd_odds,
-                                  'l10_sb_hits': l10_sb_hits})
+        return {**p,
+            "step2Hits": h2, "step2Total": t2, "step2Rate": r2,
+            "step3Hits": h3, "step3Total": t3, "step3Rate": r3,
+            "oppAvg": opp_avg, "ha10avg": ha10avg, "score": score}
 
-    picks.sort(key=lambda x: (x['hit_rate'], x['threshold']), reverse=True)
-    top_picks = picks[:TOP_N]
-    log.append(f"{len(picks)} qualifying patterns -> top {TOP_N} shown")
-    if odds_props:
-        with_lines = sum(1 for p in picks if p.get('fd_line'))
-        log.append(f"{with_lines} picks have sportsbook lines attached")
+    completed = [0]
+    async def analyze_tracked(p):
+        result = await analyze(p)
+        completed[0] += 1
+        _progress["done"]  = completed[0]
+        _progress["pct"]   = 35 + int((completed[0] / max(len(pool),1)) * 60)
+        _progress["stage"] = f"Analyzing players... {completed[0]}/{len(pool)}"
+        return result
 
-    odds_loaded = bool(odds_props)
+    results_raw = await asyncio.gather(*[analyze_tracked(p) for p in pool])
+    picks = [r for r in results_raw if r is not None]
 
-    # ── Props vs Opponent History ─────────────────────────────────────
-    # For every player with a sportsbook line today, calculate their
-    # career H/A avg vs today's opponent and compare to the line.
-    props_picks   = []
-    props_nopick  = []
+    _progress = {"stage": "Analyzing points...", "done": len(pool), "total": len(pool), "pct": 96}
+    # ── Step 4 — rank shots & run independent points picks ───────────────────
+    picks.sort(key=lambda x: (x["score"], x["oppSA"]), reverse=True)
 
-    for game in games:
-        h, a = game['home'], game['away']
-        h_name, a_name = game['home_name'], game['away_name']
+    pts_all = await get_pts_picks(games, sa_map, sem_nhl, season)
+    _progress = {"stage": "Done!", "done": len(pool), "total": len(pool), "pct": 100}
 
-        for loc, my_team_id, my_name, opp_id, opp_name, side in [
-            ('Home', game['home_id'], h_name, a, a_name, 'HOME'),
-            ('Away', game['away_id'], a_name, h, h_name, 'AWAY'),
-        ]:
-            for player in rosters.get(my_team_id, []):
-                pname = player['name']
-                pid   = player['id']
-                for sk, sc in STAT_CONFIG.items():
-                    ob = odds_lookup.get((_nn(pname), sk), {})
-                    if not ob or ob.get('line') is None:
-                        continue
-                    line = float(ob['line'])
-                    # All career H/A logs vs today's opponent
-                    opp_logs = [l for l in logs_by_player.get(pid, [])
-                                if l['location'] == loc and l['opp'] == opp_id]
-                    if not opp_logs:
-                        props_nopick.append({
-                            'player': pname, 'stat': sk, 'stat_label': sc['label'],
-                            'emoji': sc['emoji'], 'side': side, 'opp_name': opp_name,
-                            'line': line, 'avg': None, 'games': 0,
-                            'history': '—', 'gap': None, 'pick': None,
-                            'pick_note': f'No {loc} history vs {opp_name}',
-                            'fd_odds': ob.get('odds', ''),
-                        })
-                        continue
-                    vals    = [float(l[sk]) for l in opp_logs]
-                    avg     = round(sum(vals) / len(vals), 1)
-                    history = ', '.join(str(int(v)) for v in vals[:8])
-                    gap     = round(avg - line, 1)
-                    pick    = 'OVER' if avg > line else ('UNDER' if avg < line else None)
-                    entry   = {
-                        'player': pname, 'stat': sk, 'stat_label': sc['label'],
-                        'emoji': sc['emoji'], 'side': side, 'opp_name': opp_name,
-                        'line': line, 'avg': avg, 'games': len(vals),
-                        'history': history, 'gap': gap, 'pick': pick,
-                        'pick_note': f'avg {avg} vs line {line}',
-                        'fd_odds': ob.get('odds', ''),
-                        'matchup': f'{a_name} @ {h_name}',
-                    }
-                    if pick:
-                        props_picks.append(entry)
-                    else:
-                        props_nopick.append(entry)
+    return {
+        "picks":         picks[:TOP_N],
+        "rest":          picks[TOP_N:],
+        "ptsPicks":      pts_all[:TOP_N],
+        "ptsRest":       pts_all[TOP_N:],
+        "games":         games,
+        "sa_ranks":      sa_ranks,
+        "poolSize":      len(pool),
+        "qualified":     len(picks),
+        "ptsQualified":  len(pts_all),
+        "targetDate":    target_date,
+        "runTime":       datetime.utcnow().isoformat() + "Z",
+    }
 
-    props_picks.sort(key=lambda x: abs(x.get('gap') or 0), reverse=True)
-    log.append(f"⚡ Props vs history: {len(props_picks)} picks found")
+# ─────────────────────────────────────────────────────────────────────────────
+#  HTML
+# ─────────────────────────────────────────────────────────────────────────────
 
-    result = {'date': today_str, 'picks': top_picks, 'all_picks': picks,
-              'games': games, 'log': log, 'total': len(picks),
-              'odds_loaded': odds_loaded,
-              'props_picks': props_picks, 'props_nopick': props_nopick}
-    _cache.update(result)
-    return result
-
-# ─── HTML ─────────────────────────────────────────────────────────────────────
-LOGIN_HTML = """<!DOCTYPE html>
+HTML = """<!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>🏀 Money Buckets</title>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+<title>NHL Money Shots</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
-body{
-  background:#0d0d0d;
-  background-image:radial-gradient(ellipse at 50% 0%,rgba(253,184,39,.1) 0%,transparent 55%);
-  color:#f0e6c8;font-family:'Segoe UI',system-ui,sans-serif;
-  min-height:100vh;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:0;
-}
-/* ── Spinning basketball ── */
-.spin-ball{
-  width:80px;height:80px;border-radius:50%;
-  background:radial-gradient(circle at 38% 35%,#FDB827 0%,#FDB827 55%,#8B6914 100%);
-  border:2px solid #8B6914;
-  position:relative;margin-bottom:24px;
-  animation:spinBall 6s linear infinite;
-  box-shadow:0 0 40px rgba(253,184,39,.5),0 0 80px rgba(253,184,39,.15);
-}
-.spin-ball::before{
-  content:'';position:absolute;inset:-1px;border-radius:50%;
-  border:2.5px solid rgba(124,45,18,.9);
-  border-left-color:transparent;border-right-color:transparent;
-  transform:rotate(30deg);
-}
-.spin-ball::after{
-  content:'';position:absolute;inset:16px;border-radius:50%;
-  border:2px solid rgba(124,45,18,.8);
-  border-top-color:transparent;border-bottom-color:transparent;
-}
-@keyframes spinBall{from{transform:rotate(0)}to{transform:rotate(360deg)}}
-/* ── Card ── */
-.card{
-  background:linear-gradient(145deg,rgba(15,23,42,.97),rgba(8,12,24,.99));
-  border:1px solid rgba(42,42,42,.8);border-radius:24px;
-  padding:40px 40px 36px;width:390px;text-align:center;
-  box-shadow:0 30px 80px rgba(0,0,0,.7),0 0 0 1px rgba(253,184,39,.04),inset 0 1px 0 rgba(255,255,255,.03);
-  position:relative;overflow:hidden;
-}
-.card::before{
-  content:'';position:absolute;top:0;left:0;right:0;height:2px;
-  background:linear-gradient(90deg,transparent,#FDB827,#FDB827,#FDB827,transparent);
-}
-.logo-line{display:flex;align-items:center;justify-content:center;gap:8px;margin-bottom:4px}
-h1{
-  font-size:1.65rem;font-weight:900;letter-spacing:-.5px;
-  background:linear-gradient(135deg,#FDB827 0%,#FDB827 100%);
-  -webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;
-}
-.sub{color:#374151;font-size:.75rem;margin-bottom:30px;letter-spacing:1.5px;text-transform:uppercase}
-.field{position:relative;margin-bottom:13px}
-.fi{position:absolute;left:14px;top:50%;transform:translateY(-50%);opacity:.35;font-size:.9rem;pointer-events:none}
-input{
-  width:100%;background:rgba(15,23,42,.8);
-  border:1px solid rgba(42,42,42,.8);color:#d1d5db;
-  padding:13px 16px 13px 42px;border-radius:12px;
-  font-size:.95rem;outline:none;transition:border-color .2s,box-shadow .2s;
-}
-input:focus{border-color:#FDB827;box-shadow:0 0 0 3px rgba(253,184,39,.12)}
-input::placeholder{color:#374151}
-.btn-in{
-  width:100%;margin-top:8px;
-  background:linear-gradient(135deg,#FDB827,#FDB827);color:#0d0d0d;
-  border:none;padding:14px;border-radius:12px;
-  font-size:1rem;font-weight:900;letter-spacing:.5px;cursor:pointer;
-  box-shadow:0 4px 20px rgba(253,184,39,.35);transition:transform .15s,box-shadow .15s;
-}
-.btn-in:hover{transform:translateY(-2px);box-shadow:0 8px 30px rgba(253,184,39,.45)}
-.btn-in:active{transform:translateY(0)}
-.err{color:#f87171;font-size:.83rem;margin-top:14px;background:rgba(127,29,29,.3);padding:10px 14px;border-radius:10px;border:1px solid rgba(239,68,68,.2)}
-.tagline{color:#1a1a1a;font-size:.68rem;margin-top:22px;letter-spacing:2px;text-transform:uppercase}
-</style>
-</head>
-<body>
-<div class="spin-ball"></div>
-<div class="card">
-  <div class="logo-line">
-    <h1>Money Buckets</h1>
-  </div>
-  <p class="sub">Pattern-Based Matchup Intelligence</p>
-  <form method="post" action="/login">
-    <div class="field"><span class="fi">👤</span><input name="username" type="text" placeholder="Username" required autocomplete="username"></div>
-    <div class="field"><span class="fi">🔒</span><input name="password" type="password" placeholder="Password" required autocomplete="current-password"></div>
-    <button class="btn-in" type="submit">Access Picks →</button>
-    {error}
-  </form>
-  <p class="tagline">No Lines · Just Patterns · 75% Threshold</p>
+body{background:#0d0d0d;color:#f0e6c8;font-family:Arial,Helvetica,sans-serif;min-height:100vh}
 
-  <div style="overflow-x:auto">
-    <table style="width:100%;border-collapse:collapse;font-size:.82rem">
-      <thead><tr style="border-bottom:1px solid rgba(253,184,39,.25)">
-        <th style="padding:7px 10px;text-align:left;color:#FDB827;font-size:.72rem">#</th>
-        <th style="padding:7px 10px;text-align:left;color:#FDB827;font-size:.72rem">Player</th>
-        <th style="padding:7px 10px;text-align:left;color:#FDB827;font-size:.72rem">Stat</th>
-        <th style="padding:7px 10px;text-align:left;color:#FDB827;font-size:.72rem">H/A</th>
-        <th style="padding:7px 10px;text-align:left;color:#FDB827;font-size:.72rem">Opponent</th>
-        <th style="padding:7px 10px;text-align:left;color:#FDB827;font-size:.72rem">Line</th>
-        <th style="padding:7px 10px;text-align:left;color:#FDB827;font-size:.72rem">Avg vs Opp</th>
-        <th style="padding:7px 10px;text-align:left;color:#FDB827;font-size:.72rem">Gap</th>
-        <th style="padding:7px 10px;text-align:left;color:#FDB827;font-size:.72rem">Games</th>
-        <th style="padding:7px 10px;text-align:left;color:#FDB827;font-size:.72rem">History</th>
-        <th style="padding:7px 10px;text-align:left;color:#FDB827;font-size:.72rem">Pick</th>
-      </tr></thead>
-      <tbody id="props-body"></tbody>
-    </table>
-  </div>
-  <p style="font-size:.72rem;color:#6b7280;margin-top:10px">
-    <strong style="color:#FDB827">Avg vs Opp</strong> = career H/A avg vs today's opponent &nbsp;|&nbsp;
-    <strong style="color:#FDB827">History</strong> = individual game totals vs that team &nbsp;|&nbsp;
-    <strong style="color:#FDB827">Pick</strong> = OVER if avg &gt; line, UNDER if avg &lt; line
-  </p>
-</div>
-</div>
-</body>
-</html>"""
+/* HEADER */
+.hdr{background:#000;border-bottom:4px solid #FDB827;padding:30px 20px;text-align:center}
+.hdr h1{font-size:4rem;font-weight:900;color:#fff;letter-spacing:3px;text-transform:uppercase;line-height:1}
+.hdr h1 span{color:#FDB827}
+.hdr p{color:#666;font-size:.8rem;letter-spacing:3px;text-transform:uppercase;margin-top:8px}
 
-MAIN_HTML = """<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>🏀 Money Buckets</title>
-<style>
-/* ─── Reset ─── */
-*{box-sizing:border-box;margin:0;padding:0}
-:root{--orange:#FDB827;--gold:#FDB827;--green:#22c55e;--navy:#0d0d0d;--dark:#0d0d0d;--card:#1a1a1a;--border:#2a2a2a;--text:#e0e6f0;--muted:#4b5563}
-body{
-  background:var(--dark);
-  background-image:
-    radial-gradient(ellipse 100% 35% at 50% 0%,rgba(253,184,39,.07) 0%,transparent 70%),
-    linear-gradient(rgba(42,42,42,.1) 1px,transparent 1px),
-    linear-gradient(90deg,rgba(42,42,42,.1) 1px,transparent 1px);
-  background-size:100% 100%,52px 52px,52px 52px;
-  color:var(--text);font-family:'Segoe UI',system-ui,sans-serif;padding:20px;min-height:100vh;
-}
-/* ─── Basketball SVG animation ─── */
-.ball-svg{width:54px;height:54px;animation:spinBall 8s linear infinite;filter:drop-shadow(0 0 10px rgba(253,184,39,.5));flex-shrink:0}
-@keyframes spinBall{from{transform:rotate(0)}to{transform:rotate(360deg)}}
-/* Loading bounce */
-.loading-ball{width:58px;height:58px;border-radius:50%;margin:0 auto 6px;animation:ballBounce .65s ease-in-out infinite;background:radial-gradient(circle at 38% 35%,#FDB827 0%,#FDB827 55%,#8B6914 100%);border:2px solid #8B6914;box-shadow:0 0 25px rgba(253,184,39,.45);position:relative}
-.loading-ball::before{content:'';position:absolute;inset:-1px;border-radius:50%;border:2.5px solid rgba(124,45,18,.85);border-left-color:transparent;border-right-color:transparent;transform:rotate(30deg)}
-.loading-ball::after{content:'';position:absolute;inset:14px;border-radius:50%;border:2px solid rgba(124,45,18,.75);border-top-color:transparent;border-bottom-color:transparent}
-@keyframes ballBounce{0%,100%{transform:translateY(0)}50%{transform:translateY(-22px)}}
-.ball-shadow{width:38px;height:7px;background:rgba(0,0,0,.5);border-radius:50%;margin:0 auto 18px;animation:shadowPulse .65s ease-in-out infinite}
-@keyframes shadowPulse{0%,100%{transform:scaleX(1);opacity:.5}50%{transform:scaleX(.55);opacity:.2}}
-/* ─── Header ─── */
-header{
-  display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:14px;
-  margin-bottom:22px;padding:18px 26px;
-  background:linear-gradient(135deg,rgba(13,20,38,.97),rgba(8,12,24,.99));
-  border-radius:22px;border:1px solid rgba(42,42,42,.8);
-  box-shadow:0 10px 50px rgba(0,0,0,.6),inset 0 1px 0 rgba(255,255,255,.03);
-  position:relative;overflow:hidden;
-}
-header::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;background:linear-gradient(90deg,transparent,#FDB827 30%,#FDB827 70%,transparent)}
-.brand{display:flex;align-items:center;gap:18px}
-.brand-text h1{
-  font-size:3.2rem;font-weight:900;letter-spacing:-1.5px;line-height:1;
-  background:linear-gradient(135deg,#FDB827,#FDB827);
-  -webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;
-}
-.brand-text .sub{font-size:.7rem;color:#2a2a2a;letter-spacing:1.5px;text-transform:uppercase;margin-top:3px}
-.actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
-.date-badge{background:rgba(42,42,42,.5);color:#FDB827;padding:7px 16px;border-radius:20px;font-size:.81rem;font-weight:600;border:1px solid rgba(253,184,39,.2)}
-.btn{padding:10px 22px;border-radius:12px;font-size:.875rem;font-weight:800;cursor:pointer;border:none;transition:all .2s;text-decoration:none;display:inline-block;letter-spacing:.3px}
-.btn-run{background:linear-gradient(135deg,#FDB827,#FDB827);color:#0d0d0d;box-shadow:0 4px 18px rgba(253,184,39,.35)}
-.btn-run:hover{transform:translateY(-2px);box-shadow:0 8px 28px rgba(253,184,39,.5)}
-@keyframes pulse-gold{0%,100%{opacity:1}50%{opacity:.4}}
-/* ─── Games bar ─── */
-.games-bar{display:flex;gap:8px;overflow-x:auto;padding-bottom:4px;margin-bottom:20px;scrollbar-width:thin;scrollbar-color:var(--border) transparent}
-.game-chip{
-  background:linear-gradient(135deg,rgba(13,20,38,.9),rgba(8,12,24,.95));
-  border:1px solid rgba(42,42,42,.7);border-radius:12px;
-  padding:9px 18px;white-space:nowrap;font-size:.82rem;flex-shrink:0;
-  transition:border-color .2s,box-shadow .2s;cursor:default;
-}
-.game-chip:hover{border-color:rgba(253,184,39,.5);box-shadow:0 0 14px rgba(253,184,39,.1)}
-.game-chip b{color:#f0e6c8;font-weight:700}
-.game-chip .sep{color:#2a2a2a;margin:0 5px}
-/* ─── Filter bar ─── */
-.filter-bar{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:20px}
-.filter-btn{padding:7px 18px;border-radius:20px;border:1px solid rgba(42,42,42,.6);background:rgba(13,20,38,.7);color:#374151;font-size:.81rem;cursor:pointer;transition:all .2s;font-weight:600}
-.filter-btn.active,.filter-btn:hover{background:rgba(42,42,42,.9);color:#f0e6c8;border-color:rgba(253,184,39,.4);box-shadow:0 0 12px rgba(253,184,39,.1)}
-/* ─── Section headers ─── */
-.section-hdr{display:flex;align-items:center;justify-content:space-between;margin-bottom:18px}
-.section-title{font-size:1rem;font-weight:900;letter-spacing:-.3px;display:flex;align-items:center;gap:8px;background:linear-gradient(135deg,#FDB827,#FDB827);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
-.count-pill{background:rgba(42,42,42,.5);color:#FDB827;padding:4px 14px;border-radius:20px;font-size:.78rem;font-weight:700;border:1px solid rgba(253,184,39,.2)}
-/* ─── Pick cards ─── */
-.picks-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:16px;margin-bottom:10px}
-.pick-card{
-  background:linear-gradient(145deg,rgba(13,20,38,.96),rgba(8,12,24,.99));
-  border:1px solid rgba(42,42,42,.7);border-radius:20px;padding:22px;
-  position:relative;overflow:hidden;
-  transition:border-color .25s,transform .22s,box-shadow .25s;
-}
-.pick-card:hover{border-color:rgba(253,184,39,.55);transform:translateY(-3px);box-shadow:0 14px 45px rgba(0,0,0,.55),0 0 22px rgba(253,184,39,.1)}
-.pick-card::before{content:'';position:absolute;top:0;left:0;right:0;height:1px;background:linear-gradient(90deg,transparent,rgba(253,184,39,.25),transparent);opacity:0;transition:opacity .25s}
-.pick-card:hover::before{opacity:1}
-/* Rank medals */
-.pick-rank{position:absolute;top:14px;right:15px;width:32px;height:32px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:.82rem;font-weight:900}
-.rank-1{background:linear-gradient(135deg,#92400e,#FDB827);color:#0d0d0d;box-shadow:0 0 14px rgba(253,184,39,.5)}
-.rank-2{background:linear-gradient(135deg,#374151,#9ca3af);color:#0d0d0d;box-shadow:0 0 8px rgba(156,163,175,.2)}
-.rank-3{background:linear-gradient(135deg,#8B6914,#c2410c);color:#fff0e0;box-shadow:0 0 10px rgba(194,65,12,.3)}
-.rank-other{background:rgba(15,23,42,.8);color:#2a2a2a;font-size:.75rem}
-.pick-emoji{font-size:1.6rem;margin-bottom:10px;display:block}
-.pick-player{font-size:1.08rem;font-weight:800;color:#f0f6ff;margin-bottom:3px;letter-spacing:-.3px;padding-right:38px}
-.pick-team{font-size:.75rem;color:#374151;margin-bottom:12px;display:flex;align-items:center;gap:6px}
-.loc-badge{background:rgba(15,23,42,.8);padding:2px 9px;border-radius:10px;font-size:.7rem;color:#4b5563;border:1px solid rgba(42,42,42,.5)}
-.stat-strip{display:flex;gap:6px;margin-bottom:10px;flex-wrap:wrap}
-.stat-tag{padding:3px 10px;border-radius:10px;font-size:.7rem;font-weight:700;letter-spacing:.3px}
-.tag-pts{background:rgba(109,40,217,.15);color:#a78bfa;border:1px solid rgba(109,40,217,.25)}
-.tag-reb{background:rgba(37,99,235,.15);color:#FDB827;border:1px solid rgba(37,99,235,.25)}
-.tag-ast{background:rgba(5,150,105,.15);color:#34d399;border:1px solid rgba(5,150,105,.25)}
-.tag-fg3m{background:rgba(220,38,38,.15);color:#f87171;border:1px solid rgba(220,38,38,.25)}
-.pick-pattern{font-size:.9rem;color:#7dd3fc;font-weight:700;margin-bottom:4px;line-height:1.4}
-.l10vthr-desc{font-size:.88rem;color:#FDB827;font-weight:700;margin-bottom:5px;line-height:1.4}
-.fd-line-badge{display:inline-block;background:#1a2a0a;border:1px solid #22c55e;color:#22c55e;
-  border-radius:6px;padding:3px 10px;font-size:.78rem;font-weight:700;margin-bottom:6px}
-.fd-inline{color:#22c55e;font-weight:700}
-.l10vthr-inline{color:#FDB827;font-weight:700}
-.pick-matchup{font-size:.72rem;color:#2a2a2a;margin-bottom:16px}
-.bar-wrap{background:rgba(15,23,42,.7);border-radius:6px;height:8px;overflow:hidden;margin-bottom:10px;border:1px solid rgba(42,42,42,.3)}
-.bar-fill{height:100%;border-radius:5px}
-.bar-green{background:linear-gradient(90deg,#15803d,#22c55e)}
-.bar-yellow{background:linear-gradient(90deg,#FDB827,#FDB827)}
-.bar-orange{background:linear-gradient(90deg,#c2410c,#FDB827)}
-.stats-row{display:flex;justify-content:space-between;align-items:center}
-.games-chip{background:rgba(15,23,42,.7);padding:4px 12px;border-radius:20px;font-size:.75rem;color:#2a2a2a;border:1px solid rgba(42,42,42,.3)}
-.pct{font-size:1.2rem;font-weight:900;letter-spacing:-.5px}
-.pct-green{color:#22c55e;text-shadow:0 0 14px rgba(34,197,94,.45)}
-.pct-yellow{color:#FDB827;text-shadow:0 0 14px rgba(253,184,39,.45)}
-.pct-orange{color:#FDB827;text-shadow:0 0 12px rgba(253,184,39,.35)}
-/* ─── Total Banner ─── */
-.total-banner{
-  display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;
-  background:linear-gradient(135deg,rgba(5,46,22,.75),rgba(3,28,14,.9));
-  border:1px solid rgba(20,83,45,.5);border-radius:18px;padding:18px 24px;margin:32px 0 20px;
-  box-shadow:0 0 40px rgba(34,197,94,.06),inset 0 1px 0 rgba(34,197,94,.05);
-}
-.tb-left{display:flex;align-items:center;gap:12px}
-.tb-ico{font-size:1.5rem}
-.tb-title{font-size:.95rem;font-weight:800;color:#4ade80;letter-spacing:-.2px}
-.tb-sub{font-size:.72rem;color:#14532d;margin-top:2px;letter-spacing:.8px;text-transform:uppercase}
-.tb-count{font-size:2.2rem;font-weight:900;color:#22c55e;text-shadow:0 0 20px rgba(34,197,94,.5);letter-spacing:-1.5px}
-/* ─── All Patterns ─── */
-.all-section-hdr{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;flex-wrap:wrap;gap:10px}
-.all-section-title{font-size:.95rem;font-weight:800;color:#FDB827;display:flex;align-items:center;gap:8px}
-.game-group{margin-bottom:14px}
-.game-group-hdr{
-  display:flex;align-items:center;justify-content:space-between;
-  background:linear-gradient(135deg,rgba(13,20,38,.9),rgba(8,12,24,.95));
-  border:1px solid rgba(42,42,42,.65);border-radius:13px;
-  padding:12px 18px;margin-bottom:6px;cursor:pointer;user-select:none;
-  transition:border-color .2s,box-shadow .2s;
-}
-.game-group-hdr:hover{border-color:rgba(253,184,39,.45);box-shadow:0 0 15px rgba(253,184,39,.08)}
-.gg-label{font-size:.88rem;font-weight:800;color:#f0e6c8;display:flex;align-items:center;gap:8px}
-.gg-meta{display:flex;align-items:center;gap:8px}
-.gg-chevron{color:#2a2a2a;font-size:.85rem;transition:transform .2s}
-.compact-picks{display:flex;flex-direction:column;gap:5px;margin-bottom:4px}
-.compact-row{
-  display:flex;align-items:center;gap:12px;
-  background:rgba(8,12,24,.8);border:1px solid rgba(20,30,50,.8);border-radius:11px;padding:10px 15px;
-  transition:border-color .2s,background .2s;
-}
-.compact-row:hover{border-color:rgba(253,184,39,.35);background:rgba(13,20,38,.9)}
-.cr-emoji{font-size:1.05rem;flex-shrink:0;width:22px;text-align:center}
-.cr-info{flex:1;min-width:0}
-.cr-player{font-size:.86rem;font-weight:700;color:#94a3b8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.cr-pattern{font-size:.76rem;color:#FDB827;font-weight:600;margin-top:2px}
-.cr-right{display:flex;flex-direction:column;align-items:flex-end;gap:3px;flex-shrink:0}
-.cr-bar-wrap{background:rgba(15,23,42,.8);border-radius:4px;height:4px;width:68px;overflow:hidden}
-.cr-bar-fill{height:100%;border-radius:4px}
-.cr-pct{font-size:.9rem;font-weight:900}
-.cr-sample{font-size:.65rem;color:#2a2a2a}
-/* ─── Messages ─── */
-.msg-card{
-  background:linear-gradient(145deg,rgba(13,20,38,.95),rgba(8,12,24,.99));
-  border:1px solid rgba(42,42,42,.65);border-radius:22px;padding:60px 30px;text-align:center;
-  box-shadow:0 20px 70px rgba(0,0,0,.5);
-}
-.msg-card .ico{font-size:3.8rem;margin-bottom:16px;display:block}
-.msg-card h2{color:#f0e6c8;font-size:1.2rem;font-weight:800;margin-bottom:10px}
-.msg-card p{color:#374151;font-size:.88rem;line-height:1.75}
-/* ─── Log ─── */
-.log-box{background:rgba(3,6,14,.8);border:1px solid rgba(20,30,50,.8);border-radius:12px;padding:16px;font-size:.74rem;color:#2a2a2a;font-family:'Courier New',monospace;margin-top:20px;max-height:160px;overflow-y:auto;line-height:1.9;scrollbar-width:thin;scrollbar-color:#1a1a1a transparent}
-footer{text-align:center;margin-top:32px;color:#0a1525;font-size:.68rem;padding:10px;letter-spacing:1.5px;text-transform:uppercase}
+/* LAYOUT */
+.wrap{max-width:1300px;margin:0 auto;padding:30px 20px}
+
+/* CONNECTION BOX */
+.conn-box{background:#111;border:2px solid #FDB827;border-radius:10px;
+  padding:30px;text-align:center;margin-bottom:20px}
+.conn-box h2{font-size:1rem;font-weight:700;color:#FDB827;letter-spacing:3px;
+  text-transform:uppercase;margin-bottom:8px}
+.conn-box p{color:#666;font-size:.85rem;margin-bottom:20px}
+.btn-connect{background:linear-gradient(135deg,#FDB827,#e6a800);color:#000;border:none;border-radius:6px;
+  padding:16px 48px;font-size:1rem;font-weight:900;letter-spacing:2px;
+  text-transform:uppercase;cursor:pointer;transition:background .2s}
+.btn-connect:hover{background:#ffcc44}
+.btn-connect:disabled{background:#444;color:#666;cursor:not-allowed}
+.conn-status{margin-top:16px;padding:12px 20px;border-radius:6px;
+  font-weight:700;font-size:.9rem;letter-spacing:1px;display:none}
+.conn-status.ok{background:#003300;border:1px solid #009900;color:#00cc00}
+.conn-status.fail{background:#330000;border:1px solid #990000;color:#cc0000}
+
+/* RUN BOX */
+.run-box{background:#111;border:2px solid #333;border-radius:10px;
+  padding:30px;text-align:center;margin-bottom:24px;transition:border-color .3s}
+.run-box.unlocked{border-color:#FDB827}
+.run-box h2{font-size:1rem;font-weight:700;color:#888;letter-spacing:3px;
+  text-transform:uppercase;margin-bottom:8px;transition:color .3s}
+.run-box.unlocked h2{color:#FDB827}
+.run-box p{color:#555;font-size:.85rem;margin-bottom:20px}
+.date-row{display:flex;align-items:center;justify-content:center;gap:12px;margin-bottom:20px}
+.date-row label{color:#fff;font-weight:700;font-size:.9rem;letter-spacing:1px}
+.date-row input{background:#1a1a1a;color:#f0e6c8;border:1px solid #333;
+  border-radius:6px;padding:10px 16px;font-size:.95rem;cursor:pointer;outline:none}
+.date-row input:focus{border-color:#FDB827}
+.btn-run{background:linear-gradient(135deg,#FDB827,#e6a800);color:#000;border:none;border-radius:6px;
+  padding:16px 56px;font-size:1rem;font-weight:900;letter-spacing:2px;
+  text-transform:uppercase;cursor:pointer;transition:background .2s}
+.btn-run:hover{background:#e6a800}
+.btn-run:disabled{background:#333;color:#666;cursor:not-allowed}
+
+/* STATUS LINE */
+.status{text-align:center;color:#666;font-size:.85rem;margin-bottom:24px;min-height:20px}
+
+/* STAT CHIPS */
+.chips{display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));
+  gap:12px;margin-bottom:28px}
+.chip{background:#111;border-top:3px solid #FDB827;border-radius:8px;
+  padding:16px 10px;text-align:center}
+.chip .val{font-size:1.9rem;font-weight:900;color:#FDB827}
+.chip .lbl{font-size:.65rem;color:#555;text-transform:uppercase;letter-spacing:1px;margin-top:4px}
+
+/* SECTION HEADER */
+.sec{background:#111;border-left:4px solid #FDB827;padding:10px 16px;
+  font-size:.85rem;font-weight:900;letter-spacing:2px;text-transform:uppercase;
+  color:#fff;margin:24px 0 12px;border-radius:0 6px 6px 0}
+
+/* GAMES */
+.games{display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));
+  gap:10px;margin-bottom:24px}
+.gcard{background:#111;border:1px solid #222;border-radius:8px;
+  padding:14px;text-align:center}
+.gcard:hover{border-color:#FDB827}
+.gcard .mu{font-size:1rem;font-weight:700;color:#fff}
+.gcard .gt{font-size:.75rem;color:#555;margin-top:5px}
+
+/* SA RANKS */
+.sa-list{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:24px}
+.sa-badge{background:#111;border:1px solid #222;border-radius:4px;
+  padding:5px 12px;font-size:.8rem}
+.sa-badge .rk{color:#FDB827;font-weight:700}
+.sa-badge .sv{color:#FDB827;font-weight:700}
+
+/* TABLE */
+.tbl-wrap{overflow-x:auto;border-radius:8px;border:1px solid #222;margin-bottom:8px}
+table{width:100%;border-collapse:collapse;background:#0d0d0d}
+thead tr{border-bottom:2px solid #FDB827}
+th{background:#111;padding:12px 14px;text-align:left;font-size:.72rem;
+  font-weight:900;text-transform:uppercase;letter-spacing:1px;color:#FDB827;white-space:nowrap}
+td{padding:11px 14px;border-bottom:1px solid #1a1a1a;font-size:.88rem;white-space:nowrap}
+tr:nth-child(even) td{background:#0f0f0f}
+tr:hover td{background:#161616}
+tr:last-child td{border-bottom:none}
+
+.rk-num{font-weight:900;color:#FDB827;font-size:1.1rem}
+.rk-rest{color:#555;font-size:.9rem}
+.pname{font-weight:700;color:#fff}
+.tbadge{background:#1a1a1a;color:#999;padding:2px 8px;border-radius:3px;
+  font-size:.74rem;border:1px solid #2a2a2a}
+.home{background:#0a1a0a;color:#00aa00;padding:3px 8px;border-radius:3px;
+  font-size:.74rem;font-weight:700;border:1px solid #004400}
+.away{background:#1a0a0a;color:#cc0000;padding:3px 8px;border-radius:3px;
+  font-size:.74rem;font-weight:700;border:1px solid #440000}
+.gold{color:#FDB827;font-weight:700}
+.green{color:#00aa00;font-weight:700}
+.red-txt{color:#cc0000;font-weight:700}
+.score{color:#FDB827;font-weight:900;font-size:1.05rem}
+.gray{color:#555;font-size:.8rem}
+.est{background:#1a1200;color:#FDB827;border:1px solid #332200;
+  padding:2px 8px;border-radius:3px;font-size:.78rem;font-weight:700}
+.real-line{color:#00cc44;font-weight:900;font-size:1rem}
+.odds-txt{color:#666;font-size:.78rem}
+
+/* LOADING */
+.loading{text-align:center;padding:70px 20px}
+.spin{width:50px;height:50px;border:4px solid #1a1a1a;
+  border-top:4px solid #FDB827;border-radius:50%;
+  animation:spin .8s linear infinite;margin:0 auto 18px}
+@keyframes spin{to{transform:rotate(360deg)}}
+.err-box{background:#1a0000;border:1px solid #FDB827;border-radius:8px;
+  padding:20px;text-align:center;color:#cc0000;font-weight:700}
+.no-picks{text-align:center;padding:50px;color:#444}
+
+footer{text-align:center;padding:28px;color:#333;font-size:.75rem;
+  border-top:1px solid #1a1a1a;margin-top:24px}
+footer b{color:#FDB827}
 </style>
 </head>
 <body>
 
-<header>
-  <!-- Animated basketball SVG -->
-  <div class="brand">
-    <svg class="ball-svg" style="width:72px;height:72px" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
-      <defs>
-        <radialGradient id="ballG" cx="38%" cy="35%" r="65%">
-          <stop offset="0%" stop-color="#FDB827"/>
-          <stop offset="55%" stop-color="#e6a800"/>
-          <stop offset="100%" stop-color="#8B6914"/>
-        </radialGradient>
-        <clipPath id="ballC"><circle cx="50" cy="50" r="46"/></clipPath>
-      </defs>
-      <circle cx="50" cy="50" r="47" fill="url(#ballG)" stroke="#8B6914" stroke-width="1.5"/>
-      <g clip-path="url(#ballC)" fill="none" stroke="rgba(124,45,18,.88)" stroke-width="2.8" stroke-linecap="round">
-        <path d="M50 4 C63 20 67 35 67 50 C67 65 63 80 50 96"/>
-        <path d="M50 4 C37 20 33 35 33 50 C33 65 37 80 50 96"/>
-        <path d="M4 50 C18 37 34 33 50 33 C66 33 82 37 96 50"/>
-        <path d="M4 50 C18 63 34 67 50 67 C66 67 82 63 96 50"/>
-      </g>
-      <ellipse cx="37" cy="37" rx="9" ry="5" fill="rgba(255,255,255,.13)" transform="rotate(-35 37 37)"/>
-      <circle cx="50" cy="50" r="46" fill="none" stroke="rgba(124,45,18,.5)" stroke-width="1.5"/>
-    </svg>
-    <div class="brand-text">
-      <h1>Money Buckets</h1>
-      <div class="sub">Pattern Picks · Pts · Reb · Ast · 3PM</div>
+<div class="hdr">
+  <h1>NHL <span>Money</span> Shots</h1>
+</div>
+
+<div class="wrap">
+
+  <!-- Run Picks -->
+  <div class="run-box unlocked" id="runBox">
+    <h2>Run Picks</h2>
+    <p>Pick a date and run the algorithm.</p>
+    <div class="date-row">
+      <label>DATE</label>
+      <input type="date" id="datePicker" max=""/>
     </div>
+    <button class="btn-run" id="runBtn" onclick="runPicks()">
+      RUN PICKS
+    </button>
   </div>
-  <div class="actions">
-    <input type="date" id="datePicker" value="__TODAY__" style="background:rgba(42,42,42,.5);color:#FDB827;border:1px solid rgba(253,184,39,.3);border-radius:10px;padding:7px 12px;font-size:.82rem;font-weight:600;outline:none;cursor:pointer;">
-    <button class="btn btn-run" onclick="runPicks()">⚡ Run Picks</button>
-  </div>
-</header>
 
-<div class="games-bar" id="gamesBar">
+  <div class="status" id="statusMsg"></div>
+  <div id="out"></div>
 </div>
 
-<div id="filterBar" style="display:none" class="filter-bar">
-  <button class="filter-btn active" onclick="filterStat('ALL')">All Stats</button>
-  <button class="filter-btn" onclick="filterStat('PTS')">🏀 Points</button>
-  <button class="filter-btn" onclick="filterStat('REB')">📊 Rebounds</button>
-  <button class="filter-btn" onclick="filterStat('AST')">🎯 Assists</button>
-  <button class="filter-btn" onclick="filterStat('FG3M')">🔥 3-Pointers</button>
-</div>
-
-<div id="content">
-  <div class="msg-card">
-    <span class="ico">🏀</span>
-    <h2>Welcome to NBA Money Buckets</h2>
-    <p>Hit <strong style="color:#FDB827">Run Picks</strong> to scan today's matchups.<br>
-    Finds players hitting <strong style="color:#22c55e">75%+</strong> in Pts, Reb, Ast, or 3PM<br>
-    against today's specific opponent — home or away.</p>
-  </div>
-</div>
-
-<div id="allPicksWrap" style="display:none">
-  <div class="total-banner">
-    <div class="tb-left">
-      <div class="tb-ico">📋</div>
-<!-- Props vs Opponent History -->
-<div id="props-section" style="display:none;margin-top:28px">
-  <div class="section-title" style="margin-bottom:12px">⚡ Player Props vs Opponent History</div>
-
-      <div>
-        <div class="tb-title">All Qualifying Patterns</div>
-        <div class="tb-sub">Every player hitting 75%+ · Grouped by game</div>
-      </div>
-    </div>
-    <div class="tb-count" id="totalCount">0</div>
-  </div>
-  <div class="all-section-hdr">
-    <div class="all-section-title">🎯 All Patterns by Game</div>
-    <div style="display:flex;gap:8px;flex-wrap:wrap" id="allFilterBar">
-      <button class="filter-btn active" onclick="filterAll('ALL')">All</button>
-      <button class="filter-btn" onclick="filterAll('PTS')">🏀 Pts</button>
-      <button class="filter-btn" onclick="filterAll('REB')">📊 Reb</button>
-      <button class="filter-btn" onclick="filterAll('AST')">🎯 Ast</button>
-      <button class="filter-btn" onclick="filterAll('FG3M')">🔥 3PM</button>
-    </div>
-  </div>
-  <div id="allPicksSection"></div>
-</div>
-
-<footer>NBA Money Buckets · No Lines · Just Patterns · Powered by NBA Stats API &amp; ESPN</footer>
+<footer><b>NHL Money Shots</b> &nbsp;&middot;&nbsp; NHL Stats API + Odds API</footer>
 
 <script>
-let top10=[], allPicksData=[], activeTopStat='ALL', activeAllStat='ALL';
-
-function pctClass(p){return p>=90?['pct-green','bar-green']:p>=80?['pct-yellow','bar-yellow']:['pct-orange','bar-orange']}
-function statTag(s){
-  const m={PTS:['tag-pts','Points'],REB:['tag-reb','Rebounds'],AST:['tag-ast','Assists'],FG3M:['tag-fg3m','3-Pointers']};
-  const [c,l]=m[s]||['',''];
-  return `<span class="stat-tag ${c}">${l}</span>`;
-}
-function rankClass(i){return i===0?'rank-1':i===1?'rank-2':i===2?'rank-3':'rank-other'}
-
-function filterStat(stat){
-  activeTopStat=stat;
-  document.querySelectorAll('#filterBar .filter-btn').forEach(b=>{
-    const t=b.textContent;
-    b.classList.toggle('active',
-      stat==='ALL'?t.includes('All'):stat==='PTS'?t.includes('Point'):
-      stat==='REB'?t.includes('Rebound'):stat==='AST'?t.includes('Assist'):t.includes('3-Point'));
-  });
-  renderTop10Cards(stat==='ALL'?top10:top10.filter(p=>p.stat===stat));
-}
-
-function filterAll(stat){
-  activeAllStat=stat;
-  document.querySelectorAll('#allFilterBar .filter-btn').forEach(b=>{
-    const t=b.textContent;
-    b.classList.toggle('active',
-      stat==='ALL'?t==='All':stat==='PTS'?t.includes('Pt'):
-      stat==='REB'?t.includes('Reb'):stat==='AST'?t.includes('Ast'):t.includes('3PM'));
-  });
-  const filtered=stat==='ALL'?allPicksData:allPicksData.filter(p=>p.stat===stat);
-  document.getElementById('totalCount').textContent=filtered.length;
-  renderAllByGame(filtered);
-}
-
-function renderTop10Cards(picks){
-  if(!picks.length){
-    document.getElementById('content').innerHTML='<div class="msg-card"><span class="ico">🔍</span><h2>No patterns</h2><p>Try "All Stats".</p></div>';
-    return;
-  }
-  let html=`<div class="section-hdr"><div class="section-title">🏆 Top 10 Picks Today</div><span class="count-pill">${picks.length} pick${picks.length!==1?'s':''}</span></div><div class="picks-grid">`;
-  picks.forEach((p,i)=>{
-    const [pc,bc]=pctClass(p.pct);
-    html+=`
-    <div class="pick-card">
-      <div class="pick-rank ${rankClass(i)}">${i+1}</div>
-      <span class="pick-emoji">${p.emoji}</span>
-      <div class="pick-player">${p.player}</div>
-      <div class="pick-team">${p.team_name} <span class="loc-badge">${p.location==='Home'?'🏠 Home':'✈️ Away'}</span></div>
-      <div class="stat-strip">${statTag(p.stat)}</div>
-      <div class="pick-pattern">${p.threshold}+ ${p.stat_label} in ${p.hits} of ${p.games} ${p.location.toLowerCase()} games vs ${p.opp}</div>
-      ${p.l10_games > 0 ? `<div class="l10vthr-desc">${p.player.split(" ").pop()} hit ${p.threshold}+ ${p.stat_label} ${p.l10_hits} of ${p.l10_games} last 10 games vs ${p.opp}</div>` : ""}
-      ${p.fd_line ? `<div class="fd-line-badge">Sportsbook Line: <strong>${p.fd_line}</strong> ${p.fd_odds ? "(" + p.fd_odds + ")" : ""}${p.l10_sb_hits !== null && p.l10_sb_hits !== undefined ? " | Last 10 vs " + p.opp + ": " + p.l10_sb_hits + "/" + p.l10_games : ""}</div>` : ""}
-      <div class="pick-matchup">📍 Today: ${p.matchup}</div>
-      <div class="bar-wrap"><div class="bar-fill ${bc}" style="width:${Math.min(p.pct,100)}%"></div></div>
-      <div class="stats-row"><span class="games-chip">${p.hits}/${p.games} games</span><span class="pct ${pc}">${p.pct}%</span></div>
-    </div>`;
-  });
-  html+='</div>';
-  document.getElementById('content').innerHTML=html;
-}
-
-function renderAllByGame(picks){
-  const el=document.getElementById('allPicksSection');
-  if(!picks.length){el.innerHTML='<div class="msg-card" style="padding:30px"><span class="ico">🔍</span><p>No patterns for this filter.</p></div>';return;}
-  const groups={},order=[];
-  for(const p of picks){if(!groups[p.matchup]){groups[p.matchup]=[];order.push(p.matchup);}groups[p.matchup].push(p);}
-  let html='';
-  for(const matchup of order){
-    const gp=groups[matchup];
-    const gameId='g_'+matchup.replace(/[^a-z0-9]/gi,'_');
-    html+=`<div class="game-group">
-      <div class="game-group-hdr" onclick="toggleGroup('${gameId}',this)">
-        <span class="gg-label">🏀 ${matchup}</span>
-        <div class="gg-meta"><span class="count-pill">${gp.length} pattern${gp.length!==1?'s':''}</span><span class="gg-chevron">▾</span></div>
-      </div>
-      <div class="compact-picks" id="${gameId}">`;
-    for(const p of gp){
-      const [pc,bc]=pctClass(p.pct);
-      html+=`<div class="compact-row">
-        <span class="cr-emoji">${p.emoji}</span>
-        <div class="cr-info">
-          <div class="cr-player">${p.player} <span style="color:#2a2a2a;font-size:.65rem">${p.team}·${p.location==='Home'?'🏠':'✈️'}</span></div>
-          <div class="cr-pattern">${p.threshold}+ ${p.stat_label} · ${p.hits}/${p.games} ${p.location.toLowerCase()} vs ${p.opp}${p.fd_line ? ` · <span class="fd-inline">🏙️ ${p.fd_line}</span>` : ''}</div>
-          ${(p.fd_line !== null && p.fd_line !== undefined && p.l10vthr_hits !== null && p.l10vthr_hits !== undefined) ? `<div class="l10vthr-desc" style="font-size:.76rem;margin-top:2px">${Math.ceil(p.fd_line)}+ ${p.stat_label}: ${p.l10vthr_hits}/${p.l10vthr_games} vs ${p.opp}</div>` : ''}
-        </div>
-        <div class="cr-right">
-          <div class="cr-bar-wrap"><div class="cr-bar-fill ${bc}" style="width:${Math.min(p.pct,100)}%"></div></div>
-          <div class="cr-pct ${pc}">${p.pct}%</div>
-          <div class="cr-sample">${p.hits}/${p.games}</div>
-        </div>
-      </div>`;
-    }
-    html+='</div></div>';
-  }
-  el.innerHTML=html;
-}
-
-function toggleGroup(id,hdr){
-  const el=document.getElementById(id);
-  const ch=hdr.querySelector('.gg-chevron');
-  if(!el)return;
-  const hidden=el.style.display==='none';
-  el.style.display=hidden?'flex':'none';
-  if(hidden)el.style.flexDirection='column';
-  if(ch)ch.style.transform=hidden?'':'rotate(-90deg)';
-}
-function renderGames(games){
-  if(!games||!games.length)return;
-  document.getElementById('gamesBar').innerHTML=games.map(g=>
-    `<div class="game-chip"><b>${g.away}</b><span class="sep">@</span><b>${g.home}</b></div>`
-  ).join('');
-}
-
+// Set date to today
+document.addEventListener('DOMContentLoaded', function(){
+  var dp = document.getElementById('datePicker');
+  var today = new Date().toISOString().split('T')[0];
+  dp.value = today;
+  dp.max = today;
+});
 
 
 async function runPicks(){
-  const selectedDate=document.getElementById('datePicker').value;
-  document.getElementById('content').innerHTML=`
-    <div class="msg-card">
-      <div class="loading-ball"></div>
-      <div class="ball-shadow"></div>
-      <h2 style="color:#FDB827">Analyzing Matchup Patterns</h2>
-      <p>Pulling data for <strong style="color:#FDB827">${selectedDate}</strong> from NBA Stats API.<br>
-      <span style="color:#2a2a2a">This takes ~45 seconds — worth the wait.</span></p>
-    </div>`;
-  document.getElementById('allPicksWrap').style.display='none';
-  try{
-    const r=await fetch('/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({date:selectedDate})});
-    if(!r.ok)throw new Error('Server error '+r.status);
-    const data=await r.json();
-    renderGames(data.games);
-    top10=data.picks||[];
-    allPicksData=data.all_picks||[];
-    activeTopStat='ALL';activeAllStat='ALL';
-    const log=data.log||[];
-    if(!top10.length){
-      document.getElementById('content').innerHTML=`<div class="msg-card"><span class="ico">🔍</span><h2>No Qualifying Patterns</h2><p>No 75%+ patterns for today's matchups.</p></div><div class="log-box">${log.join('<br>')}</div>`;
-      return;
+  var btn = document.getElementById('runBtn');
+  var st = document.getElementById('statusMsg');
+  var out = document.getElementById('out');
+  var dt = document.getElementById('datePicker').value;
+  btn.disabled = true;
+  btn.textContent = 'RUNNING...';
+  st.textContent = 'Fetching games and analyzing players for ' + dt + '...';
+  out.innerHTML = '<div class="loading"><div class="spin"></div>' +
+    '<p style="color:#888;margin-bottom:16px" id="prog-stage">Starting...</p>' +
+    '<div style="background:#1a1a1a;border-radius:6px;height:18px;width:280px;margin:0 auto 8px;overflow:hidden">' +
+    '<div id="prog-bar" style="height:100%;width:5%;background:#FDB827;border-radius:6px;transition:width .5s"></div></div>' +
+    '<p style="color:#555;font-size:.8rem" id="prog-pct">5%</p></div>';
+
+  // Poll progress every 2 seconds
+  var pollTimer = setInterval(async function(){
+    try{
+      var pr = await fetch('/api/progress');
+      var pd = await pr.json();
+      var bar = document.getElementById('prog-bar');
+      var stg = document.getElementById('prog-stage');
+      var pct = document.getElementById('prog-pct');
+      if(bar){ bar.style.width = pd.pct + '%'; }
+      if(stg){ stg.textContent = pd.stage; }
+      if(pct){ pct.textContent = pd.pct + '%'; }
+    }catch(e){}
+  }, 2000);
+
+  try {
+    var res = await fetch('/api/picks?target_date=' + dt);
+    var data = await res.json();
+    if(data.error){
+      out.innerHTML = '<div class="err-box">' + data.error + '</div>';
+      st.textContent = '';
+    } else {
+      renderResults(data);
+      st.textContent = data.qualified + ' players qualified — ' + data.picks.length + ' top picks — ' + dt;
     }
-    document.getElementById('filterBar').style.display='flex';
-    renderTop10Cards(top10);
-    const lb=document.createElement('div');
-    lb.className='log-box';
-    lb.innerHTML=log.join('<br>')+`<br>📋 ${data.total} total patterns found`;
-    document.getElementById('content').appendChild(lb);
-    document.getElementById('totalCount').textContent=allPicksData.length;
-    document.getElementById('allPicksWrap').style.display='block';
-    renderAllByGame(allPicksData);
-    if(data.props_picks !== undefined) renderPropsSection(data.props_picks, data.props_nopick);
-  }catch(e){
-    document.getElementById('content').innerHTML=`<div class="msg-card"><span class="ico">❌</span><h2 style="color:#ef4444">Something went wrong</h2><p>${e.message}</p></div>`;
+  } catch(e) {
+    out.innerHTML = '<div class="err-box">Error: ' + e.message + '</div>';
+  } finally {
+    clearInterval(pollTimer);
+    btn.disabled = false;
+    btn.textContent = 'RUN PICKS';
   }
 }
 
-function renderPropsSection(picks, nopick) {
-  const section = document.getElementById('props-section');
-  const body    = document.getElementById('props-body');
-  if (!section || !body) return;
-  const all = [...(picks||[]), ...(nopick||[]).filter(p=>p.games>0)];
-  if (all.length === 0) { section.style.display='none'; return; }
-  section.style.display = '';
-  body.innerHTML = all.map((p,i) => {
-    const isOver  = p.pick==='OVER', isUnder = p.pick==='UNDER';
-    const clr  = isOver?'#4ade80':isUnder?'#f87171':'#9ca3af';
-    const gap  = p.gap!=null?(p.gap>0?'+':'')+p.gap:'—';
-    const odds = p.fd_odds ? `<br><span style="color:#6b7280;font-size:.65rem">${p.fd_odds}</span>` : '';
-    const sideBg = p.side==='HOME'?'rgba(253,184,39,.15)':'rgba(99,102,241,.15)';
-    return `<tr style="border-bottom:1px solid rgba(253,184,39,.07)">
-      <td style="padding:8px 10px;color:#6b7280">${i+1}</td>
-      <td style="padding:8px 10px;font-weight:700">${p.player}</td>
-      <td style="padding:8px 10px;color:#FDB827;font-size:.8rem">${p.emoji} ${p.stat_label}</td>
-      <td style="padding:8px 10px"><span style="background:${sideBg};padding:2px 7px;border-radius:4px;font-size:.75rem">${p.side}</span></td>
-      <td style="padding:8px 10px;color:#9ca3af;font-size:.8rem">${p.opp_name}</td>
-      <td style="padding:8px 10px;font-family:monospace;font-weight:700">${p.line}</td>
-      <td style="padding:8px 10px;font-family:monospace;font-weight:700;color:${clr};font-size:1rem">${p.avg??'—'}</td>
-      <td style="padding:8px 10px;font-family:monospace;color:${clr};font-weight:700">${gap}</td>
-      <td style="padding:8px 10px;color:#6b7280">${p.games}g</td>
-      <td style="padding:8px 10px;font-family:monospace;font-size:.7rem;color:#6b7280;max-width:140px">${p.history||'—'}</td>
-      <td style="padding:8px 10px"><span style="color:${clr};font-weight:900;font-size:.95rem">${p.pick||'—'}</span>${odds}</td>
-    </tr>`;
-  }).join('');
+function rateClass(r){ return r >= 90 ? 'green' : r >= 80 ? 'gold' : 'red-txt'; }
+
+function buildPtsTable(picks, startNum){
+  var thead = '<thead><tr><th>#</th><th>PLAYER</th><th>TEAM</th><th>OPP</th><th>H/A</th>' +
+    '<th>AVG PTS vs OPP</th><th>L10 H/A AVG PTS</th>' +
+    '<th>CAREER vs OPP 0.5P</th><th>LAST 10 H/A 0.5P</th><th>SCORE</th><th>OPP SA/G</th></tr></thead>';
+  var rows = '';
+  picks.forEach(function(p, i){
+    var ha  = p.homeRoad === 'H';
+    var num = startNum + i;
+    rows += '<tr>' +
+      '<td>' + (startNum === 1 ? '<span class="rk-num">' + num + '</span>' : '<span class="rk-rest">' + num + '</span>') + '</td>' +
+      '<td><span class="pname">' + p.name + '</span></td>' +
+      '<td><span class="tbadge">' + p.team + '</span></td>' +
+      '<td><span class="tbadge">' + p.opponent + '</span></td>' +
+      '<td><span class="' + (ha ? 'home' : 'away') + '">' + (ha ? 'HOME' : 'AWAY') + '</span></td>' +
+      '<td><span class="gold">' + p.ptsOppAvg + '</span></td>' +
+      '<td><span class="gold">' + p.ptsHa10avg + '</span></td>' +
+      '<td><span class="' + rateClass(p.pts2Rate) + '">' + p.pts2Hits + '/' + p.pts2Total + ' (' + p.pts2Rate + '%)</span></td>' +
+      '<td><span class="' + rateClass(p.pts3Rate) + '">' + p.pts3Hits + '/' + p.pts3Total + ' (' + p.pts3Rate + '%)</span></td>' +
+      '<td><span class="score">' + p.ptsScore + '</span></td>' +
+      '<td><span class="gray">' + p.oppSA.toFixed(1) + '</span></td>' +
+      '</tr>';
+  });
+  return '<div class="tbl-wrap"><table>' + thead + '<tbody>' + rows + '</tbody></table></div>';
+}
+
+function buildTable(picks, startNum){
+  var thead = '<thead><tr><th>#</th><th>PLAYER</th><th>TEAM</th><th>OPP</th><th>H/A</th>' +
+    '<th>LINE</th><th>AVG VS OPP</th><th>L10 H/A AVG</th>' +
+    '<th>CAREER VS OPP 1.5S</th><th>LAST 10 H/A 1.5S</th><th>SCORE</th><th>OPP SA/G</th></tr></thead>';
+  var rows = '';
+  picks.forEach(function(p, i){
+    var ha = p.homeRoad === 'H';
+    var num = startNum + i;
+    rows += '<tr>' +
+      '<td>' + (startNum === 1 ? '<span class="rk-num">' + num + '</span>' : '<span class="rk-rest">' + num + '</span>') + '</td>' +
+      '<td><span class="pname">' + p.name + '</span></td>' +
+      '<td><span class="tbadge">' + p.team + '</span></td>' +
+      '<td><span class="tbadge">' + p.opponent + '</span></td>' +
+      '<td><span class="' + (ha ? 'home' : 'away') + '">' + (ha ? 'HOME' : 'AWAY') + '</span></td>' +
+      '<td>' + (p.realLine ? '<span class="real-line">' + p.realLine + '</span> <span class="odds-txt">' + (p.realOdds||'') + '</span>' : '<span class="est">~' + p.estLine + '</span>') + '</td>' +
+      '<td><span class="gold">' + p.oppAvg + '</span></td>' +
+      '<td><span class="gold">' + p.ha10avg + '</span></td>' +
+      '<td><span class="' + rateClass(p.step2Rate) + '">' + p.step2Hits + '/' + p.step2Total + ' (' + p.step2Rate + '%)</span></td>' +
+      '<td><span class="' + rateClass(p.step3Rate) + '">' + p.step3Hits + '/' + p.step3Total + ' (' + p.step3Rate + '%)</span></td>' +
+      '<td><span class="score">' + p.score + '</span></td>' +
+      '<td><span class="gray">' + p.oppSA.toFixed(1) + '</span></td>' +
+      '</tr>';
+  });
+  return '<div class="tbl-wrap"><table>' + thead + '<tbody>' + rows + '</tbody></table></div>';
+}
+
+function renderResults(d){
+  var h = '';
+
+  // Chips
+  h += '<div class="chips">' +
+    '<div class="chip"><div class="val">' + d.games.length + '</div><div class="lbl">Games</div></div>' +
+    '<div class="chip"><div class="val">' + d.poolSize + '</div><div class="lbl">Pool</div></div>' +
+    '<div class="chip"><div class="val">' + d.qualified + '</div><div class="lbl">Qualified</div></div>' +
+    '<div class="chip"><div class="val">' + d.picks.length + '</div><div class="lbl">Top Picks</div></div>' +
+    '<div class="chip"><div class="val">80%</div><div class="lbl">Min Rate</div></div>' +
+    '</div>';
+
+  // Games
+  h += '<div class="sec">Games — ' + (d.targetDate || '') + '</div><div class="games">';
+  d.games.forEach(function(g){
+    var t = g.startTime ? new Date(g.startTime).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',timeZoneName:'short'}) : '';
+    h += '<div class="gcard"><div class="mu">' + g.awayTeam + ' @ ' + g.homeTeam + '</div><div class="gt">' + t + '</div></div>';
+  });
+  h += '</div>';
+
+  // SA Rankings
+  h += '<div class="sec">Shots Against / Game Rankings</div><div class="sa-list">';
+  (d.sa_ranks || []).forEach(function(item, i){
+    h += '<div class="sa-badge"><span class="rk">#' + (i+1) + ' ' + item[0] + '</span> <span class="sv">' + item[1].toFixed(1) + '</span></div>';
+  });
+  h += '</div>';
+
+  // Top picks
+  h += '<div class="sec">Top ' + d.picks.length + ' Money Shots</div>';
+  if(!d.picks.length){
+    h += '<div class="no-picks">No players met the 80% hit rate threshold for this date.</div>';
+  } else {
+    h += buildTable(d.picks, 1);
+  }
+
+  // Also qualified
+  if(d.rest && d.rest.length){
+    h += '<div class="sec" style="margin-top:28px">Also Qualified — ' + d.rest.length + ' More Players</div>';
+    h += buildTable(d.rest, d.picks.length + 1);
+  }
+
+  // POINTS SECTION
+  if(d.ptsPicks && d.ptsPicks.length){
+    h += '<div class="sec" style="margin-top:40px;border-left-color:#FDB827">&#127944; Top ' + d.ptsPicks.length + ' Points Picks (1+ Point)</div>';
+    h += buildPtsTable(d.ptsPicks, 1);
+    if(d.ptsRest && d.ptsRest.length){
+      h += '<div class="sec" style="margin-top:20px;border-left-color:#FDB827">Also Qualified for Points — ' + d.ptsRest.length + ' More</div>';
+      h += buildPtsTable(d.ptsRest, d.ptsPicks.length + 1);
+    }
+  }
+
+  document.getElementById('out').innerHTML = h;
 }
 </script>
 </body>
 </html>"""
-# ─── Routes ───────────────────────────────────────────────────────────────────
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Routes
+# ─────────────────────────────────────────────────────────────────────────────
+
 @app.get("/", response_class=HTMLResponse)
-async def index(request: Request):
-    # Auth removed — no redirect needed
-    today_iso = date.today().isoformat()
-    return HTMLResponse(MAIN_HTML.replace("__TODAY__", today_iso))
+async def index():
+    return HTML
 
-@app.get("/login", response_class=HTMLResponse)
-async def login_get():
-    return HTMLResponse(LOGIN_HTML.replace('{error}', ''))
+@app.get("/api/picks")
+async def api_picks(target_date: str = None):
+    result = await run_picks(target_date)
+    return JSONResponse(result)
 
-@app.post("/login")
-async def login_post(request: Request):
-    form = await request.form()
-    u = form.get("username", "").strip()
-    p = form.get("password", "").strip()
-    if USERS.get(u) == p:
-        resp = RedirectResponse("/", status_code=302)
-        resp.set_cookie("session", make_token(u), httponly=True, samesite="lax", max_age=86400*7)
-        return resp
-    return HTMLResponse(LOGIN_HTML.replace('{error}', '<p class="err">⚠️ Invalid username or password</p>'), status_code=401)
+@app.get("/api/status")
+async def api_status():
+    """Check connection status — no logins needed."""
+    return {
+        "nhl_api":   "ready",
+        "odds_api":  "configured" if os.environ.get("ODDS_API_KEY") else "not configured",
+        "time":      datetime.utcnow().isoformat(),
+    }
 
-@app.post("/run")
-async def run(request: Request):
-    if not get_user(request):
-        return {"error": "Unauthorized"}
-    try:
-        body = await request.json()
-        selected_date = body.get('date', date.today().isoformat())
-    except Exception:
-        selected_date = date.today().isoformat()
-    result = await run_analysis(selected_date)
-    return result
-
-@app.get("/clear-cache")
-async def clear_cache(request: Request):
-    user = get_user(request)
-    if not user:
-        return {"error": "unauthorized"}
-    global _cache
-    _cache = {}
-    return {"status": "cleared"}
+@app.get("/api/progress")
+async def api_progress():
+    return JSONResponse(_progress)
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "date": date.today().isoformat()}
+    return {"status": "ok", "time": datetime.utcnow().isoformat()}
