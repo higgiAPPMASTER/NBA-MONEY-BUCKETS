@@ -503,9 +503,6 @@ input::placeholder{color:#374151}
   </form>
   <p class="tagline">No Lines · Just Patterns · 75% Threshold</p>
 
-<!-- Props vs Opponent History -->
-<div id="props-section" style="display:none;margin-top:28px">
-  <div class="section-title" style="margin-bottom:12px">⚡ Player Props vs Opponent History</div>
   <div style="overflow-x:auto">
     <table style="width:100%;border-collapse:collapse;font-size:.82rem">
       <thead><tr style="border-bottom:1px solid rgba(249,115,22,.25)">
@@ -786,6 +783,10 @@ footer{text-align:center;margin-top:32px;color:#0a1525;font-size:.68rem;padding:
   <div class="total-banner">
     <div class="tb-left">
       <div class="tb-ico">📋</div>
+<!-- Props vs Opponent History -->
+<div id="props-section" style="display:none;margin-top:28px">
+  <div class="section-title" style="margin-bottom:12px">⚡ Player Props vs Opponent History</div>
+
       <div>
         <div class="tb-title">All Qualifying Patterns</div>
         <div class="tb-sub">Every player hitting 75%+ · Grouped by game</div>
@@ -993,6 +994,7 @@ async function runPicks(){
     document.getElementById('totalCount').textContent=allPicksData.length;
     document.getElementById('allPicksWrap').style.display='block';
     renderAllByGame(allPicksData);
+    if(data.props_picks !== undefined) renderPropsSection(data.props_picks, data.props_nopick);
   }catch(e){
     document.getElementById('content').innerHTML=`<div class="msg-card"><span class="ico">❌</span><h2 style="color:#ef4444">Something went wrong</h2><p>${e.message}</p></div>`;
   }
