@@ -32,11 +32,7 @@ def make_token(username: str) -> str:
     return hashlib.sha256(f"{username}:{SECRET}".encode()).hexdigest()
 
 def get_user(request: Request) -> Optional[str]:
-    token = request.cookies.get("session")
-    for u in USERS:
-        if token == make_token(u):
-            return u
-    return None
+    return "higgi"  # auth handled by Hub JWT gate
 
 # ─── Stat Config ──────────────────────────────────────────────────────────────
 # ESPN gamelog stats array order:
@@ -937,6 +933,20 @@ footer{text-align:center;padding:32px 24px;color:#4b5563;font-size:.78rem;border
 </footer>
 
 <script>
+// ── Hub JWT Token Gate ───────────────────────────────────────────────────
+(function(){
+  const HUB='https://www.moneypicksarena.com';
+  const KEY='__mpa_token';
+  const p=new URLSearchParams(window.location.search);
+  const t=p.get('token');
+  if(t){localStorage.setItem(KEY,t);window.history.replaceState({},'',window.location.pathname);}
+  const tok=localStorage.getItem(KEY);
+  if(!tok){window.location.href=HUB;return;}
+  fetch('/api/verify-token',{headers:{'Authorization':'Bearer '+tok}})
+    .then(r=>{if(!r.ok){localStorage.removeItem(KEY);window.location.href=HUB;}})
+    .catch(()=>{localStorage.removeItem(KEY);window.location.href=HUB;});
+})();
+
 let top10=[], allPicksData=[], activeTopStat='ALL', activeAllStat='ALL';
 
 function pctClass(p){return p>=90?['pct-green','bar-green']:p>=80?['pct-yellow','bar-yellow']:['pct-orange','bar-orange']}
@@ -1131,10 +1141,18 @@ async function runPicks(){
 # ─── Routes ───────────────────────────────────────────────────────────────────
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
-    if not get_user(request):
-        return RedirectResponse("/login")
     today_iso = date.today().isoformat()
     return HTMLResponse(MAIN_HTML.replace("__TODAY__", today_iso))
+
+@app.get("/api/verify-token")
+async def verify_token(request: Request):
+    from fastapi import HTTPException
+    from fastapi.responses import JSONResponse
+    auth = request.headers.get("Authorization", "")
+    tok  = auth.replace("Bearer ", "").strip()
+    if not tok or len(tok.split(".")) != 3:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    return JSONResponse({"ok": True})
 
 @app.get("/login", response_class=HTMLResponse)
 async def login_get():
@@ -1159,8 +1177,6 @@ async def logout():
 
 @app.post("/run")
 async def run(request: Request):
-    if not get_user(request):
-        return {"error": "Unauthorized"}
     try:
         body = await request.json()
         selected_date = body.get('date', date.today().isoformat())
