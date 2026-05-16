@@ -858,12 +858,12 @@ footer{text-align:center;padding:32px 24px;color:#4b5563;font-size:.78rem;border
 
 <div class="app-hdr">
   <h1>NBA <span>Money Buckets</span></h1>
-  <p>Pts &nbsp;Â·&nbsp; Reb &nbsp;Â·&nbsp; Ast &nbsp;Â·&nbsp; 3PM &nbsp;Â·&nbsp; Daily Picks</p>
+  <p>Pts &nbsp;&middot;&nbsp; Reb &nbsp;&middot;&nbsp; Ast &nbsp;&middot;&nbsp; 3PM &nbsp;&middot;&nbsp; Daily Picks</p>
 </div>
 
 <div class="card" style="text-align:center;margin-bottom:20px">
   <h2 style="font-family:'Playfair Display',serif;font-size:1.5rem;font-weight:700;color:#fff;margin-bottom:6px">Run Today's Picks</h2>
-  <p style="color:#6b7280;font-size:.88rem;margin-bottom:22px">Select a date â€” NBA Stats API powers all hit rates</p>
+  <p style="color:#6b7280;font-size:.88rem;margin-bottom:22px">Select a date &mdash; NBA Stats API powers all hit rates</p>
   <div class="date-row" style="justify-content:center">
     <label>Date</label>
     <input type="date" id="datePicker" value="__TODAY__">
@@ -910,7 +910,7 @@ footer{text-align:center;padding:32px 24px;color:#4b5563;font-size:.78rem;border
 </div>
 <footer>
   <div class="ft-logo">Money Picks Arena</div>
-  <div>NBA Money Buckets &nbsp;Â·&nbsp; Pts Â· Reb Â· Ast Â· 3PM</div>
+  <div>NBA Money Buckets &nbsp;&middot;&nbsp; Pts &middot; Reb &middot; Ast &middot; 3PM</div>
   <div style="margin-top:8px;font-size:.7rem">For entertainment and informational purposes only. We do not accept bets or guarantee results. Please gamble responsibly. Must be 18+.</div>
 </footer>
 
