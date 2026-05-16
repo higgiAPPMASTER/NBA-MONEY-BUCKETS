@@ -705,7 +705,7 @@ body{background:#0f0f0f;color:#fff;font-family:'Source Sans Pro',sans-serif;min-
 
 /* NAV */
 nav{position:fixed;top:0;width:100%;background:rgba(10,10,10,.95);backdrop-filter:blur(12px);border-bottom:1px solid #1c1c1c;z-index:100;padding:0 32px;height:80px;display:flex;align-items:center;justify-content:space-between}
-.logo{font-family:'Playfair Display',serif;font-size:28px;font-weight:900;color:#f59e0b;letter-spacing:.02em;line-height:1}
+.logo{font-family:'Playfair Display',serif;font-size:36px;font-weight:900;color:#f59e0b;letter-spacing:.02em;line-height:1}
 .logo span{color:#fff}
 .nav-right{display:flex;align-items:center;gap:14px}
 .nav-sport{background:#166534;color:#fff;font-size:10px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;padding:3px 10px;border-radius:4px}
@@ -864,11 +864,13 @@ footer{text-align:center;padding:32px 24px;color:#4b5563;font-size:.78rem;border
 <div class="card" style="text-align:center;margin-bottom:20px">
   <h2 style="font-family:'Playfair Display',serif;font-size:1.5rem;font-weight:700;color:#fff;margin-bottom:6px">Run Today's Picks</h2>
   <p style="color:#6b7280;font-size:.88rem;margin-bottom:22px">Select a date &mdash; NBA Stats API powers all hit rates</p>
-  <div class="date-row" style="justify-content:center">
+  <div class="date-row" style="justify-content:center;margin-bottom:20px">
     <label>Date</label>
     <input type="date" id="datePicker" value="__TODAY__">
   </div>
-  <button class="btn btn-run" id="runBtn" onclick="runPicks()">Run Picks</button>
+  <div style="text-align:center">
+    <button class="btn btn-run" id="runBtn" onclick="runPicks()">Run Picks</button>
+  </div>
 </div>
 
 <div class="games-bar" id="gamesBar" style="display:none"></div>
