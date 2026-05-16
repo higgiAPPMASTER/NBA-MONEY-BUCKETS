@@ -11,12 +11,10 @@ from datetime import date, datetime
 from typing import Dict, List, Optional, Any
 
 import httpx
-from curl_cffi.requests import AsyncSession as CFSession
-from playwright.async_api import async_playwright
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
-app = FastAPI(title="NBA Money Buckets")
+app = FastAPI(title="Money Buckets")
 
 # ─── Auth ─────────────────────────────────────────────────────────────────────
 USERS_RAW = os.environ.get("USERS", "admin:buckets")
@@ -32,7 +30,8 @@ def make_token(username: str) -> str:
     return hashlib.sha256(f"{username}:{SECRET}".encode()).hexdigest()
 
 def get_user(request: Request) -> Optional[str]:
-    return "higgi"  # Hub JWT gate
+    return 'higgi'
+    return None
 
 # ─── Stat Config ──────────────────────────────────────────────────────────────
 # ESPN gamelog stats array order:
@@ -48,7 +47,7 @@ STAT_CONFIG = {
 HIT_RATE_MIN  = 0.75
 MIN_GAMES     = 2
 MIN_MINUTES   = 10.0
-ESPN_SEASONS  = [2026, 2025, 2024]
+ESPN_SEASONS  = [2026, 2025, 2024, 2023, 2022, 2021, 2020]
 TOP_N         = 10
 
 ODDS_API_BASE   = "https://api.the-odds-api.com/v4"
@@ -60,255 +59,12 @@ ODDS_MARKET_MAP = {
 }
 MIN_GAMES     = 3
 MIN_MINUTES   = 10.0
-ESPN_SEASONS  = [2026, 2025, 2024]   # ESPN uses season END year
+ESPN_SEASONS  = [2026, 2025, 2024, 2023, 2022, 2021, 2020]   # ESPN uses season END year — 7 seasons for full career H/A history
 TOP_N         = 10
 
 # ─── Cache ────────────────────────────────────────────────────────────────────
 _cache: Dict[str, Any] = {}
 
-# ─── FanDuel Session ──────────────────────────────────────────────────────────
-_fd_cookie: Optional[str] = None
-_fd_lock    = asyncio.Lock()
-
-async def get_fd_cookie() -> str:
-    global _fd_cookie
-    async with _fd_lock:
-        if not _fd_cookie:
-            _fd_cookie = await _fanduel_login()
-    return _fd_cookie
-
-async def _fanduel_login() -> str:
-    email    = os.environ.get("FD_EMAIL", "")
-    password = os.environ.get("FD_PASSWORD", "")
-    if not email or not password:
-        return ""
-    print("[FanDuel] Logging in...")
-    async with async_playwright() as pw:
-        browser = await pw.chromium.launch(
-            headless=True, args=["--no-sandbox","--disable-dev-shm-usage"])
-        ctx  = await browser.new_context(user_agent=(
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36"))
-        page = await ctx.new_page()
-        try:
-            await page.goto("https://sportsbook.fanduel.com/",
-                            wait_until="domcontentloaded", timeout=30_000)
-            try:
-                await page.click("text=Sign In", timeout=8_000)
-            except:
-                await page.goto("https://sportsbook.fanduel.com/login",
-                                wait_until="domcontentloaded", timeout=20_000)
-            await asyncio.sleep(2)
-            await page.fill(
-                "input[type='email'], input[name='username'], input[placeholder*='email' i]",
-                email, timeout=10_000)
-            await asyncio.sleep(0.5)
-            await page.fill("input[type='password']", password, timeout=10_000)
-            await page.click("button[type='submit']", timeout=8_000)
-            await page.wait_for_load_state("networkidle", timeout=25_000)
-        except Exception as e:
-            print(f"[FanDuel] Login warning: {e}")
-        cookies = await ctx.cookies()
-        await browser.close()
-    cookie_str = "; ".join(f"{c['name']}={c['value']}" for c in cookies)
-    print(f"[FanDuel] Login done — {len(cookies)} cookies")
-    return cookie_str
-
-# ─── NBA FanDuel Props ────────────────────────────────────────────────────────
-# Maps our stat keys to FanDuel market name fragments (NBA)
-FD_MARKET_MAP = {
-    "PTS":  ["points", "pts"],
-    "REB":  ["rebounds", "rebound", "reb", "total reb"],
-    "AST":  ["assists", "assist", "ast", "total ast"],
-    "FG3M": ["threes", "three", "3-point", "3pt", "3 point", "fg3", "made"],
-}
-
-def _norm_name(n: str) -> str:
-    nfd = unicodedata.normalize("NFD", n)
-    s   = nfd.encode("ascii","ignore").decode("ascii").lower()
-    return re.sub(r"[^a-z ]","",s).strip()
-
-def _match_player(fd_name: str, esp_name: str) -> bool:
-    fn, en = _norm_name(fd_name), _norm_name(esp_name)
-    if fn == en: return True
-    fp = fn.split(); ep = en.split()
-    if len(fp)>=2 and len(ep)>=2:
-        return fp[0][0]==ep[0][0] and fp[-1]==ep[-1]
-    return False
-
-async def fetch_fd_nba_lines() -> Dict[str, Dict]:
-    """Use Playwright to browse FanDuel NBA props page and capture live API responses."""
-    if not os.environ.get("FD_EMAIL"):
-        return {}
-    email    = os.environ.get("FD_EMAIL", "")
-    password = os.environ.get("FD_PASSWORD", "")
-    lines: Dict[str, Dict] = {}
-    captured: list = []
-
-    try:
-        async with async_playwright() as pw:
-            browser = await pw.chromium.launch(
-                headless=True, args=["--no-sandbox","--disable-dev-shm-usage"])
-            ctx  = await browser.new_context(user_agent=(
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36"))
-            page = await ctx.new_page()
-
-            # Capture FanDuel API responses that contain player props
-            async def on_response(response):
-                try:
-                    if ("sbapi" in response.url and response.status == 200
-                            and "json" in response.headers.get("content-type","")):
-                        data = await response.json()
-                        if data.get("attachments",{}).get("markets"):
-                            captured.append(data)
-                except Exception:
-                    pass
-
-            page.on("response", on_response)
-
-            # Login
-            try:
-                await page.goto("https://sportsbook.fanduel.com/",
-                                wait_until="domcontentloaded", timeout=30_000)
-                try:
-                    await page.click("text=Sign In", timeout=8_000)
-                except:
-                    await page.goto("https://sportsbook.fanduel.com/login",
-                                    wait_until="domcontentloaded", timeout=20_000)
-                await asyncio.sleep(2)
-                await page.fill(
-                    "input[type='email'], input[name='username'], input[placeholder*='email' i]",
-                    email, timeout=10_000)
-                await asyncio.sleep(0.5)
-                await page.fill("input[type='password']", password, timeout=10_000)
-                await page.click("button[type='submit']", timeout=8_000)
-                await page.wait_for_load_state("networkidle", timeout=25_000)
-                print("[FanDuel NBA] Logged in")
-            except Exception as e:
-                print(f"[FanDuel NBA] Login warning: {e}")
-
-            # Navigate to NBA player props page
-            try:
-                await page.goto(
-                    "https://sportsbook.fanduel.com/sports/basketball/nba",
-                    wait_until="networkidle", timeout=30_000)
-                await asyncio.sleep(3)  # let props load
-                print(f"[FanDuel NBA] NBA page loaded, {len(captured)} API responses captured")
-            except Exception as e:
-                print(f"[FanDuel NBA] Navigation warning: {e}")
-
-            await browser.close()
-
-        # Also update the global cookie
-        global _fd_cookie
-        # (cookie is captured indirectly via the Playwright session)
-
-        # Parse all captured API responses
-        for data in captured:
-            batch = _parse_fd_markets(data)
-            for k, v in batch.items():
-                if k not in lines:
-                    lines[k] = v
-                else:
-                    lines[k].update(v)
-
-        print(f"[FanDuel NBA] {len(lines)} players with prop lines")
-        return lines
-
-    except Exception as e:
-        print(f"[FanDuel NBA] error: {e}")
-        return {}
-
-
-def _parse_fd_markets(data: Dict) -> Dict[str, Dict]:
-    """Parse markets/runners from a FanDuel API response dict."""
-    lines: Dict[str, Dict] = {}
-    markets = data.get("attachments",{}).get("markets",{})
-    runners = data.get("attachments",{}).get("runners",{})
-
-    for mkt in markets.values():
-        mkt_name = mkt.get("marketName","").lower()
-        stat_key = None
-        for sk, fragments in FD_MARKET_MAP.items():
-            if any(f in mkt_name for f in fragments):
-                stat_key = sk
-                break
-        if not stat_key:
-            continue
-
-        for rid in mkt.get("runnerIds", []):
-            runner   = runners.get(str(rid), {})
-            rname    = runner.get("runnerName", "")
-            handicap = float(runner.get("handicap") or 0)
-            if handicap <= 0:
-                continue
-            # Skip under outcomes
-            if "under" in rname.lower() and "over" not in rname.lower():
-                continue
-            # Extract player name from various FanDuel formats
-            player = rname
-            player = re.sub(r"[-\u2013]\s*(over|under)[\s\d\.]*", "", player, flags=re.IGNORECASE)
-            player = re.sub(r"^(over|under)[\s\d\.]+[-\u2013]?\s*", "", player, flags=re.IGNORECASE)
-            player = re.sub(r"\s*(over|under)[\s\d\.]+$", "", player, flags=re.IGNORECASE)
-            player = player.strip().strip("-").strip()
-            if not player or len(player) < 3 or player.replace(".","").replace(" ","").isdigit():
-                continue
-            pkey = _norm_name(player)
-            if pkey not in lines:
-                lines[pkey] = {"_name": player}
-            lines[pkey][stat_key] = handicap
-
-    return lines
-
-def attach_fd_lines(picks: List[Dict], fd_lines: Dict[str, Dict]) -> List[Dict]:
-    """Attach FanDuel line to each pick where available."""
-    for pick in picks:
-        fd_line = None
-        for pkey, pdata in fd_lines.items():
-            if _match_player(pdata.get("_name",""), pick["player"]):
-                fd_line = pdata.get(pick["stat"])
-                break
-        pick["fd_line"] = fd_line
-    return picks
-
-# ─── Helpers ──────────────────────────────────────────────────────────────────
-def parse_stat(val) -> int:
-    """Handle plain numbers AND made-attempted format like '3-11'."""
-    s = str(val)
-    if '-' in s:
-        s = s.split('-')[0]
-    try:
-        return int(float(s))
-    except Exception:
-        return 0
-
-def parse_min(val) -> float:
-    s = str(val)
-    if ':' in s:
-        parts = s.split(':')
-        try:
-            return float(parts[0]) + float(parts[1]) / 60
-        except Exception:
-            return 0.0
-    try:
-        return float(s)
-    except Exception:
-        return 0.0
-
-def find_best_threshold(values: List[float], thresholds: List[int]) -> Optional[Dict]:
-    n = len(values)
-    if n < MIN_GAMES:
-        return None
-    for t in thresholds:
-        hits = sum(1 for v in values if v >= t)
-        rate = hits / n
-        if rate >= HIT_RATE_MIN:
-            return {'threshold': t, 'hits': hits, 'games': n,
-                    'hit_rate': rate, 'pct': round(rate * 100, 1)}
-    return None
-
-# ─── ESPN API Functions ───────────────────────────────────────────────────────
 async def get_today_games(date_str: str = None) -> List[Dict]:
     if date_str:
         today_fmt = datetime.strptime(date_str, '%Y-%m-%d').strftime('%Y%m%d')
@@ -419,6 +175,93 @@ def _nm(a, b):
     pa, pb = na.split(), nb.split()
     return len(pa) >= 2 and len(pb) >= 2 and pa[0][0] == pb[0][0] and pa[-1] == pb[-1]
 
+
+PRIZEPICKS_STAT_MAP = {"Points":"PTS","Rebounds":"REB","Assists":"AST","3-PT Made":"FG3M"}
+
+async def get_prizepicks_lines():
+    props = []
+    try:
+        async with httpx.AsyncClient(timeout=20, headers={"User-Agent":"Mozilla/5.0","Referer":"https://app.prizepicks.com/"}) as client:
+            r = await client.get("https://api.prizepicks.com/projections", params={"league_id":7,"per_page":250,"single_stat":"true"})
+            if r.status_code != 200:
+                return []
+            data = r.json()
+            player_map = {item["id"]: item["attributes"].get("name","") for item in data.get("included",[]) if item.get("type")=="new_player"}
+            for proj in data.get("data",[]):
+                attrs = proj.get("attributes",{})
+                stat  = PRIZEPICKS_STAT_MAP.get(attrs.get("stat_type",""))
+                if not stat: continue
+                line  = float(attrs.get("line_score") or 0)
+                if line <= 0: continue
+                pid  = proj.get("relationships",{}).get("new_player",{}).get("data",{}).get("id","")
+                name = player_map.get(pid, attrs.get("description",""))
+                if name:
+                    props.append({"player":name,"stat":stat,"line":line,"odds":"","home":"","away":""})
+    except Exception as e:
+        print(f"[PrizePicks] {e}")
+    print(f"[PrizePicks] {len(props)} lines")
+    return props
+
+
+UNDERDOG_STAT_MAP = {
+    "points":           "PTS",
+    "rebounds":         "REB",
+    "assists":          "AST",
+    "three_points_made":"FG3M",
+}
+
+async def get_underdog_lines():
+    """Fetch NBA player O/U lines from Underdog Fantasy — free, no key needed.
+    Returns real sportsbook-style lines with American odds."""
+    props = []
+    try:
+        async with httpx.AsyncClient(timeout=20, headers={
+            "User-Agent": "Mozilla/5.0",
+            "Accept": "application/json"
+        }) as client:
+            r = await client.get("https://api.underdogfantasy.com/beta/v5/over_under_lines")
+            if r.status_code != 200:
+                print(f"[Underdog] status {r.status_code}")
+                return []
+            data    = r.json()
+            lines   = data.get("over_under_lines", [])
+            apps    = {a["id"]: a for a in data.get("appearances", [])}
+            games   = {g["id"]: g for g in data.get("games", [])}
+
+            for line in lines:
+                if line.get("status") != "active":
+                    continue
+                ou       = line.get("over_under", {})
+                app_stat = ou.get("appearance_stat", {})
+                stat_raw = app_stat.get("stat", "")
+                stat     = UNDERDOG_STAT_MAP.get(stat_raw)
+                if not stat:
+                    continue
+                app_id   = app_stat.get("appearance_id", "")
+                app      = apps.get(app_id, {})
+                game     = games.get(app.get("match_id", ""), {})
+                if game.get("sport_id") != "NBA":
+                    continue
+                options   = line.get("options", [])
+                name      = options[0].get("selection_header", "") if options else ""
+                if not name:
+                    continue
+                line_val  = float(line.get("stat_value") or 0)
+                over_odds = next((o.get("american_price","") for o in options if o.get("choice")=="higher"), "")
+                under_odds= next((o.get("american_price","") for o in options if o.get("choice")=="lower"), "")
+                props.append({
+                    "player":     name,
+                    "stat":       stat,
+                    "line":       line_val,
+                    "over_odds":  over_odds,
+                    "under_odds": under_odds,
+                    "source":     "Underdog",
+                })
+        print(f"[Underdog] {len(props)} NBA lines fetched")
+    except Exception as e:
+        print(f"[Underdog] error: {e}")
+    return props
+
 async def get_odds_lines(today_str):
     api_key = os.environ.get('ODDS_API_KEY', '')
     if not api_key:
@@ -438,7 +281,8 @@ async def get_odds_lines(today_str):
                 r2 = await c.get(
                     f"{ODDS_API_BASE}/sports/basketball_nba/events/{ev['id']}/odds",
                     params={'apiKey': api_key, 'regions': 'us,us2',
-                            'markets': markets, 'oddsFormat': 'american'})
+                            'markets': markets, 'oddsFormat': 'american',
+                            'bookmakers': 'draftkings,fanduel,betmgm,bet365'})
                 if r2.status_code != 200:
                     continue
                 data = r2.json()
@@ -462,11 +306,37 @@ async def get_odds_lines(today_str):
                                     'home': data.get('home_team', ''),
                                     'away': data.get('away_team', ''),
                                 })
-                    break  # first bookmaker only
+                    # check all bookmakers for best coverage
     except Exception as e:
         print(f'[OddsAPI] error: {e}')
     print(f'[OddsAPI] {len(props)} NBA prop lines fetched')
     return props
+
+
+def parse_stat(val):
+    s = str(val)
+    if '-' in s: s = s.split('-')[0]
+    try: return int(float(s))
+    except: return 0
+
+def parse_min(val):
+    s = str(val)
+    if ':' in s:
+        p = s.split(':')
+        try: return float(p[0]) + float(p[1])/60
+        except: return 0.0
+    try: return float(s)
+    except: return 0.0
+
+def find_best_threshold(values, thresholds):
+    n = len(values)
+    if n < MIN_GAMES: return None
+    for t in thresholds:
+        hits = sum(1 for v in values if v >= t)
+        rate = hits / n
+        if rate >= HIT_RATE_MIN:
+            return {'threshold':t,'hits':hits,'games':n,'hit_rate':rate,'pct':round(rate*100,1)}
+    return None
 
 async def run_analysis(selected_date: str = None) -> Dict:
     today_str = selected_date if selected_date else date.today().isoformat()
@@ -478,10 +348,18 @@ async def run_analysis(selected_date: str = None) -> Dict:
 
     # Fetch games + Odds API lines concurrently
     try:
-        games, odds_props = await asyncio.gather(
-            get_today_games(today_str),
-            get_odds_lines(today_str),
+        pp, ud_lines, odds_raw = await asyncio.gather(
+            get_prizepicks_lines(),
+            get_underdog_lines(),
+            get_odds_lines(today_str)
         )
+        # PrizePicks = pattern picks source
+        # Underdog = real sportsbook O/U lines (shown as DK line)
+        # Odds API = extra backup
+        seen = {f"{p['player']}|{p['stat']}" for p in pp}
+        odds_props = pp + [p for p in odds_raw if f"{p['player']}|{p['stat']}" not in seen]
+        games = await get_today_games(today_str)
+        log.append(f"PrizePicks: {len(pp)} | Underdog O/U: {len(ud_lines)} | OddsAPI: {len(odds_raw)} lines")
     except Exception as e:
         return {'date': today_str, 'picks': [], 'all_picks': [], 'games': [],
                 'log': [f'Error: {e}'], 'total': 0}
@@ -493,11 +371,26 @@ async def run_analysis(selected_date: str = None) -> Dict:
     log.append("Games: " + " | ".join(f"{g['away']} @ {g['home']}" for g in games))
     log.append(f"{len(odds_props)} sportsbook prop lines loaded")
 
-    # Build Odds API lookup: (normalised_name, stat) -> {line, odds}
+    # Build lookups: pp_lookup = PrizePicks, dk_lookup = Odds API (real sportsbook)
     odds_lookup: Dict[tuple, Dict] = {}
     for prop in odds_props:
         key = (_nn(prop['player']), prop['stat'])
         odds_lookup[key] = {'line': prop['line'], 'odds': str(prop.get('odds', ''))}
+
+    # dk_lookup uses Underdog lines (real O/U with American odds)
+    dk_lookup: Dict[tuple, Dict] = {}
+    for prop in ud_lines:
+        key = (_nn(prop['player']), prop['stat'])
+        dk_lookup[key] = {
+            'line':       prop['line'],
+            'over_odds':  prop.get('over_odds',''),
+            'under_odds': prop.get('under_odds',''),
+        }
+    # Fill gaps with Odds API
+    for prop in odds_raw:
+        key = (_nn(prop['player']), prop['stat'])
+        if key not in dk_lookup:
+            dk_lookup[key] = {'line': prop['line'], 'over_odds': '', 'under_odds': ''}
 
     # Rosters
     team_ids = list({g['home_id'] for g in games} | {g['away_id'] for g in games})
@@ -550,6 +443,11 @@ async def run_analysis(selected_date: str = None) -> Dict:
                     fd_odds   = sb.get('odds', '')
                     # Last 10 vs team over sportsbook line
                     l10_sb_hits = sum(1 for l in last10 if float(l[sk]) > fd_line) if fd_line and last10 else None
+                    dk_ob = dk_lookup.get((_nn(pname), sk), {})
+                    dk_line = dk_ob.get('line')
+                    dk_over_odds  = dk_ob.get('over_odds', '')
+                    dk_under_odds = dk_ob.get('under_odds', '')
+                    dk_hits = sum(1 for l in last10 if float(l[sk]) > dk_line) if dk_line and last10 else None
                     picks.append({**result, 'player': pname, 'player_id': pid, 'team': h,
                                   'team_name': h_name, 'stat': sk,
                                   'stat_label': sc['label'], 'emoji': sc['emoji'],
@@ -557,7 +455,8 @@ async def run_analysis(selected_date: str = None) -> Dict:
                                   'matchup': f"{a_name} @ {h_name}",
                                   'l10_hits': l10h, 'l10_games': len(last10),
                                   'fd_line': fd_line, 'fd_odds': fd_odds,
-                                  'l10_sb_hits': l10_sb_hits})
+                                  'l10_sb_hits': l10_sb_hits,
+                                  'dk_line': dk_line, 'dk_over_odds': dk_over_odds, 'dk_under_odds': dk_under_odds, 'dk_hits': dk_hits})
 
         for player in rosters.get(game['away_id'], []):
             pid, pname = player['id'], player['name']
@@ -573,6 +472,11 @@ async def run_analysis(selected_date: str = None) -> Dict:
                     fd_line   = sb.get('line')
                     fd_odds   = sb.get('odds', '')
                     l10_sb_hits = sum(1 for l in last10 if float(l[sk]) > fd_line) if fd_line and last10 else None
+                    dk_ob = dk_lookup.get((_nn(pname), sk), {})
+                    dk_line = dk_ob.get('line')
+                    dk_over_odds  = dk_ob.get('over_odds', '')
+                    dk_under_odds = dk_ob.get('under_odds', '')
+                    dk_hits = sum(1 for l in last10 if float(l[sk]) > dk_line) if dk_line and last10 else None
                     picks.append({**result, 'player': pname, 'player_id': pid, 'team': a,
                                   'team_name': a_name, 'stat': sk,
                                   'stat_label': sc['label'], 'emoji': sc['emoji'],
@@ -580,7 +484,8 @@ async def run_analysis(selected_date: str = None) -> Dict:
                                   'matchup': f"{a_name} @ {h_name}",
                                   'l10_hits': l10h, 'l10_games': len(last10),
                                   'fd_line': fd_line, 'fd_odds': fd_odds,
-                                  'l10_sb_hits': l10_sb_hits})
+                                  'l10_sb_hits': l10_sb_hits,
+                                  'dk_line': dk_line, 'dk_over_odds': dk_over_odds, 'dk_under_odds': dk_under_odds, 'dk_hits': dk_hits})
 
     picks.sort(key=lambda x: (x['hit_rate'], x['threshold']), reverse=True)
     top_picks = picks[:TOP_N]
@@ -590,8 +495,30 @@ async def run_analysis(selected_date: str = None) -> Dict:
         log.append(f"{with_lines} picks have sportsbook lines attached")
 
     odds_loaded = bool(odds_props)
-    result = {'date': today_str, 'picks': top_picks, 'all_picks': picks,
-              'games': games, 'log': log, 'total': len(picks), 'odds_loaded': odds_loaded}
+    props_picks, props_nopick = [], []
+    for game in games:
+        h,a = game['home'],game['away']
+        h_name,a_name = game['home_name'],game['away_name']
+        for loc,tid,opp_id,opp_name,side in [('Home',game['home_id'],a,a_name,'HOME'),('Away',game['away_id'],h,h_name,'AWAY')]:
+            for player in rosters.get(tid,[]):
+                pname,pid = player['name'],player['id']
+                for sk,sc in STAT_CONFIG.items():
+                    ob = odds_lookup.get((_nn(pname),sk),{})
+                    if not ob or ob.get('line') is None: continue
+                    line = float(ob['line'])
+                    opp_logs = [l for l in logs_by_player.get(pid,[]) if l['location']==loc and l['opp']==opp_id]
+                    if not opp_logs:
+                        props_nopick.append({'player':pname,'stat':sk,'stat_label':sc['label'],'emoji':sc['emoji'],'side':side,'opp_name':opp_name,'line':line,'avg':None,'games':0,'history':'—','gap':None,'pick':None,'fd_odds':ob.get('odds','')})
+                        continue
+                    vals = [float(l[sk]) for l in opp_logs]
+                    avg = round(sum(vals)/len(vals),1)
+                    gap = round(avg-line,1)
+                    pick = 'OVER' if avg>line else ('UNDER' if avg<line else None)
+                    entry = {'player':pname,'stat':sk,'stat_label':sc['label'],'emoji':sc['emoji'],'side':side,'opp_name':opp_name,'line':line,'avg':avg,'games':len(vals),'history':','.join(str(int(v)) for v in vals[:8]),'gap':gap,'pick':pick,'fd_odds':ob.get('odds','')}
+                    (props_picks if pick else props_nopick).append(entry)
+    props_picks.sort(key=lambda x:abs(x.get('gap') or 0),reverse=True)
+    log.append(f"Props: {len(props_picks)} picks")
+    result = {'date':today_str,'picks':top_picks,'all_picks':picks,'games':games,'log':log,'total':len(picks),'odds_loaded':odds_loaded,'props_picks':props_picks,'props_nopick':props_nopick}
     _cache.update(result)
     return result
 
@@ -600,23 +527,23 @@ LOGIN_HTML = """<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>NBA Money Buckets</title>
+<title>🏀 Money Buckets</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{
-  background:#050a14;
-  background-image:radial-gradient(ellipse at 50% 0%,rgba(249,115,22,.1) 0%,transparent 55%);
-  color:#e0e6f0;font-family:'Segoe UI',system-ui,sans-serif;
+  background:#0d0d0d;
+  background-image:radial-gradient(ellipse at 50% 0%,rgba(253,184,39,.1) 0%,transparent 55%);
+  color:#f0e6c8;font-family:'Segoe UI',system-ui,sans-serif;
   min-height:100vh;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:0;
 }
 /* ── Spinning basketball ── */
 .spin-ball{
   width:80px;height:80px;border-radius:50%;
-  background:radial-gradient(circle at 38% 35%,#fb923c 0%,#ea580c 55%,#7c2d12 100%);
+  background:radial-gradient(circle at 38% 35%,#FDB827 0%,#FDB827 55%,#7c2d12 100%);
   border:2px solid #7c2d12;
   position:relative;margin-bottom:24px;
   animation:spinBall 6s linear infinite;
-  box-shadow:0 0 40px rgba(249,115,22,.5),0 0 80px rgba(249,115,22,.15);
+  box-shadow:0 0 40px rgba(253,184,39,.5),0 0 80px rgba(253,184,39,.15);
 }
 .spin-ball::before{
   content:'';position:absolute;inset:-1px;border-radius:50%;
@@ -633,19 +560,19 @@ body{
 /* ── Card ── */
 .card{
   background:linear-gradient(145deg,rgba(15,23,42,.97),rgba(8,12,24,.99));
-  border:1px solid rgba(30,58,95,.8);border-radius:24px;
+  border:1px solid rgba(42,42,42,.8);border-radius:24px;
   padding:40px 40px 36px;width:390px;text-align:center;
-  box-shadow:0 30px 80px rgba(0,0,0,.7),0 0 0 1px rgba(249,115,22,.04),inset 0 1px 0 rgba(255,255,255,.03);
+  box-shadow:0 30px 80px rgba(0,0,0,.7),0 0 0 1px rgba(253,184,39,.04),inset 0 1px 0 rgba(255,255,255,.03);
   position:relative;overflow:hidden;
 }
 .card::before{
   content:'';position:absolute;top:0;left:0;right:0;height:2px;
-  background:linear-gradient(90deg,transparent,#f59e0b,#ea580c,#f59e0b,transparent);
+  background:linear-gradient(90deg,transparent,#FDB827,#FDB827,#FDB827,transparent);
 }
 .logo-line{display:flex;align-items:center;justify-content:center;gap:8px;margin-bottom:4px}
-h1{
+.login-card h1{
   font-size:1.65rem;font-weight:900;letter-spacing:-.5px;
-  background:linear-gradient(135deg,#f59e0b 0%,#fb923c 100%);
+  background:linear-gradient(135deg,#FDB827 0%,#FDB827 100%);
   -webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;
 }
 .sub{color:#374151;font-size:.75rem;margin-bottom:30px;letter-spacing:1.5px;text-transform:uppercase}
@@ -653,30 +580,41 @@ h1{
 .fi{position:absolute;left:14px;top:50%;transform:translateY(-50%);opacity:.35;font-size:.9rem;pointer-events:none}
 input{
   width:100%;background:rgba(15,23,42,.8);
-  border:1px solid rgba(30,58,95,.8);color:#d1d5db;
+  border:1px solid rgba(42,42,42,.8);color:#d1d5db;
   padding:13px 16px 13px 42px;border-radius:12px;
   font-size:.95rem;outline:none;transition:border-color .2s,box-shadow .2s;
 }
-input:focus{border-color:#f59e0b;box-shadow:0 0 0 3px rgba(245,158,11,.12)}
+input:focus{border-color:#FDB827;box-shadow:0 0 0 3px rgba(253,184,39,.12)}
 input::placeholder{color:#374151}
 .btn-in{
   width:100%;margin-top:8px;
-  background:linear-gradient(135deg,#f59e0b,#ea580c);color:#050a14;
+  background:linear-gradient(135deg,#FDB827,#FDB827);color:#0d0d0d;
   border:none;padding:14px;border-radius:12px;
   font-size:1rem;font-weight:900;letter-spacing:.5px;cursor:pointer;
-  box-shadow:0 4px 20px rgba(245,158,11,.35);transition:transform .15s,box-shadow .15s;
+  box-shadow:0 4px 20px rgba(253,184,39,.35);transition:transform .15s,box-shadow .15s;
 }
-.btn-in:hover{transform:translateY(-2px);box-shadow:0 8px 30px rgba(245,158,11,.45)}
+.btn-in:hover{transform:translateY(-2px);box-shadow:0 8px 30px rgba(253,184,39,.45)}
 .btn-in:active{transform:translateY(0)}
 .err{color:#f87171;font-size:.83rem;margin-top:14px;background:rgba(127,29,29,.3);padding:10px 14px;border-radius:10px;border:1px solid rgba(239,68,68,.2)}
 .tagline{color:#0f1d2e;font-size:.68rem;margin-top:22px;letter-spacing:2px;text-transform:uppercase}
 </style>
 </head>
 <body>
+<script>
+(function(){
+  var HUB='https://www.moneypicksarena.com';
+  var KEY='__mpa_token';
+  var p=new URLSearchParams(window.location.search);
+  var t=p.get('token');
+  if(t){localStorage.setItem(KEY,t);window.history.replaceState({},'',window.location.pathname);}
+  if(!localStorage.getItem(KEY)){window.location.href=HUB;}
+})();
+</script>
+
 <div class="spin-ball"></div>
 <div class="card">
   <div class="logo-line">
-    <h1>NBA Money Buckets</h1>
+    <h1>Money Buckets</h1>
   </div>
   <p class="sub">Pattern-Based Matchup Intelligence</p>
   <form method="post" action="/login">
@@ -852,6 +790,32 @@ footer{text-align:center;padding:32px 24px;color:#4b5563;font-size:.78rem;border
   <div id="allPicksSection"></div>
 </div>
 
+<div id="props-section" style="display:none;max-width:1400px;margin:28px auto 0;padding:0 24px 40px">
+  <div style="font-size:.85rem;font-weight:900;letter-spacing:2px;text-transform:uppercase;display:flex;align-items:center;gap:10px;font-size:.78rem;font-weight:700;color:#f59e0b;text-transform:uppercase;letter-spacing:.15em;margin:0 0 12px">⚡ Player Props vs Opponent History</div>
+  <div style="overflow-x:auto;border-radius:14px;border:1px solid #262626">
+    <table style="width:100%;border-collapse:collapse;font-size:.82rem;background:#161616">
+      <thead><tr style="border-bottom:1px solid rgba(245,158,11,.2)">
+        <th style="padding:12px 14px;text-align:left;color:#f59e0b;font-size:.7rem;font-weight:700;text-transform:uppercase;letter-spacing:.12em;background:#1a1a1a;white-space:nowrap">#</th>
+        <th style="padding:12px 14px;text-align:left;color:#f59e0b;font-size:.7rem;font-weight:700;text-transform:uppercase;letter-spacing:.12em;background:#1a1a1a;white-space:nowrap">Player</th>
+        <th style="padding:12px 14px;text-align:left;color:#f59e0b;font-size:.7rem;font-weight:700;text-transform:uppercase;letter-spacing:.12em;background:#1a1a1a;white-space:nowrap">Stat</th>
+        <th style="padding:12px 14px;text-align:left;color:#f59e0b;font-size:.7rem;font-weight:700;text-transform:uppercase;letter-spacing:.12em;background:#1a1a1a;white-space:nowrap">H/A</th>
+        <th style="padding:12px 14px;text-align:left;color:#f59e0b;font-size:.7rem;font-weight:700;text-transform:uppercase;letter-spacing:.12em;background:#1a1a1a;white-space:nowrap">Opponent</th>
+        <th style="padding:12px 14px;text-align:left;color:#f59e0b;font-size:.7rem;font-weight:700;text-transform:uppercase;letter-spacing:.12em;background:#1a1a1a;white-space:nowrap">Line</th>
+        <th style="padding:12px 14px;text-align:left;color:#f59e0b;font-size:.7rem;font-weight:700;text-transform:uppercase;letter-spacing:.12em;background:#1a1a1a;white-space:nowrap">Avg vs Opp</th>
+        <th style="padding:12px 14px;text-align:left;color:#f59e0b;font-size:.7rem;font-weight:700;text-transform:uppercase;letter-spacing:.12em;background:#1a1a1a;white-space:nowrap">Gap</th>
+        <th style="padding:12px 14px;text-align:left;color:#f59e0b;font-size:.7rem;font-weight:700;text-transform:uppercase;letter-spacing:.12em;background:#1a1a1a;white-space:nowrap">Games</th>
+        <th style="padding:12px 14px;text-align:left;color:#f59e0b;font-size:.7rem;font-weight:700;text-transform:uppercase;letter-spacing:.12em;background:#1a1a1a;white-space:nowrap">History</th>
+        <th style="padding:12px 14px;text-align:left;color:#f59e0b;font-size:.7rem;font-weight:700;text-transform:uppercase;letter-spacing:.12em;background:#1a1a1a;white-space:nowrap">Pick</th>
+      </tr></thead>
+      <tbody id="props-body"></tbody>
+    </table>
+  </div>
+  <p style="font-size:.72rem;color:#555;margin-top:8px">
+    <strong style="color:#f59e0b">Avg vs Opp</strong> = career H/A avg vs today's opponent &nbsp;|&nbsp;
+    <strong style="color:#f59e0b">Pick</strong> = O (Over) if avg &gt; line, U (Under) if avg &lt; line
+  </p>
+</div>
+</div><!-- /wrap -->
 
 <footer>
   <div class="ft-logo">Money Picks Arena</div>
@@ -923,7 +887,8 @@ function renderTop10Cards(picks){
       <div class="stat-strip">${statTag(p.stat)}</div>
       <div class="pick-pattern">${p.threshold}+ ${p.stat_label} in ${p.hits} of ${p.games} ${p.location.toLowerCase()} games vs ${p.opp}</div>
       ${p.l10_games > 0 ? `<div class="l10vthr-desc">${p.player.split(" ").pop()} hit ${p.threshold}+ ${p.stat_label} ${p.l10_hits} of ${p.l10_games} last 10 games vs ${p.opp}</div>` : ""}
-      ${p.fd_line ? `<div class="fd-line-badge">Sportsbook Line: <strong>${p.fd_line}</strong> ${p.fd_odds ? "(" + p.fd_odds + ")" : ""}${p.l10_sb_hits !== null && p.l10_sb_hits !== undefined ? " | Last 10 vs " + p.opp + ": " + p.l10_sb_hits + "/" + p.l10_games : ""}</div>` : ""}
+      ${p.fd_line ? `<div class="fd-line-badge">📊 PrizePicks: <strong>${p.fd_line}</strong> | ${p.stat_label} ${p.threshold}+: ${p.l10_sb_hits !== null && p.l10_sb_hits !== undefined ? p.l10_sb_hits + "/" + p.l10_games + " vs " + p.opp : "—"}</div>` : ""}
+      ${p.dk_line ? `<div class="fd-line-badge" style="background:rgba(99,102,241,.15);border-color:rgba(99,102,241,.3);margin-top:4px">🏙️ O/U Line: <strong>${p.dk_line}</strong> ${p.dk_over_odds ? "O " + p.dk_over_odds : ""} ${p.dk_under_odds ? "U " + p.dk_under_odds : ""} | Hit ${p.dk_line}+: ${p.dk_hits !== null && p.dk_hits !== undefined ? p.dk_hits + "/" + p.l10_games + " vs " + p.opp : "—"}</div>` : ""}
       <div class="pick-matchup">📍 Today: ${p.matchup}</div>
       <div class="bar-wrap"><div class="bar-fill ${bc}" style="width:${Math.min(p.pct,100)}%"></div></div>
       <div class="stats-row"><span class="games-chip">${p.hits}/${p.games} games</span><span class="pct ${pc}">${p.pct}%</span></div>
@@ -985,44 +950,7 @@ function renderGames(games){
     `<div class="game-chip"><b>${g.away}</b><span class="sep">@</span><b>${g.home}</b></div>`
   ).join('');
 }
-// FanDuel status indicator
-async function checkFD(){
-  const dot   = document.getElementById('fdDot');
-  const label = document.getElementById('fdLabel');
-  if(!dot) return;
-  dot.className = 'fd-dot checking';
-  label.textContent = 'FanDuel...';
-  try{
-    const r = await fetch('/fd-status');
-    const d = await r.json();
-    if(d.fanduel === 'connected'){
-      dot.className = 'fd-dot connected';
-      label.style.color = '#22c55e';
-      label.textContent = 'FanDuel ✓';
-    } else if(d.fanduel === 'disconnected'){
-      dot.className = 'fd-dot disconnected';
-      label.style.color = '#ef4444';
-      label.textContent = 'FanDuel ✗';
-    } else {
-      dot.className = 'fd-dot';
-      label.style.color = '#475569';
-      label.textContent = 'FanDuel';
-    }
-  } catch(e){
-    dot.className = 'fd-dot';
-    label.textContent = 'FanDuel';
-  }
-}
-document.addEventListener('DOMContentLoaded', checkFD);
 
-async function clearAndRun(){
-  const btn = document.querySelector('.btn-refresh');
-  if(btn){ btn.textContent = '⏳ Clearing...'; btn.disabled = true; }
-  await fetch('/clear-cache');
-  await checkFD();
-  if(btn){ btn.textContent = '🔄 Refresh'; btn.disabled = false; }
-  // Just clears cache — user hits Run Picks when ready
-}
 
 async function runPicks(){
   const selectedDate=document.getElementById('datePicker').value;
@@ -1030,8 +958,8 @@ async function runPicks(){
     <div class="msg-card">
       <div class="loading-ball"></div>
       <div class="ball-shadow"></div>
-      <h2 style="color:#f59e0b">Analyzing Matchup Patterns</h2>
-      <p>Pulling data for <strong style="color:#60a5fa">${selectedDate}</strong> from NBA Stats API.<br>
+      <h2 style="color:#FDB827">Analyzing Matchup Patterns</h2>
+      <p>Pulling data for <strong style="color:#FDB827">${selectedDate}</strong> from NBA Stats API.<br>
       <span style="color:#1e3a5f">This takes ~45 seconds — worth the wait.</span></p>
     </div>`;
   document.getElementById('allPicksWrap').style.display='none';
@@ -1046,6 +974,7 @@ async function runPicks(){
     const log=data.log||[];
     if(!top10.length){
       document.getElementById('content').innerHTML=`<div class="msg-card"><span class="ico">🔍</span><h2>No Qualifying Patterns</h2><p>No 75%+ patterns for today's matchups.</p></div><div class="log-box">${log.join('<br>')}</div>`;
+      renderPropsSection(data.props_picks, data.props_nopick);
       return;
     }
     document.getElementById('filterBar').style.display='flex';
@@ -1057,9 +986,41 @@ async function runPicks(){
     document.getElementById('totalCount').textContent=allPicksData.length;
     document.getElementById('allPicksWrap').style.display='block';
     renderAllByGame(allPicksData);
+    renderPropsSection(data.props_picks, data.props_nopick);
   }catch(e){
     document.getElementById('content').innerHTML=`<div class="msg-card"><span class="ico">❌</span><h2 style="color:#ef4444">Something went wrong</h2><p>${e.message}</p></div>`;
   }
+}
+
+function renderPropsSection(picks, nopick) {
+  var sec  = document.getElementById('props-section');
+  var body = document.getElementById('props-body');
+  if (!sec || !body) return;
+  sec.style.display = 'block';
+  var all = (picks||[]).concat((nopick||[]).filter(function(p){return p.games>0;}));
+  if (all.length === 0) {
+    body.innerHTML = '<tr><td colspan="11" style="text-align:center;padding:20px;color:#555">No prop lines available yet — check back closer to tip-off.</td></tr>';
+    return;
+  }
+  body.innerHTML = all.map(function(p,i) {
+    var isOver=p.pick==='OVER'||p.pick==='O', isUnder=p.pick==='UNDER'||p.pick==='U';
+    var clr = isOver?'#4ade80':isUnder?'#f87171':'#555';
+    var gap = p.gap!=null?(p.gap>0?'+':'')+p.gap:'—';
+    var sideBg = p.side==='HOME'?'rgba(253,184,39,.15)':'rgba(99,102,241,.15)';
+    return '<tr style="border-bottom:1px solid #1a1a1a">' +
+      '<td style="padding:9px 12px;color:#555">'+(i+1)+'</td>' +
+      '<td style="padding:9px 12px;font-weight:700">'+p.player+'</td>' +
+      '<td style="padding:9px 12px;color:#FDB827;font-size:.8rem">'+p.emoji+' '+p.stat_label+'</td>' +
+      '<td style="padding:9px 12px"><span style="background:'+sideBg+';padding:2px 7px;border-radius:4px;font-size:.75rem">'+p.side+'</span></td>' +
+      '<td style="padding:9px 12px;color:#999;font-size:.8rem">'+p.opp_name+'</td>' +
+      '<td style="padding:9px 12px;font-family:monospace;font-weight:700">'+p.line+'</td>' +
+      '<td style="padding:9px 12px;font-family:monospace;font-weight:700;color:'+clr+';font-size:1rem">'+(p.avg!=null?p.avg:'—')+'</td>' +
+      '<td style="padding:9px 12px;font-family:monospace;color:'+clr+';font-weight:700">'+gap+'</td>' +
+      '<td style="padding:9px 12px;color:#555">'+p.games+'g</td>' +
+      '<td style="padding:9px 12px;font-family:monospace;font-size:.7rem;color:#555;max-width:130px">'+p.history+'</td>' +
+      '<td style="padding:9px 12px"><span style="color:'+clr+';font-weight:900;font-size:.95rem">'+(p.pick==='OVER'?'O':p.pick==='UNDER'?'U':(p.pick||'—'))+'</span></td>' +
+      '</tr>';
+  }).join('');
 }
 </script>
 </body>
@@ -1083,9 +1044,9 @@ async def index(request: Request):
     today_iso = date.today().isoformat()
     return HTMLResponse(MAIN_HTML.replace("__TODAY__", today_iso))
 
-@app.get("/login", response_class=HTMLResponse)
+@app.get("/login")
 async def login_get():
-    return HTMLResponse(LOGIN_HTML.replace('{error}', ''))
+    return RedirectResponse("https://www.moneypicksarena.com")
 
 @app.post("/login")
 async def login_post(request: Request):
@@ -1098,14 +1059,10 @@ async def login_post(request: Request):
         return resp
     return HTMLResponse(LOGIN_HTML.replace('{error}', '<p class="err">⚠️ Invalid username or password</p>'), status_code=401)
 
-@app.get("/logout")
-async def logout():
-    resp = RedirectResponse("/login")
-    resp.delete_cookie("session")
-    return resp
-
 @app.post("/run")
 async def run(request: Request):
+    if not get_user(request):
+        return {"error": "Unauthorized"}
     try:
         body = await request.json()
         selected_date = body.get('date', date.today().isoformat())
@@ -1119,28 +1076,9 @@ async def clear_cache(request: Request):
     user = get_user(request)
     if not user:
         return {"error": "unauthorized"}
-    global _cache, _fd_cookie
+    global _cache
     _cache = {}
-    _fd_cookie = None  # force fresh FD login too
     return {"status": "cleared"}
-
-@app.get("/fd-status")
-async def fd_status(request: Request):
-    user = get_user(request)
-    if not user:
-        return {"fanduel": "unauthorized"}
-    configured = bool(os.environ.get("FD_EMAIL"))
-    connected  = _fd_cookie is not None
-    if configured and not connected:
-        try:
-            await get_fd_cookie()
-            connected = _fd_cookie is not None
-        except Exception:
-            connected = False
-    return {
-        "fanduel":    "connected" if connected else ("disconnected" if configured else "not_configured"),
-        "configured": configured,
-    }
 
 @app.get("/health")
 async def health():
