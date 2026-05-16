@@ -11,10 +11,12 @@ from datetime import date, datetime
 from typing import Dict, List, Optional, Any
 
 import httpx
+from curl_cffi.requests import AsyncSession as CFSession
+from playwright.async_api import async_playwright
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
-app = FastAPI(title="Money Buckets")
+app = FastAPI(title="NBA Money Buckets")
 
 # ─── Auth ─────────────────────────────────────────────────────────────────────
 USERS_RAW = os.environ.get("USERS", "admin:buckets")
@@ -30,7 +32,10 @@ def make_token(username: str) -> str:
     return hashlib.sha256(f"{username}:{SECRET}".encode()).hexdigest()
 
 def get_user(request: Request) -> Optional[str]:
-    return 'higgi'
+    token = request.cookies.get("session")
+    for u in USERS:
+        if token == make_token(u):
+            return u
     return None
 
 # ─── Stat Config ──────────────────────────────────────────────────────────────
@@ -47,7 +52,7 @@ STAT_CONFIG = {
 HIT_RATE_MIN  = 0.75
 MIN_GAMES     = 2
 MIN_MINUTES   = 10.0
-ESPN_SEASONS  = [2026, 2025, 2024, 2023, 2022, 2021, 2020]
+ESPN_SEASONS  = [2026, 2025, 2024]
 TOP_N         = 10
 
 ODDS_API_BASE   = "https://api.the-odds-api.com/v4"
@@ -59,12 +64,255 @@ ODDS_MARKET_MAP = {
 }
 MIN_GAMES     = 3
 MIN_MINUTES   = 10.0
-ESPN_SEASONS  = [2026, 2025, 2024, 2023, 2022, 2021, 2020]   # ESPN uses season END year — 7 seasons for full career H/A history
+ESPN_SEASONS  = [2026, 2025, 2024]   # ESPN uses season END year
 TOP_N         = 10
 
 # ─── Cache ────────────────────────────────────────────────────────────────────
 _cache: Dict[str, Any] = {}
 
+# ─── FanDuel Session ──────────────────────────────────────────────────────────
+_fd_cookie: Optional[str] = None
+_fd_lock    = asyncio.Lock()
+
+async def get_fd_cookie() -> str:
+    global _fd_cookie
+    async with _fd_lock:
+        if not _fd_cookie:
+            _fd_cookie = await _fanduel_login()
+    return _fd_cookie
+
+async def _fanduel_login() -> str:
+    email    = os.environ.get("FD_EMAIL", "")
+    password = os.environ.get("FD_PASSWORD", "")
+    if not email or not password:
+        return ""
+    print("[FanDuel] Logging in...")
+    async with async_playwright() as pw:
+        browser = await pw.chromium.launch(
+            headless=True, args=["--no-sandbox","--disable-dev-shm-usage"])
+        ctx  = await browser.new_context(user_agent=(
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36"))
+        page = await ctx.new_page()
+        try:
+            await page.goto("https://sportsbook.fanduel.com/",
+                            wait_until="domcontentloaded", timeout=30_000)
+            try:
+                await page.click("text=Sign In", timeout=8_000)
+            except:
+                await page.goto("https://sportsbook.fanduel.com/login",
+                                wait_until="domcontentloaded", timeout=20_000)
+            await asyncio.sleep(2)
+            await page.fill(
+                "input[type='email'], input[name='username'], input[placeholder*='email' i]",
+                email, timeout=10_000)
+            await asyncio.sleep(0.5)
+            await page.fill("input[type='password']", password, timeout=10_000)
+            await page.click("button[type='submit']", timeout=8_000)
+            await page.wait_for_load_state("networkidle", timeout=25_000)
+        except Exception as e:
+            print(f"[FanDuel] Login warning: {e}")
+        cookies = await ctx.cookies()
+        await browser.close()
+    cookie_str = "; ".join(f"{c['name']}={c['value']}" for c in cookies)
+    print(f"[FanDuel] Login done — {len(cookies)} cookies")
+    return cookie_str
+
+# ─── NBA FanDuel Props ────────────────────────────────────────────────────────
+# Maps our stat keys to FanDuel market name fragments (NBA)
+FD_MARKET_MAP = {
+    "PTS":  ["points", "pts"],
+    "REB":  ["rebounds", "rebound", "reb", "total reb"],
+    "AST":  ["assists", "assist", "ast", "total ast"],
+    "FG3M": ["threes", "three", "3-point", "3pt", "3 point", "fg3", "made"],
+}
+
+def _norm_name(n: str) -> str:
+    nfd = unicodedata.normalize("NFD", n)
+    s   = nfd.encode("ascii","ignore").decode("ascii").lower()
+    return re.sub(r"[^a-z ]","",s).strip()
+
+def _match_player(fd_name: str, esp_name: str) -> bool:
+    fn, en = _norm_name(fd_name), _norm_name(esp_name)
+    if fn == en: return True
+    fp = fn.split(); ep = en.split()
+    if len(fp)>=2 and len(ep)>=2:
+        return fp[0][0]==ep[0][0] and fp[-1]==ep[-1]
+    return False
+
+async def fetch_fd_nba_lines() -> Dict[str, Dict]:
+    """Use Playwright to browse FanDuel NBA props page and capture live API responses."""
+    if not os.environ.get("FD_EMAIL"):
+        return {}
+    email    = os.environ.get("FD_EMAIL", "")
+    password = os.environ.get("FD_PASSWORD", "")
+    lines: Dict[str, Dict] = {}
+    captured: list = []
+
+    try:
+        async with async_playwright() as pw:
+            browser = await pw.chromium.launch(
+                headless=True, args=["--no-sandbox","--disable-dev-shm-usage"])
+            ctx  = await browser.new_context(user_agent=(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36"))
+            page = await ctx.new_page()
+
+            # Capture FanDuel API responses that contain player props
+            async def on_response(response):
+                try:
+                    if ("sbapi" in response.url and response.status == 200
+                            and "json" in response.headers.get("content-type","")):
+                        data = await response.json()
+                        if data.get("attachments",{}).get("markets"):
+                            captured.append(data)
+                except Exception:
+                    pass
+
+            page.on("response", on_response)
+
+            # Login
+            try:
+                await page.goto("https://sportsbook.fanduel.com/",
+                                wait_until="domcontentloaded", timeout=30_000)
+                try:
+                    await page.click("text=Sign In", timeout=8_000)
+                except:
+                    await page.goto("https://sportsbook.fanduel.com/login",
+                                    wait_until="domcontentloaded", timeout=20_000)
+                await asyncio.sleep(2)
+                await page.fill(
+                    "input[type='email'], input[name='username'], input[placeholder*='email' i]",
+                    email, timeout=10_000)
+                await asyncio.sleep(0.5)
+                await page.fill("input[type='password']", password, timeout=10_000)
+                await page.click("button[type='submit']", timeout=8_000)
+                await page.wait_for_load_state("networkidle", timeout=25_000)
+                print("[FanDuel NBA] Logged in")
+            except Exception as e:
+                print(f"[FanDuel NBA] Login warning: {e}")
+
+            # Navigate to NBA player props page
+            try:
+                await page.goto(
+                    "https://sportsbook.fanduel.com/sports/basketball/nba",
+                    wait_until="networkidle", timeout=30_000)
+                await asyncio.sleep(3)  # let props load
+                print(f"[FanDuel NBA] NBA page loaded, {len(captured)} API responses captured")
+            except Exception as e:
+                print(f"[FanDuel NBA] Navigation warning: {e}")
+
+            await browser.close()
+
+        # Also update the global cookie
+        global _fd_cookie
+        # (cookie is captured indirectly via the Playwright session)
+
+        # Parse all captured API responses
+        for data in captured:
+            batch = _parse_fd_markets(data)
+            for k, v in batch.items():
+                if k not in lines:
+                    lines[k] = v
+                else:
+                    lines[k].update(v)
+
+        print(f"[FanDuel NBA] {len(lines)} players with prop lines")
+        return lines
+
+    except Exception as e:
+        print(f"[FanDuel NBA] error: {e}")
+        return {}
+
+
+def _parse_fd_markets(data: Dict) -> Dict[str, Dict]:
+    """Parse markets/runners from a FanDuel API response dict."""
+    lines: Dict[str, Dict] = {}
+    markets = data.get("attachments",{}).get("markets",{})
+    runners = data.get("attachments",{}).get("runners",{})
+
+    for mkt in markets.values():
+        mkt_name = mkt.get("marketName","").lower()
+        stat_key = None
+        for sk, fragments in FD_MARKET_MAP.items():
+            if any(f in mkt_name for f in fragments):
+                stat_key = sk
+                break
+        if not stat_key:
+            continue
+
+        for rid in mkt.get("runnerIds", []):
+            runner   = runners.get(str(rid), {})
+            rname    = runner.get("runnerName", "")
+            handicap = float(runner.get("handicap") or 0)
+            if handicap <= 0:
+                continue
+            # Skip under outcomes
+            if "under" in rname.lower() and "over" not in rname.lower():
+                continue
+            # Extract player name from various FanDuel formats
+            player = rname
+            player = re.sub(r"[-\u2013]\s*(over|under)[\s\d\.]*", "", player, flags=re.IGNORECASE)
+            player = re.sub(r"^(over|under)[\s\d\.]+[-\u2013]?\s*", "", player, flags=re.IGNORECASE)
+            player = re.sub(r"\s*(over|under)[\s\d\.]+$", "", player, flags=re.IGNORECASE)
+            player = player.strip().strip("-").strip()
+            if not player or len(player) < 3 or player.replace(".","").replace(" ","").isdigit():
+                continue
+            pkey = _norm_name(player)
+            if pkey not in lines:
+                lines[pkey] = {"_name": player}
+            lines[pkey][stat_key] = handicap
+
+    return lines
+
+def attach_fd_lines(picks: List[Dict], fd_lines: Dict[str, Dict]) -> List[Dict]:
+    """Attach FanDuel line to each pick where available."""
+    for pick in picks:
+        fd_line = None
+        for pkey, pdata in fd_lines.items():
+            if _match_player(pdata.get("_name",""), pick["player"]):
+                fd_line = pdata.get(pick["stat"])
+                break
+        pick["fd_line"] = fd_line
+    return picks
+
+# ─── Helpers ──────────────────────────────────────────────────────────────────
+def parse_stat(val) -> int:
+    """Handle plain numbers AND made-attempted format like '3-11'."""
+    s = str(val)
+    if '-' in s:
+        s = s.split('-')[0]
+    try:
+        return int(float(s))
+    except Exception:
+        return 0
+
+def parse_min(val) -> float:
+    s = str(val)
+    if ':' in s:
+        parts = s.split(':')
+        try:
+            return float(parts[0]) + float(parts[1]) / 60
+        except Exception:
+            return 0.0
+    try:
+        return float(s)
+    except Exception:
+        return 0.0
+
+def find_best_threshold(values: List[float], thresholds: List[int]) -> Optional[Dict]:
+    n = len(values)
+    if n < MIN_GAMES:
+        return None
+    for t in thresholds:
+        hits = sum(1 for v in values if v >= t)
+        rate = hits / n
+        if rate >= HIT_RATE_MIN:
+            return {'threshold': t, 'hits': hits, 'games': n,
+                    'hit_rate': rate, 'pct': round(rate * 100, 1)}
+    return None
+
+# ─── ESPN API Functions ───────────────────────────────────────────────────────
 async def get_today_games(date_str: str = None) -> List[Dict]:
     if date_str:
         today_fmt = datetime.strptime(date_str, '%Y-%m-%d').strftime('%Y%m%d')
@@ -175,93 +423,6 @@ def _nm(a, b):
     pa, pb = na.split(), nb.split()
     return len(pa) >= 2 and len(pb) >= 2 and pa[0][0] == pb[0][0] and pa[-1] == pb[-1]
 
-
-PRIZEPICKS_STAT_MAP = {"Points":"PTS","Rebounds":"REB","Assists":"AST","3-PT Made":"FG3M"}
-
-async def get_prizepicks_lines():
-    props = []
-    try:
-        async with httpx.AsyncClient(timeout=20, headers={"User-Agent":"Mozilla/5.0","Referer":"https://app.prizepicks.com/"}) as client:
-            r = await client.get("https://api.prizepicks.com/projections", params={"league_id":7,"per_page":250,"single_stat":"true"})
-            if r.status_code != 200:
-                return []
-            data = r.json()
-            player_map = {item["id"]: item["attributes"].get("name","") for item in data.get("included",[]) if item.get("type")=="new_player"}
-            for proj in data.get("data",[]):
-                attrs = proj.get("attributes",{})
-                stat  = PRIZEPICKS_STAT_MAP.get(attrs.get("stat_type",""))
-                if not stat: continue
-                line  = float(attrs.get("line_score") or 0)
-                if line <= 0: continue
-                pid  = proj.get("relationships",{}).get("new_player",{}).get("data",{}).get("id","")
-                name = player_map.get(pid, attrs.get("description",""))
-                if name:
-                    props.append({"player":name,"stat":stat,"line":line,"odds":"","home":"","away":""})
-    except Exception as e:
-        print(f"[PrizePicks] {e}")
-    print(f"[PrizePicks] {len(props)} lines")
-    return props
-
-
-UNDERDOG_STAT_MAP = {
-    "points":           "PTS",
-    "rebounds":         "REB",
-    "assists":          "AST",
-    "three_points_made":"FG3M",
-}
-
-async def get_underdog_lines():
-    """Fetch NBA player O/U lines from Underdog Fantasy — free, no key needed.
-    Returns real sportsbook-style lines with American odds."""
-    props = []
-    try:
-        async with httpx.AsyncClient(timeout=20, headers={
-            "User-Agent": "Mozilla/5.0",
-            "Accept": "application/json"
-        }) as client:
-            r = await client.get("https://api.underdogfantasy.com/beta/v5/over_under_lines")
-            if r.status_code != 200:
-                print(f"[Underdog] status {r.status_code}")
-                return []
-            data    = r.json()
-            lines   = data.get("over_under_lines", [])
-            apps    = {a["id"]: a for a in data.get("appearances", [])}
-            games   = {g["id"]: g for g in data.get("games", [])}
-
-            for line in lines:
-                if line.get("status") != "active":
-                    continue
-                ou       = line.get("over_under", {})
-                app_stat = ou.get("appearance_stat", {})
-                stat_raw = app_stat.get("stat", "")
-                stat     = UNDERDOG_STAT_MAP.get(stat_raw)
-                if not stat:
-                    continue
-                app_id   = app_stat.get("appearance_id", "")
-                app      = apps.get(app_id, {})
-                game     = games.get(app.get("match_id", ""), {})
-                if game.get("sport_id") != "NBA":
-                    continue
-                options   = line.get("options", [])
-                name      = options[0].get("selection_header", "") if options else ""
-                if not name:
-                    continue
-                line_val  = float(line.get("stat_value") or 0)
-                over_odds = next((o.get("american_price","") for o in options if o.get("choice")=="higher"), "")
-                under_odds= next((o.get("american_price","") for o in options if o.get("choice")=="lower"), "")
-                props.append({
-                    "player":     name,
-                    "stat":       stat,
-                    "line":       line_val,
-                    "over_odds":  over_odds,
-                    "under_odds": under_odds,
-                    "source":     "Underdog",
-                })
-        print(f"[Underdog] {len(props)} NBA lines fetched")
-    except Exception as e:
-        print(f"[Underdog] error: {e}")
-    return props
-
 async def get_odds_lines(today_str):
     api_key = os.environ.get('ODDS_API_KEY', '')
     if not api_key:
@@ -281,8 +442,7 @@ async def get_odds_lines(today_str):
                 r2 = await c.get(
                     f"{ODDS_API_BASE}/sports/basketball_nba/events/{ev['id']}/odds",
                     params={'apiKey': api_key, 'regions': 'us,us2',
-                            'markets': markets, 'oddsFormat': 'american',
-                            'bookmakers': 'draftkings,fanduel,betmgm,bet365'})
+                            'markets': markets, 'oddsFormat': 'american'})
                 if r2.status_code != 200:
                     continue
                 data = r2.json()
@@ -306,37 +466,11 @@ async def get_odds_lines(today_str):
                                     'home': data.get('home_team', ''),
                                     'away': data.get('away_team', ''),
                                 })
-                    # check all bookmakers for best coverage
+                    break  # first bookmaker only
     except Exception as e:
         print(f'[OddsAPI] error: {e}')
     print(f'[OddsAPI] {len(props)} NBA prop lines fetched')
     return props
-
-
-def parse_stat(val):
-    s = str(val)
-    if '-' in s: s = s.split('-')[0]
-    try: return int(float(s))
-    except: return 0
-
-def parse_min(val):
-    s = str(val)
-    if ':' in s:
-        p = s.split(':')
-        try: return float(p[0]) + float(p[1])/60
-        except: return 0.0
-    try: return float(s)
-    except: return 0.0
-
-def find_best_threshold(values, thresholds):
-    n = len(values)
-    if n < MIN_GAMES: return None
-    for t in thresholds:
-        hits = sum(1 for v in values if v >= t)
-        rate = hits / n
-        if rate >= HIT_RATE_MIN:
-            return {'threshold':t,'hits':hits,'games':n,'hit_rate':rate,'pct':round(rate*100,1)}
-    return None
 
 async def run_analysis(selected_date: str = None) -> Dict:
     today_str = selected_date if selected_date else date.today().isoformat()
@@ -348,18 +482,10 @@ async def run_analysis(selected_date: str = None) -> Dict:
 
     # Fetch games + Odds API lines concurrently
     try:
-        pp, ud_lines, odds_raw = await asyncio.gather(
-            get_prizepicks_lines(),
-            get_underdog_lines(),
-            get_odds_lines(today_str)
+        games, odds_props = await asyncio.gather(
+            get_today_games(today_str),
+            get_odds_lines(today_str),
         )
-        # PrizePicks = pattern picks source
-        # Underdog = real sportsbook O/U lines (shown as DK line)
-        # Odds API = extra backup
-        seen = {f"{p['player']}|{p['stat']}" for p in pp}
-        odds_props = pp + [p for p in odds_raw if f"{p['player']}|{p['stat']}" not in seen]
-        games = await get_today_games(today_str)
-        log.append(f"PrizePicks: {len(pp)} | Underdog O/U: {len(ud_lines)} | OddsAPI: {len(odds_raw)} lines")
     except Exception as e:
         return {'date': today_str, 'picks': [], 'all_picks': [], 'games': [],
                 'log': [f'Error: {e}'], 'total': 0}
@@ -371,26 +497,11 @@ async def run_analysis(selected_date: str = None) -> Dict:
     log.append("Games: " + " | ".join(f"{g['away']} @ {g['home']}" for g in games))
     log.append(f"{len(odds_props)} sportsbook prop lines loaded")
 
-    # Build lookups: pp_lookup = PrizePicks, dk_lookup = Odds API (real sportsbook)
+    # Build Odds API lookup: (normalised_name, stat) -> {line, odds}
     odds_lookup: Dict[tuple, Dict] = {}
     for prop in odds_props:
         key = (_nn(prop['player']), prop['stat'])
         odds_lookup[key] = {'line': prop['line'], 'odds': str(prop.get('odds', ''))}
-
-    # dk_lookup uses Underdog lines (real O/U with American odds)
-    dk_lookup: Dict[tuple, Dict] = {}
-    for prop in ud_lines:
-        key = (_nn(prop['player']), prop['stat'])
-        dk_lookup[key] = {
-            'line':       prop['line'],
-            'over_odds':  prop.get('over_odds',''),
-            'under_odds': prop.get('under_odds',''),
-        }
-    # Fill gaps with Odds API
-    for prop in odds_raw:
-        key = (_nn(prop['player']), prop['stat'])
-        if key not in dk_lookup:
-            dk_lookup[key] = {'line': prop['line'], 'over_odds': '', 'under_odds': ''}
 
     # Rosters
     team_ids = list({g['home_id'] for g in games} | {g['away_id'] for g in games})
@@ -443,11 +554,6 @@ async def run_analysis(selected_date: str = None) -> Dict:
                     fd_odds   = sb.get('odds', '')
                     # Last 10 vs team over sportsbook line
                     l10_sb_hits = sum(1 for l in last10 if float(l[sk]) > fd_line) if fd_line and last10 else None
-                    dk_ob = dk_lookup.get((_nn(pname), sk), {})
-                    dk_line = dk_ob.get('line')
-                    dk_over_odds  = dk_ob.get('over_odds', '')
-                    dk_under_odds = dk_ob.get('under_odds', '')
-                    dk_hits = sum(1 for l in last10 if float(l[sk]) > dk_line) if dk_line and last10 else None
                     picks.append({**result, 'player': pname, 'player_id': pid, 'team': h,
                                   'team_name': h_name, 'stat': sk,
                                   'stat_label': sc['label'], 'emoji': sc['emoji'],
@@ -455,8 +561,7 @@ async def run_analysis(selected_date: str = None) -> Dict:
                                   'matchup': f"{a_name} @ {h_name}",
                                   'l10_hits': l10h, 'l10_games': len(last10),
                                   'fd_line': fd_line, 'fd_odds': fd_odds,
-                                  'l10_sb_hits': l10_sb_hits,
-                                  'dk_line': dk_line, 'dk_over_odds': dk_over_odds, 'dk_under_odds': dk_under_odds, 'dk_hits': dk_hits})
+                                  'l10_sb_hits': l10_sb_hits})
 
         for player in rosters.get(game['away_id'], []):
             pid, pname = player['id'], player['name']
@@ -472,11 +577,6 @@ async def run_analysis(selected_date: str = None) -> Dict:
                     fd_line   = sb.get('line')
                     fd_odds   = sb.get('odds', '')
                     l10_sb_hits = sum(1 for l in last10 if float(l[sk]) > fd_line) if fd_line and last10 else None
-                    dk_ob = dk_lookup.get((_nn(pname), sk), {})
-                    dk_line = dk_ob.get('line')
-                    dk_over_odds  = dk_ob.get('over_odds', '')
-                    dk_under_odds = dk_ob.get('under_odds', '')
-                    dk_hits = sum(1 for l in last10 if float(l[sk]) > dk_line) if dk_line and last10 else None
                     picks.append({**result, 'player': pname, 'player_id': pid, 'team': a,
                                   'team_name': a_name, 'stat': sk,
                                   'stat_label': sc['label'], 'emoji': sc['emoji'],
@@ -484,8 +584,7 @@ async def run_analysis(selected_date: str = None) -> Dict:
                                   'matchup': f"{a_name} @ {h_name}",
                                   'l10_hits': l10h, 'l10_games': len(last10),
                                   'fd_line': fd_line, 'fd_odds': fd_odds,
-                                  'l10_sb_hits': l10_sb_hits,
-                                  'dk_line': dk_line, 'dk_over_odds': dk_over_odds, 'dk_under_odds': dk_under_odds, 'dk_hits': dk_hits})
+                                  'l10_sb_hits': l10_sb_hits})
 
     picks.sort(key=lambda x: (x['hit_rate'], x['threshold']), reverse=True)
     top_picks = picks[:TOP_N]
@@ -495,37 +594,8 @@ async def run_analysis(selected_date: str = None) -> Dict:
         log.append(f"{with_lines} picks have sportsbook lines attached")
 
     odds_loaded = bool(odds_props)
-    props_picks, props_nopick = [], []
-    for game in games:
-        h,a = game['home'],game['away']
-        h_name,a_name = game['home_name'],game['away_name']
-        for loc,tid,opp_id,opp_name,side in [('Home',game['home_id'],a,a_name,'HOME'),('Away',game['away_id'],h,h_name,'AWAY')]:
-            for player in rosters.get(tid,[]):
-                pname,pid = player['name'],player['id']
-                for sk,sc in STAT_CONFIG.items():
-                    ob_ud   = dk_lookup.get((_nn(pname),sk),{})
-                    ob_odds = odds_lookup.get((_nn(pname),sk),{})
-                    ob = ob_ud if ob_ud.get('line') else ob_odds
-                    if not ob or ob.get('line') is None: continue
-                    line = float(ob['line'])
-                    opp_logs = [l for l in logs_by_player.get(pid,[]) if l['location']==loc and l['opp']==opp_id]
-                    if not opp_logs:
-                        props_nopick.append({'player':pname,'team':h_name if loc=='Home' else a_name,'stat':sk,'stat_label':sc['label'],'emoji':sc['emoji'],'side':side,'opp_name':opp_name,'line':line,'avg':None,'games':0,'hits':0,'hit_pct':0,'history':'—','gap':None,'pick':None,'fd_odds':ob.get('odds','')})
-                        continue
-                    # Cap at last 10 most recent games vs opponent
-                    recent_logs = opp_logs[-10:]
-                    vals = [float(l[sk]) for l in recent_logs]
-                    avg = round(sum(vals)/len(vals),1)
-                    gap = round(avg-line,1)
-                    pick = 'OVER' if avg>line else ('UNDER' if avg<line else None)
-                    hits  = sum(1 for v in vals if v > line)
-                    hit_pct = round(hits/len(vals)*100) if vals else 0
-                    team_name = h_name if loc=='Home' else a_name
-                    entry = {'player':pname,'team':team_name,'stat':sk,'stat_label':sc['label'],'emoji':sc['emoji'],'side':side,'opp_name':opp_name,'line':line,'avg':avg,'games':len(vals),'hits':hits,'hit_pct':hit_pct,'history':','.join(str(int(v)) for v in vals),'gap':gap,'pick':pick,'fd_odds':ob.get('odds','')}
-                    (props_picks if pick else props_nopick).append(entry)
-    props_picks.sort(key=lambda x:abs(x.get('gap') or 0),reverse=True)
-    log.append(f"Props: {len(props_picks)} picks")
-    result = {'date':today_str,'picks':top_picks,'all_picks':picks,'games':games,'log':log,'total':len(picks),'odds_loaded':odds_loaded,'props_picks':props_picks,'props_nopick':props_nopick}
+    result = {'date': today_str, 'picks': top_picks, 'all_picks': picks,
+              'games': games, 'log': log, 'total': len(picks), 'odds_loaded': odds_loaded}
     _cache.update(result)
     return result
 
@@ -534,23 +604,26 @@ LOGIN_HTML = """<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>🏀 Money Buckets</title>
+<title>NBA Money Buckets — Money Picks Arena</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;700;900&family=Source+Sans+Pro:wght@300;400;600;700&display=swap" rel="stylesheet">
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{
-  background:#0d0d0d;
-  background-image:radial-gradient(ellipse at 50% 0%,rgba(253,184,39,.1) 0%,transparent 55%);
-  color:#f0e6c8;font-family:'Segoe UI',system-ui,sans-serif;
+  background:#050a14;
+  background-image:radial-gradient(ellipse at 50% 0%,rgba(249,115,22,.1) 0%,transparent 55%);
+  color:#e0e6f0;font-family:'Segoe UI',system-ui,sans-serif;
   min-height:100vh;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:0;
 }
 /* ── Spinning basketball ── */
 .spin-ball{
   width:80px;height:80px;border-radius:50%;
-  background:radial-gradient(circle at 38% 35%,#FDB827 0%,#FDB827 55%,#7c2d12 100%);
+  background:radial-gradient(circle at 38% 35%,#fb923c 0%,#ea580c 55%,#7c2d12 100%);
   border:2px solid #7c2d12;
   position:relative;margin-bottom:24px;
   animation:spinBall 6s linear infinite;
-  box-shadow:0 0 40px rgba(253,184,39,.5),0 0 80px rgba(253,184,39,.15);
+  box-shadow:0 0 40px rgba(249,115,22,.5),0 0 80px rgba(249,115,22,.15);
 }
 .spin-ball::before{
   content:'';position:absolute;inset:-1px;border-radius:50%;
@@ -567,19 +640,19 @@ body{
 /* ── Card ── */
 .card{
   background:linear-gradient(145deg,rgba(15,23,42,.97),rgba(8,12,24,.99));
-  border:1px solid rgba(42,42,42,.8);border-radius:24px;
+  border:1px solid rgba(30,58,95,.8);border-radius:24px;
   padding:40px 40px 36px;width:390px;text-align:center;
-  box-shadow:0 30px 80px rgba(0,0,0,.7),0 0 0 1px rgba(253,184,39,.04),inset 0 1px 0 rgba(255,255,255,.03);
+  box-shadow:0 30px 80px rgba(0,0,0,.7),0 0 0 1px rgba(249,115,22,.04),inset 0 1px 0 rgba(255,255,255,.03);
   position:relative;overflow:hidden;
 }
 .card::before{
   content:'';position:absolute;top:0;left:0;right:0;height:2px;
-  background:linear-gradient(90deg,transparent,#FDB827,#FDB827,#FDB827,transparent);
+  background:linear-gradient(90deg,transparent,#f59e0b,#ea580c,#f59e0b,transparent);
 }
 .logo-line{display:flex;align-items:center;justify-content:center;gap:8px;margin-bottom:4px}
-.login-card h1{
+h1{
   font-size:1.65rem;font-weight:900;letter-spacing:-.5px;
-  background:linear-gradient(135deg,#FDB827 0%,#FDB827 100%);
+  background:linear-gradient(135deg,#f59e0b 0%,#fb923c 100%);
   -webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;
 }
 .sub{color:#374151;font-size:.75rem;margin-bottom:30px;letter-spacing:1.5px;text-transform:uppercase}
@@ -587,41 +660,30 @@ body{
 .fi{position:absolute;left:14px;top:50%;transform:translateY(-50%);opacity:.35;font-size:.9rem;pointer-events:none}
 input{
   width:100%;background:rgba(15,23,42,.8);
-  border:1px solid rgba(42,42,42,.8);color:#d1d5db;
+  border:1px solid rgba(30,58,95,.8);color:#d1d5db;
   padding:13px 16px 13px 42px;border-radius:12px;
   font-size:.95rem;outline:none;transition:border-color .2s,box-shadow .2s;
 }
-input:focus{border-color:#FDB827;box-shadow:0 0 0 3px rgba(253,184,39,.12)}
+input:focus{border-color:#f59e0b;box-shadow:0 0 0 3px rgba(245,158,11,.12)}
 input::placeholder{color:#374151}
 .btn-in{
   width:100%;margin-top:8px;
-  background:linear-gradient(135deg,#FDB827,#FDB827);color:#0d0d0d;
+  background:linear-gradient(135deg,#f59e0b,#ea580c);color:#050a14;
   border:none;padding:14px;border-radius:12px;
   font-size:1rem;font-weight:900;letter-spacing:.5px;cursor:pointer;
-  box-shadow:0 4px 20px rgba(253,184,39,.35);transition:transform .15s,box-shadow .15s;
+  box-shadow:0 4px 20px rgba(245,158,11,.35);transition:transform .15s,box-shadow .15s;
 }
-.btn-in:hover{transform:translateY(-2px);box-shadow:0 8px 30px rgba(253,184,39,.45)}
+.btn-in:hover{transform:translateY(-2px);box-shadow:0 8px 30px rgba(245,158,11,.45)}
 .btn-in:active{transform:translateY(0)}
 .err{color:#f87171;font-size:.83rem;margin-top:14px;background:rgba(127,29,29,.3);padding:10px 14px;border-radius:10px;border:1px solid rgba(239,68,68,.2)}
 .tagline{color:#0f1d2e;font-size:.68rem;margin-top:22px;letter-spacing:2px;text-transform:uppercase}
 </style>
 </head>
 <body>
-<script>
-(function(){
-  var HUB='https://www.moneypicksarena.com';
-  var KEY='__mpa_token';
-  var p=new URLSearchParams(window.location.search);
-  var t=p.get('token');
-  if(t){localStorage.setItem(KEY,t);window.history.replaceState({},'',window.location.pathname);}
-  if(!localStorage.getItem(KEY)){window.location.href=HUB;}
-})();
-</script>
-
 <div class="spin-ball"></div>
 <div class="card">
   <div class="logo-line">
-    <h1>Money Buckets</h1>
+    <h1>NBA Money Buckets</h1>
   </div>
   <p class="sub">Pattern-Based Matchup Intelligence</p>
   <form method="post" action="/login">
@@ -639,219 +701,190 @@ MAIN_HTML = """<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>🏀 Money Buckets</title>
+<title>NBA Money Buckets</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
-body{background:#0d0d0d;color:#f0e6c8;font-family:Arial,Helvetica,sans-serif;min-height:100vh}
+body{background:#0f0f0f;color:#fff;font-family:'Source Sans Pro',sans-serif;min-height:100vh}
+.bg-glow{position:fixed;inset:0;background:radial-gradient(ellipse at 50% 20%,rgba(245,158,11,.05),transparent 65%);pointer-events:none;z-index:0}
 
-/* HEADER */
-.hdr{background:#000;border-bottom:4px solid #FDB827;padding:22px 28px;text-align:left}
-.hdr h1{font-size:1.5rem;font-weight:900;color:#fff;letter-spacing:2px;text-transform:uppercase;line-height:1}
-.hdr h1 span{color:#FDB827}
+/* NAV */
+nav{position:fixed;top:0;width:100%;background:rgba(10,10,10,.95);backdrop-filter:blur(12px);border-bottom:1px solid #1c1c1c;z-index:100;padding:0 32px;height:80px;display:flex;align-items:center;justify-content:space-between}
+.logo{font-family:'Playfair Display',serif;font-size:28px;font-weight:900;color:#f59e0b;letter-spacing:.02em;line-height:1}
+.logo span{color:#fff}
+.nav-right{display:flex;align-items:center;gap:14px}
+.nav-sport{background:#166534;color:#fff;font-size:10px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;padding:3px 10px;border-radius:4px}
+.nav-app{font-size:13px;font-weight:600;color:#9ca3af;letter-spacing:.05em}
 
 /* LAYOUT */
-.wrap{max-width:1300px;margin:0 auto;padding:30px 20px}
+.page{position:relative;z-index:1;max-width:1400px;margin:0 auto;padding:104px 24px 40px}
 
-/* RUN BOX */
-.run-box{background:#111;border:2px solid #333;border-radius:10px;
-  padding:30px;text-align:center;margin-bottom:24px;transition:border-color .3s}
-.run-box.unlocked{border-color:#FDB827}
-.run-box h2{font-size:1rem;font-weight:700;color:#888;letter-spacing:3px;
-  text-transform:uppercase;margin-bottom:8px}
-.run-box.unlocked h2{color:#FDB827}
-.run-box p{color:#555;font-size:.85rem;margin-bottom:20px}
-.date-row{display:flex;align-items:center;justify-content:center;gap:12px;margin-bottom:20px}
-.date-row label{color:#fff;font-weight:700;font-size:.9rem;letter-spacing:1px}
-.date-row input{background:#1a1a1a;color:#f0e6c8;border:1px solid #333;
-  border-radius:6px;padding:10px 16px;font-size:.95rem;cursor:pointer;outline:none}
-.date-row input:focus{border-color:#FDB827}
-.btn-run{background:linear-gradient(135deg,#FDB827,#e6a800);color:#000;border:none;border-radius:6px;
-  padding:16px 56px;font-size:1rem;font-weight:900;letter-spacing:2px;
-  text-transform:uppercase;cursor:pointer;transition:background .2s}
-.btn-run:hover{background:#e6a800}
-.btn-run:disabled{background:#333;color:#666;cursor:not-allowed}
+/* APP HEADER */
+.app-hdr{text-align:center;margin-bottom:32px}
+.app-hdr h1{font-family:'Playfair Display',serif;font-size:2.6rem;font-weight:900;color:#fff;margin-bottom:6px}
+.app-hdr h1 span{color:#f59e0b}
+.app-hdr p{font-size:.85rem;color:#6b7280;letter-spacing:.15em;text-transform:uppercase}
 
-/* STAT CHIPS */
-.chips{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:12px;margin-bottom:24px}
-.chip{background:#111;border-top:3px solid #FDB827;border-radius:8px;padding:16px 10px;text-align:center}
-.chip .val{font-size:1.9rem;font-weight:900;color:#FDB827}
-.chip .lbl{font-size:.65rem;color:#555;text-transform:uppercase;letter-spacing:1px;margin-top:4px}
+/* CONTROLS CARD */
+.controls-card{background:#161616;border:1px solid #262626;border-radius:20px;padding:20px 24px;margin-bottom:20px;display:flex;align-items:center;flex-wrap:wrap;gap:14px}
+.date-row label{color:#9ca3af;font-weight:600;font-size:.85rem;letter-spacing:.08em;text-transform:uppercase;margin-right:8px}
+.date-row input[type=date]{background:#0a0a0a;color:#fff;border:1px solid #2a2a2a;border-radius:10px;padding:9px 14px;font-size:.9rem;font-family:'Source Sans Pro',sans-serif;cursor:pointer;outline:none;transition:border .2s}
+.date-row input[type=date]:focus{border-color:#f59e0b}
+.btn{padding:10px 24px;border-radius:8px;font-size:.88rem;font-weight:700;cursor:pointer;border:none;transition:all .2s;font-family:'Source Sans Pro',sans-serif;letter-spacing:.03em;text-decoration:none;display:inline-block}
+.btn-run{background:#f59e0b;color:#000}
+.btn-run:hover{background:#fbbf24;transform:translateY(-1px);box-shadow:0 4px 20px rgba(245,158,11,.35)}
+.btn-run:disabled{background:#2a2a2a;color:#4b5563;cursor:not-allowed;transform:none;box-shadow:none}
+.btn-refresh{background:#161616;color:#9ca3af;border:1px solid #262626;border-radius:8px;padding:9px 18px;font-size:.82rem;font-weight:600;cursor:pointer;transition:all .2s}
+.btn-refresh:hover{border-color:#f59e0b;color:#f59e0b}
+.btn-out{background:transparent;color:#4b5563;border:1px solid #262626;font-size:.82rem}
+.btn-out:hover{color:#9ca3af;border-color:#374151}
 
-/* SECTION HEADER */
-.sec{background:#111;border-left:4px solid #FDB827;padding:10px 16px;
-  font-size:.85rem;font-weight:900;letter-spacing:2px;text-transform:uppercase;
-  color:#fff;margin:24px 0 12px;border-radius:0 6px 6px 0}
+/* FD INDICATOR */
+.fd-indicator{display:flex;align-items:center;gap:6px;background:#111;border:1px solid #262626;border-radius:999px;padding:5px 14px;cursor:default}
+.fd-dot{width:8px;height:8px;border-radius:50%;background:#374151;flex-shrink:0;transition:background .4s}
+.fd-dot.checking{background:#f59e0b;animation:pulse-gold .8s infinite}
+.fd-dot.connected{background:#4ade80;box-shadow:0 0 8px rgba(74,222,128,.5)}
+.fd-dot.disconnected{background:#ef4444}
+.fd-label{font-size:.72rem;font-weight:700;color:#6b7280;letter-spacing:.05em;text-transform:uppercase}
+@keyframes pulse-gold{0%,100%{opacity:1}50%{opacity:.4}}
 
-/* STATUS */
-.status{text-align:center;color:#666;font-size:.85rem;margin-bottom:24px;min-height:20px}
+/* GAMES BAR */
+.games-bar{display:flex;gap:8px;overflow-x:auto;padding-bottom:4px;margin-bottom:20px;scrollbar-width:thin;scrollbar-color:#262626 transparent}
+.game-chip{background:#161616;border:1px solid #262626;border-radius:10px;padding:9px 18px;white-space:nowrap;font-size:.82rem;flex-shrink:0;transition:border-color .2s;cursor:default}
+.game-chip:hover{border-color:#f59e0b}
+.game-chip b{color:#fff;font-weight:700}
+.game-chip .sep{color:#374151;margin:0 5px}
 
-/* PICK CARDS - lighter so they pop */
-.pick-card{background:#1e1e1e;border:1px solid #3a3a3a;border-top:3px solid #FDB827;
-  border-radius:10px;padding:22px;position:relative;overflow:hidden;
-  transition:border-color .25s,transform .22s,box-shadow .25s;
-  box-shadow:0 4px 16px rgba(0,0,0,.4)}
-.pick-card:hover{border-color:#FDB827;transform:translateY(-2px);
-  box-shadow:0 8px 28px rgba(0,0,0,.5),0 0 16px rgba(253,184,39,.15)}
-
-/* BOUNCING BALL LOADER */
-.loading-ball{width:58px;height:58px;border-radius:50%;margin:0 auto 6px;
-  animation:ballBounce .65s ease-in-out infinite;
-  background:radial-gradient(circle at 38% 35%,#FDB827 0%,#FDB827 55%,#7c2d12 100%);
-  border:2px solid #7c2d12;box-shadow:0 0 25px rgba(253,184,39,.45);position:relative}
-.loading-ball::before{content:'';position:absolute;inset:-1px;border-radius:50%;
-  border:2.5px solid rgba(124,45,18,.85);border-left-color:transparent;border-right-color:transparent;transform:rotate(30deg)}
-.loading-ball::after{content:'';position:absolute;inset:14px;border-radius:50%;
-  border:2px solid rgba(124,45,18,.75);border-top-color:transparent;border-bottom-color:transparent}
-@keyframes ballBounce{0%,100%{transform:translateY(0)}50%{transform:translateY(-22px)}}
-.ball-shadow{width:38px;height:7px;background:rgba(0,0,0,.5);border-radius:50%;
-  margin:0 auto 18px;animation:shadowPulse .65s ease-in-out infinite}
-@keyframes shadowPulse{0%,100%{transform:scaleX(1);opacity:.5}50%{transform:scaleX(.55);opacity:.2}}
-
-footer{text-align:center;padding:28px;color:#333;font-size:.75rem;
-  border-top:1px solid #1a1a1a;margin-top:24px}
-footer b{color:#FDB827}
-
-
-.games-bar{display:flex;gap:8px;overflow-x:auto;padding-bottom:4px;margin-bottom:20px;scrollbar-width:thin;scrollbar-color:var(--border) transparent}
-.game-chip{
-  background:linear-gradient(135deg,rgba(13,20,38,.9),rgba(8,12,24,.95));
-  border:1px solid rgba(42,42,42,.7);border-radius:12px;
-  padding:9px 18px;white-space:nowrap;font-size:.82rem;flex-shrink:0;
-  transition:border-color .2s,box-shadow .2s;cursor:default;
-}
-.game-chip:hover{border-color:rgba(253,184,39,.5);box-shadow:0 0 14px rgba(253,184,39,.1)}
-.game-chip b{color:#f0e6c8;font-weight:700}
-.game-chip .sep{color:#1e3a5f;margin:0 5px}
-/* ─── Filter bar ─── */
+/* FILTER BAR */
 .filter-bar{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:20px}
-.filter-btn{padding:7px 18px;border-radius:20px;border:1px solid rgba(42,42,42,.6);background:rgba(13,20,38,.7);color:#374151;font-size:.81rem;cursor:pointer;transition:all .2s;font-weight:600}
-.filter-btn.active,.filter-btn:hover{background:rgba(42,42,42,.9);color:#f0e6c8;border-color:rgba(253,184,39,.4);box-shadow:0 0 12px rgba(253,184,39,.1)}
-/* ─── Section headers ─── */
+.filter-btn{padding:7px 18px;border-radius:999px;border:1px solid #262626;background:#161616;color:#6b7280;font-size:.81rem;cursor:pointer;transition:all .2s;font-weight:600;font-family:'Source Sans Pro',sans-serif}
+.filter-btn.active,.filter-btn:hover{background:rgba(245,158,11,.1);color:#f59e0b;border-color:rgba(245,158,11,.3)}
+
+/* SECTION HEADERS */
 .section-hdr{display:flex;align-items:center;justify-content:space-between;margin-bottom:18px}
-.section-title{font-size:1rem;font-weight:900;letter-spacing:-.3px;display:flex;align-items:center;gap:8px;background:linear-gradient(135deg,#FDB827,#FDB827);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
-.count-pill{background:rgba(42,42,42,.5);color:#FDB827;padding:4px 14px;border-radius:20px;font-size:.78rem;font-weight:700;border:1px solid rgba(253,184,39,.2)}
-/* ─── Pick cards ─── */
+.section-title{font-size:1rem;font-weight:700;letter-spacing:.05em;display:flex;align-items:center;gap:8px;color:#f59e0b;font-family:'Playfair Display',serif}
+.count-pill{background:rgba(245,158,11,.1);color:#f59e0b;padding:4px 14px;border-radius:999px;font-size:.78rem;font-weight:700;border:1px solid rgba(245,158,11,.2)}
+
+/* PICK CARDS */
 .picks-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:16px;margin-bottom:10px}
-.pick-card{
-  background:linear-gradient(145deg,rgba(13,20,38,.96),rgba(8,12,24,.99));
-  border:1px solid rgba(42,42,42,.7);border-radius:20px;padding:22px;
-  position:relative;overflow:hidden;
-  transition:border-color .25s,transform .22s,box-shadow .25s;
-}
-.pick-card:hover{border-color:rgba(253,184,39,.55);transform:translateY(-3px);box-shadow:0 14px 45px rgba(0,0,0,.55),0 0 22px rgba(253,184,39,.1)}
-.pick-card::before{content:'';position:absolute;top:0;left:0;right:0;height:1px;background:linear-gradient(90deg,transparent,rgba(253,184,39,.25),transparent);opacity:0;transition:opacity .25s}
-.pick-card:hover::before{opacity:1}
-/* Rank medals */
+.pick-card{background:#161616;border:1px solid #262626;border-radius:20px;padding:22px;position:relative;overflow:hidden;transition:border-color .25s,transform .22s,box-shadow .25s}
+.pick-card:hover{border-color:rgba(245,158,11,.4);transform:translateY(-3px);box-shadow:0 14px 40px rgba(0,0,0,.5)}
 .pick-rank{position:absolute;top:14px;right:15px;width:32px;height:32px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:.82rem;font-weight:900}
-.rank-1{background:linear-gradient(135deg,#92400e,#FDB827);color:#0d0d0d;box-shadow:0 0 14px rgba(253,184,39,.5)}
-.rank-2{background:linear-gradient(135deg,#374151,#9ca3af);color:#0d0d0d;box-shadow:0 0 8px rgba(156,163,175,.2)}
-.rank-3{background:linear-gradient(135deg,#7c2d12,#c2410c);color:#fff0e0;box-shadow:0 0 10px rgba(194,65,12,.3)}
-.rank-other{background:rgba(15,23,42,.8);color:#1e3a5f;font-size:.75rem}
+.rank-1{background:linear-gradient(135deg,#C4901A,#f59e0b);color:#000;box-shadow:0 0 14px rgba(245,158,11,.5)}
+.rank-2{background:linear-gradient(135deg,#374151,#9ca3af);color:#000}
+.rank-3{background:linear-gradient(135deg,#7c2d12,#c2410c);color:#fff}
+.rank-other{background:#1a1a1a;color:#4b5563;font-size:.75rem;border:1px solid #262626}
 .pick-emoji{font-size:1.6rem;margin-bottom:10px;display:block}
-.pick-player{font-size:1.08rem;font-weight:800;color:#f0f6ff;margin-bottom:3px;letter-spacing:-.3px;padding-right:38px}
-.pick-team{font-size:.75rem;color:#374151;margin-bottom:12px;display:flex;align-items:center;gap:6px}
-.loc-badge{background:rgba(15,23,42,.8);padding:2px 9px;border-radius:10px;font-size:.7rem;color:#4b5563;border:1px solid rgba(42,42,42,.5)}
+.pick-player{font-size:1.08rem;font-weight:800;color:#fff;margin-bottom:3px;letter-spacing:-.3px;padding-right:38px;font-family:'Playfair Display',serif}
+.pick-team{font-size:.75rem;color:#6b7280;margin-bottom:12px;display:flex;align-items:center;gap:6px}
+.loc-badge{background:#1a1a1a;padding:2px 9px;border-radius:10px;font-size:.7rem;color:#6b7280;border:1px solid #262626}
 .stat-strip{display:flex;gap:6px;margin-bottom:10px;flex-wrap:wrap}
 .stat-tag{padding:3px 10px;border-radius:10px;font-size:.7rem;font-weight:700;letter-spacing:.3px}
 .tag-pts{background:rgba(109,40,217,.15);color:#a78bfa;border:1px solid rgba(109,40,217,.25)}
-.tag-reb{background:rgba(37,99,235,.15);color:#FDB827;border:1px solid rgba(37,99,235,.25)}
+.tag-reb{background:rgba(37,99,235,.15);color:#60a5fa;border:1px solid rgba(37,99,235,.25)}
 .tag-ast{background:rgba(5,150,105,.15);color:#34d399;border:1px solid rgba(5,150,105,.25)}
 .tag-fg3m{background:rgba(220,38,38,.15);color:#f87171;border:1px solid rgba(220,38,38,.25)}
 .pick-pattern{font-size:.9rem;color:#7dd3fc;font-weight:700;margin-bottom:4px;line-height:1.4}
-.l10vthr-desc{font-size:.88rem;color:#FDB827;font-weight:700;margin-bottom:5px;line-height:1.4}
-.fd-line-badge{display:inline-block;background:#1a2a0a;border:1px solid #22c55e;color:#22c55e;
-  border-radius:6px;padding:3px 10px;font-size:.78rem;font-weight:700;margin-bottom:6px}
-.fd-inline{color:#22c55e;font-weight:700}
-.l10vthr-inline{color:#FDB827;font-weight:700}
-.pick-matchup{font-size:.72rem;color:#1e3a5f;margin-bottom:16px}
-.bar-wrap{background:rgba(15,23,42,.7);border-radius:6px;height:8px;overflow:hidden;margin-bottom:10px;border:1px solid rgba(42,42,42,.3)}
+.l10vthr-desc{font-size:.88rem;color:#f59e0b;font-weight:700;margin-bottom:5px;line-height:1.4}
+.fd-line-badge{display:inline-block;background:rgba(74,222,128,.08);border:1px solid rgba(74,222,128,.2);color:#4ade80;border-radius:6px;padding:3px 10px;font-size:.78rem;font-weight:700;margin-bottom:6px}
+.fd-inline{color:#4ade80;font-weight:700}
+.l10vthr-inline{color:#f59e0b;font-weight:700}
+.pick-matchup{font-size:.72rem;color:#374151;margin-bottom:16px}
+.bar-wrap{background:#1a1a1a;border-radius:6px;height:8px;overflow:hidden;margin-bottom:10px;border:1px solid #262626}
 .bar-fill{height:100%;border-radius:5px}
-.bar-green{background:linear-gradient(90deg,#15803d,#22c55e)}
-.bar-yellow{background:linear-gradient(90deg,#FDB827,#FDB827)}
-.bar-orange{background:linear-gradient(90deg,#c2410c,#FDB827)}
+.bar-green{background:linear-gradient(90deg,#15803d,#4ade80)}
+.bar-yellow{background:linear-gradient(90deg,#b45309,#f59e0b)}
+.bar-orange{background:linear-gradient(90deg,#c2410c,#f97316)}
 .stats-row{display:flex;justify-content:space-between;align-items:center}
-.games-chip{background:rgba(15,23,42,.7);padding:4px 12px;border-radius:20px;font-size:.75rem;color:#1e3a5f;border:1px solid rgba(42,42,42,.3)}
-.pct{font-size:1.2rem;font-weight:900;letter-spacing:-.5px}
-.pct-green{color:#22c55e;text-shadow:0 0 14px rgba(34,197,94,.45)}
-.pct-yellow{color:#FDB827;text-shadow:0 0 14px rgba(253,184,39,.45)}
-.pct-orange{color:#FDB827;text-shadow:0 0 12px rgba(253,184,39,.35)}
-/* ─── Total Banner ─── */
-.total-banner{
-  display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;
-  background:linear-gradient(135deg,rgba(5,46,22,.75),rgba(3,28,14,.9));
-  border:1px solid rgba(20,83,45,.5);border-radius:18px;padding:18px 24px;margin:32px 0 20px;
-  box-shadow:0 0 40px rgba(34,197,94,.06),inset 0 1px 0 rgba(34,197,94,.05);
-}
+.games-chip{background:#1a1a1a;padding:4px 12px;border-radius:20px;font-size:.75rem;color:#4b5563;border:1px solid #262626}
+.pct{font-size:1.2rem;font-weight:900;letter-spacing:-.5px;font-family:'Playfair Display',serif}
+.pct-green{color:#4ade80}
+.pct-yellow{color:#f59e0b}
+.pct-orange{color:#f97316}
+
+/* TOTAL BANNER */
+.total-banner{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;background:#161616;border:1px solid rgba(74,222,128,.2);border-radius:18px;padding:18px 24px;margin:32px 0 20px}
 .tb-left{display:flex;align-items:center;gap:12px}
 .tb-ico{font-size:1.5rem}
-.tb-title{font-size:.95rem;font-weight:800;color:#4ade80;letter-spacing:-.2px}
-.tb-sub{font-size:.72rem;color:#14532d;margin-top:2px;letter-spacing:.8px;text-transform:uppercase}
-.tb-count{font-size:2.2rem;font-weight:900;color:#22c55e;text-shadow:0 0 20px rgba(34,197,94,.5);letter-spacing:-1.5px}
-/* ─── All Patterns ─── */
+.tb-title{font-size:.95rem;font-weight:700;color:#4ade80;font-family:'Playfair Display',serif}
+.tb-sub{font-size:.72rem;color:#374151;margin-top:2px;letter-spacing:.8px;text-transform:uppercase}
+.tb-count{font-size:2.2rem;font-weight:900;color:#4ade80;letter-spacing:-1.5px;font-family:'Playfair Display',serif}
+
+/* ALL PATTERNS */
 .all-section-hdr{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;flex-wrap:wrap;gap:10px}
-.all-section-title{font-size:.95rem;font-weight:800;color:#FDB827;display:flex;align-items:center;gap:8px}
+.all-section-title{font-size:.95rem;font-weight:700;color:#f59e0b;display:flex;align-items:center;gap:8px;font-family:'Playfair Display',serif}
 .game-group{margin-bottom:14px}
-.game-group-hdr{
-  display:flex;align-items:center;justify-content:space-between;
-  background:linear-gradient(135deg,rgba(13,20,38,.9),rgba(8,12,24,.95));
-  border:1px solid rgba(42,42,42,.65);border-radius:13px;
-  padding:12px 18px;margin-bottom:6px;cursor:pointer;user-select:none;
-  transition:border-color .2s,box-shadow .2s;
-}
-.game-group-hdr:hover{border-color:rgba(253,184,39,.45);box-shadow:0 0 15px rgba(253,184,39,.08)}
-.gg-label{font-size:.88rem;font-weight:800;color:#f0e6c8;display:flex;align-items:center;gap:8px}
+.game-group-hdr{display:flex;align-items:center;justify-content:space-between;background:#161616;border:1px solid #262626;border-radius:13px;padding:12px 18px;margin-bottom:6px;cursor:pointer;user-select:none;transition:border-color .2s}
+.game-group-hdr:hover{border-color:rgba(245,158,11,.3)}
+.gg-label{font-size:.88rem;font-weight:700;color:#fff;display:flex;align-items:center;gap:8px}
 .gg-meta{display:flex;align-items:center;gap:8px}
-.gg-chevron{color:#1e3a5f;font-size:.85rem;transition:transform .2s}
+.gg-chevron{color:#4b5563;font-size:.85rem;transition:transform .2s}
 .compact-picks{display:flex;flex-direction:column;gap:5px;margin-bottom:4px}
-.compact-row{
-  display:flex;align-items:center;gap:12px;
-  background:rgba(8,12,24,.8);border:1px solid rgba(20,30,50,.8);border-radius:11px;padding:10px 15px;
-  transition:border-color .2s,background .2s;
-}
-.compact-row:hover{border-color:rgba(253,184,39,.35);background:rgba(13,20,38,.9)}
+.compact-row{display:flex;align-items:center;gap:12px;background:#1a1a1a;border:1px solid #262626;border-radius:11px;padding:10px 15px;transition:border-color .2s}
+.compact-row:hover{border-color:rgba(245,158,11,.25)}
 .cr-emoji{font-size:1.05rem;flex-shrink:0;width:22px;text-align:center}
 .cr-info{flex:1;min-width:0}
-.cr-player{font-size:.86rem;font-weight:700;color:#94a3b8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.cr-pattern{font-size:.76rem;color:#FDB827;font-weight:600;margin-top:2px}
+.cr-player{font-size:.86rem;font-weight:700;color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cr-pattern{font-size:.76rem;color:#60a5fa;font-weight:600;margin-top:2px}
 .cr-right{display:flex;flex-direction:column;align-items:flex-end;gap:3px;flex-shrink:0}
-.cr-bar-wrap{background:rgba(15,23,42,.8);border-radius:4px;height:4px;width:68px;overflow:hidden}
+.cr-bar-wrap{background:#1a1a1a;border-radius:4px;height:4px;width:68px;overflow:hidden;border:1px solid #262626}
 .cr-bar-fill{height:100%;border-radius:4px}
-.cr-pct{font-size:.9rem;font-weight:900}
-.cr-sample{font-size:.65rem;color:#1e3a5f}
-/* ─── Messages ─── */
-.msg-card{
-  background:linear-gradient(145deg,rgba(13,20,38,.95),rgba(8,12,24,.99));
-  border:1px solid rgba(42,42,42,.65);border-radius:22px;padding:60px 30px;text-align:center;
-  box-shadow:0 20px 70px rgba(0,0,0,.5);
-}
-.msg-card .ico{font-size:3.8rem;margin-bottom:16px;display:block}
-.msg-card h2{color:#f0e6c8;font-size:1.2rem;font-weight:800;margin-bottom:10px}
-.msg-card p{color:#374151;font-size:.88rem;line-height:1.75}
-/* ─── Log ─── */
-.log-box{background:rgba(3,6,14,.8);border:1px solid rgba(20,30,50,.8);border-radius:12px;padding:16px;font-size:.74rem;color:#1e3a5f;font-family:'Courier New',monospace;margin-top:20px;max-height:160px;overflow-y:auto;line-height:1.9;scrollbar-width:thin;scrollbar-color:#0f1d2e transparent}
-footer{text-align:center;margin-top:32px;color:#0a1525;font-size:.68rem;padding:10px;letter-spacing:1.5px;text-transform:uppercase}
+.cr-pct{font-size:.9rem;font-weight:900;font-family:'Playfair Display',serif}
+.cr-sample{font-size:.65rem;color:#374151}
 
+/* LOADING */
+.loading-ball{width:48px;height:48px;border:3px solid rgba(245,158,11,.15);border-top:3px solid #f59e0b;border-radius:50%;animation:spin .8s linear infinite;margin:0 auto 18px}
+.ball-shadow{display:none}
+@keyframes spin{to{transform:rotate(360deg)}}
+@keyframes ballBounce{0%,100%{transform:translateY(0)}50%{transform:translateY(-22px)}}
+@keyframes shadowPulse{0%,100%{transform:scaleX(1)}50%{transform:scaleX(.55)}}
+
+/* MESSAGE CARD */
+.msg-card{background:#161616;border:1px solid #262626;border-radius:20px;padding:60px 30px;text-align:center}
+.msg-card .ico{font-size:3.8rem;margin-bottom:16px;display:block}
+.msg-card h2{color:#fff;font-size:1.2rem;font-weight:800;margin-bottom:10px;font-family:'Playfair Display',serif}
+.msg-card p{color:#6b7280;font-size:.88rem;line-height:1.75}
+
+/* LOG */
+.log-box{background:#0a0a0a;border:1px solid #262626;border-radius:12px;padding:16px;font-size:.74rem;color:#374151;font-family:'Courier New',monospace;margin-top:20px;max-height:160px;overflow-y:auto;line-height:1.9;scrollbar-width:thin;scrollbar-color:#262626 transparent}
+
+footer{text-align:center;padding:32px 24px;color:#4b5563;font-size:.78rem;border-top:1px solid #1c1c1c;margin-top:32px;font-family:'Source Sans Pro',sans-serif}
+.ft-logo{font-family:'Playfair Display',serif;color:#f59e0b;font-weight:700;font-size:.95rem;margin-bottom:6px}
 </style>
 </head>
 <body>
+<div class="bg-glow"></div>
 
-<div class="hdr">
-  <h1>Money <span>Buckets</span> 🏀</h1>
-</div>
-<div class="wrap">
-  <div class="run-box unlocked" id="runBox">
-    <h2>Run Picks</h2>
-    <p>Pick a date and run the algorithm.</p>
-    <div class="date-row">
-      <label>DATE</label>
-      <input type="date" id="datePicker" value="__TODAY__"/>
-    </div>
-    <button class="btn-run" id="runBtn" onclick="runPicks()">
-      RUN PICKS
-    </button>
+<nav>
+  <div class="logo">Money <span>Picks</span> Arena</div>
+  <div class="nav-right">
+    <span class="nav-sport">BASKETBALL</span>
+    <span class="nav-app">NBA Money Buckets</span>
   </div>
+</nav>
+
+<div class="page">
+
+<div class="app-hdr">
+  <h1>NBA <span>Money Buckets</span></h1>
+  <p>Pts &nbsp;·&nbsp; Reb &nbsp;·&nbsp; Ast &nbsp;·&nbsp; 3PM &nbsp;·&nbsp; Daily Picks</p>
+</div>
+
+<div class="controls-card">
+  <div class="date-row">
+    <label>Date</label>
+    <input type="date" id="datePicker" value="__TODAY__">
+  </div>
+  <button class="btn btn-run" onclick="runPicks()">Run Picks</button>
+  <button class="btn btn-refresh" onclick="clearAndRun()">Refresh</button>
+  <a href="/logout" class="btn btn-out">Sign Out</a>
+  <div class="fd-indicator" id="fdIndicator">
+    <span class="fd-dot" id="fdDot"></span>
+    <span class="fd-label" id="fdLabel">FanDuel</span>
+  </div>
+</div>
 
 <div class="games-bar" id="gamesBar">
+  <div class="game-chip" style="color:#374151">Hit Run Picks to load today's games →</div>
 </div>
 
 <div id="filterBar" style="display:none" class="filter-bar">
@@ -862,7 +895,15 @@ footer{text-align:center;margin-top:32px;color:#0a1525;font-size:.68rem;padding:
   <button class="filter-btn" onclick="filterStat('FG3M')">🔥 3-Pointers</button>
 </div>
 
-<div id="content"></div>
+<div id="content">
+  <div class="msg-card">
+    <span class="ico">🏀</span>
+    <h2>Welcome to NBA Money Buckets</h2>
+    <p>Hit <strong style="color:#f59e0b">Run Picks</strong> to scan today's matchups.<br>
+    Finds players hitting <strong style="color:#22c55e">75%+</strong> in Pts, Reb, Ast, or 3PM<br>
+    against today's specific opponent — home or away.</p>
+  </div>
+</div>
 
 <div id="allPicksWrap" style="display:none">
   <div class="total-banner">
@@ -888,33 +929,12 @@ footer{text-align:center;margin-top:32px;color:#0a1525;font-size:.68rem;padding:
   <div id="allPicksSection"></div>
 </div>
 
-<div id="props-section" style="display:none;margin-top:28px;max-width:1300px;margin:28px auto 0;padding:0 20px 20px">
-  <div style="font-size:.85rem;font-weight:900;letter-spacing:2px;text-transform:uppercase;background:#111;border-left:4px solid #FDB827;padding:10px 16px;color:#fff;margin-bottom:14px;border-radius:0 6px 6px 0">⚡ Player Props vs Opponent History</div>
-  <div style="overflow-x:auto;border-radius:8px;border:1px solid #222">
-    <table style="width:100%;border-collapse:collapse;font-size:.82rem;background:#0d0d0d">
-      <thead><tr style="border-bottom:2px solid #FDB827">
-        <th style="padding:10px 12px;text-align:left;color:#FDB827;font-size:.72rem;background:#111;white-space:nowrap">#</th>
-        <th style="padding:10px 12px;text-align:left;color:#FDB827;font-size:.72rem;background:#111;white-space:nowrap">Player</th>
-        <th style="padding:10px 12px;text-align:left;color:#FDB827;font-size:.72rem;background:#111;white-space:nowrap">Stat</th>
-        <th style="padding:10px 12px;text-align:left;color:#FDB827;font-size:.72rem;background:#111;white-space:nowrap">H/A</th>
-        <th style="padding:10px 12px;text-align:left;color:#FDB827;font-size:.72rem;background:#111;white-space:nowrap">Opponent</th>
-        <th style="padding:10px 12px;text-align:left;color:#FDB827;font-size:.72rem;background:#111;white-space:nowrap">Line</th>
-        <th style="padding:10px 12px;text-align:left;color:#FDB827;font-size:.72rem;background:#111;white-space:nowrap">Avg vs Opp</th>
-        <th style="padding:10px 12px;text-align:left;color:#FDB827;font-size:.72rem;background:#111;white-space:nowrap">Gap</th>
-        <th style="padding:10px 12px;text-align:left;color:#FDB827;font-size:.72rem;background:#111;white-space:nowrap">Games</th>
-        <th style="padding:10px 12px;text-align:left;color:#FDB827;font-size:.72rem;background:#111;white-space:nowrap">History</th>
-        <th style="padding:10px 12px;text-align:left;color:#FDB827;font-size:.72rem;background:#111;white-space:nowrap">Pick</th>
-      </tr></thead>
-      <tbody id="props-body"></tbody>
-    </table>
-  </div>
-  <p style="font-size:.72rem;color:#555;margin-top:8px">
-    <strong style="color:#FDB827">Avg vs Opp</strong> = career H/A avg vs today's opponent &nbsp;|&nbsp;
-    <strong style="color:#FDB827">Pick</strong> = OVER if avg &gt; line, UNDER if avg &lt; line
-  </p>
 </div>
-</div><!-- /wrap -->
-<footer>Money Buckets · No Lines · Just Patterns · Powered by NBA Stats API &amp; ESPN</footer>
+<footer>
+  <div class="ft-logo">Money Picks Arena</div>
+  <div>NBA Money Buckets &nbsp;·&nbsp; Pts · Reb · Ast · 3PM</div>
+  <div style="margin-top:8px;font-size:.7rem">For entertainment and informational purposes only. We do not accept bets or guarantee results. Please gamble responsibly. Must be 18+.</div>
+</footer>
 
 <script>
 let top10=[], allPicksData=[], activeTopStat='ALL', activeAllStat='ALL';
@@ -968,8 +988,7 @@ function renderTop10Cards(picks){
       <div class="stat-strip">${statTag(p.stat)}</div>
       <div class="pick-pattern">${p.threshold}+ ${p.stat_label} in ${p.hits} of ${p.games} ${p.location.toLowerCase()} games vs ${p.opp}</div>
       ${p.l10_games > 0 ? `<div class="l10vthr-desc">${p.player.split(" ").pop()} hit ${p.threshold}+ ${p.stat_label} ${p.l10_hits} of ${p.l10_games} last 10 games vs ${p.opp}</div>` : ""}
-      ${p.fd_line ? `<div class="fd-line-badge">📊 PrizePicks: <strong>${p.fd_line}</strong> | ${p.stat_label} ${p.threshold}+: ${p.l10_sb_hits !== null && p.l10_sb_hits !== undefined ? p.l10_sb_hits + "/" + p.l10_games + " vs " + p.opp : "—"}</div>` : ""}
-      ${p.dk_line ? `<div class="fd-line-badge" style="background:rgba(99,102,241,.15);border-color:rgba(99,102,241,.3);margin-top:4px">🏙️ O/U Line: <strong>${p.dk_line}</strong> ${p.dk_over_odds ? "O " + p.dk_over_odds : ""} ${p.dk_under_odds ? "U " + p.dk_under_odds : ""} | Hit ${p.dk_line}+: ${p.dk_hits !== null && p.dk_hits !== undefined ? p.dk_hits + "/" + p.l10_games + " vs " + p.opp : "—"}</div>` : ""}
+      ${p.fd_line ? `<div class="fd-line-badge">Sportsbook Line: <strong>${p.fd_line}</strong> ${p.fd_odds ? "(" + p.fd_odds + ")" : ""}${p.l10_sb_hits !== null && p.l10_sb_hits !== undefined ? " | Last 10 vs " + p.opp + ": " + p.l10_sb_hits + "/" + p.l10_games : ""}</div>` : ""}
       <div class="pick-matchup">📍 Today: ${p.matchup}</div>
       <div class="bar-wrap"><div class="bar-fill ${bc}" style="width:${Math.min(p.pct,100)}%"></div></div>
       <div class="stats-row"><span class="games-chip">${p.hits}/${p.games} games</span><span class="pct ${pc}">${p.pct}%</span></div>
@@ -1030,7 +1049,44 @@ function renderGames(games){
     `<div class="game-chip"><b>${g.away}</b><span class="sep">@</span><b>${g.home}</b></div>`
   ).join('');
 }
+// FanDuel status indicator
+async function checkFD(){
+  const dot   = document.getElementById('fdDot');
+  const label = document.getElementById('fdLabel');
+  if(!dot) return;
+  dot.className = 'fd-dot checking';
+  label.textContent = 'FanDuel...';
+  try{
+    const r = await fetch('/fd-status');
+    const d = await r.json();
+    if(d.fanduel === 'connected'){
+      dot.className = 'fd-dot connected';
+      label.style.color = '#22c55e';
+      label.textContent = 'FanDuel ✓';
+    } else if(d.fanduel === 'disconnected'){
+      dot.className = 'fd-dot disconnected';
+      label.style.color = '#ef4444';
+      label.textContent = 'FanDuel ✗';
+    } else {
+      dot.className = 'fd-dot';
+      label.style.color = '#475569';
+      label.textContent = 'FanDuel';
+    }
+  } catch(e){
+    dot.className = 'fd-dot';
+    label.textContent = 'FanDuel';
+  }
+}
+document.addEventListener('DOMContentLoaded', checkFD);
 
+async function clearAndRun(){
+  const btn = document.querySelector('.btn-refresh');
+  if(btn){ btn.textContent = '⏳ Clearing...'; btn.disabled = true; }
+  await fetch('/clear-cache');
+  await checkFD();
+  if(btn){ btn.textContent = '🔄 Refresh'; btn.disabled = false; }
+  // Just clears cache — user hits Run Picks when ready
+}
 
 async function runPicks(){
   const selectedDate=document.getElementById('datePicker').value;
@@ -1038,8 +1094,8 @@ async function runPicks(){
     <div class="msg-card">
       <div class="loading-ball"></div>
       <div class="ball-shadow"></div>
-      <h2 style="color:#FDB827">Analyzing Matchup Patterns</h2>
-      <p>Pulling data for <strong style="color:#FDB827">${selectedDate}</strong> from NBA Stats API.<br>
+      <h2 style="color:#f59e0b">Analyzing Matchup Patterns</h2>
+      <p>Pulling data for <strong style="color:#60a5fa">${selectedDate}</strong> from NBA Stats API.<br>
       <span style="color:#1e3a5f">This takes ~45 seconds — worth the wait.</span></p>
     </div>`;
   document.getElementById('allPicksWrap').style.display='none';
@@ -1054,7 +1110,6 @@ async function runPicks(){
     const log=data.log||[];
     if(!top10.length){
       document.getElementById('content').innerHTML=`<div class="msg-card"><span class="ico">🔍</span><h2>No Qualifying Patterns</h2><p>No 75%+ patterns for today's matchups.</p></div><div class="log-box">${log.join('<br>')}</div>`;
-      renderPropsSection(data.props_picks, data.props_nopick);
       return;
     }
     document.getElementById('filterBar').style.display='flex';
@@ -1066,41 +1121,9 @@ async function runPicks(){
     document.getElementById('totalCount').textContent=allPicksData.length;
     document.getElementById('allPicksWrap').style.display='block';
     renderAllByGame(allPicksData);
-    renderPropsSection(data.props_picks, data.props_nopick);
   }catch(e){
     document.getElementById('content').innerHTML=`<div class="msg-card"><span class="ico">❌</span><h2 style="color:#ef4444">Something went wrong</h2><p>${e.message}</p></div>`;
   }
-}
-
-function renderPropsSection(picks, nopick) {
-  var sec  = document.getElementById('props-section');
-  var body = document.getElementById('props-body');
-  if (!sec || !body) return;
-  sec.style.display = 'block';
-  var all = (picks||[]).concat((nopick||[]).filter(function(p){return p.games>0;}));
-  if (all.length === 0) {
-    body.innerHTML = '<tr><td colspan="11" style="text-align:center;padding:20px;color:#555">No prop lines available yet — check back closer to tip-off.</td></tr>';
-    return;
-  }
-  body.innerHTML = all.map(function(p,i) {
-    var isOver=p.pick==='OVER', isUnder=p.pick==='UNDER';
-    var clr = isOver?'#4ade80':isUnder?'#f87171':'#555';
-    var gap = p.gap!=null?(p.gap>0?'+':'')+p.gap:'—';
-    var sideBg = p.side==='HOME'?'rgba(253,184,39,.15)':'rgba(99,102,241,.15)';
-    return '<tr style="border-bottom:1px solid #1a1a1a">' +
-      '<td style="padding:9px 12px;color:#555">'+(i+1)+'</td>' +
-      '<td style="padding:9px 12px;font-weight:700">'+p.player+'</td>' +
-      '<td style="padding:9px 12px;color:#FDB827;font-size:.8rem">'+p.emoji+' '+p.stat_label+'</td>' +
-      '<td style="padding:9px 12px"><span style="background:'+sideBg+';padding:2px 7px;border-radius:4px;font-size:.75rem">'+p.side+'</span></td>' +
-      '<td style="padding:9px 12px;color:#999;font-size:.8rem">'+p.opp_name+'</td>' +
-      '<td style="padding:9px 12px;font-family:monospace;font-weight:700">'+p.line+'</td>' +
-      '<td style="padding:9px 12px;font-family:monospace;font-weight:700;color:'+clr+';font-size:1rem">'+(p.avg!=null?p.avg:'—')+'</td>' +
-      '<td style="padding:9px 12px;font-family:monospace;color:'+clr+';font-weight:700">'+gap+'</td>' +
-      '<td style="padding:9px 12px;font-weight:700;color:'+(p.hit_pct>=75?'#4ade80':p.hit_pct>=60?'#FDB827':'#f87171')+'">'+p.hits+'/'+p.games+' ('+p.hit_pct+'%)</td>' +
-      '<td style="padding:9px 12px;font-family:monospace;font-size:.7rem;color:#555;max-width:130px">'+p.history+'</td>' +
-      '<td style="padding:9px 12px;text-align:center"><span style="color:'+clr+';font-weight:900;font-size:1rem">'+(p.pick==='OVER'?'O':p.pick==='UNDER'?'U':'—')+'</span></td>' +
-      '</tr>';
-  }).join('');
 }
 </script>
 </body>
@@ -1108,13 +1131,14 @@ function renderPropsSection(picks, nopick) {
 # ─── Routes ───────────────────────────────────────────────────────────────────
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
-    # Auth removed
+    if not get_user(request):
+        return RedirectResponse("/login")
     today_iso = date.today().isoformat()
     return HTMLResponse(MAIN_HTML.replace("__TODAY__", today_iso))
 
-@app.get("/login")
+@app.get("/login", response_class=HTMLResponse)
 async def login_get():
-    return RedirectResponse("https://www.moneypicksarena.com")
+    return HTMLResponse(LOGIN_HTML.replace('{error}', ''))
 
 @app.post("/login")
 async def login_post(request: Request):
@@ -1126,6 +1150,12 @@ async def login_post(request: Request):
         resp.set_cookie("session", make_token(u), httponly=True, samesite="lax", max_age=86400*7)
         return resp
     return HTMLResponse(LOGIN_HTML.replace('{error}', '<p class="err">⚠️ Invalid username or password</p>'), status_code=401)
+
+@app.get("/logout")
+async def logout():
+    resp = RedirectResponse("/login")
+    resp.delete_cookie("session")
+    return resp
 
 @app.post("/run")
 async def run(request: Request):
@@ -1144,9 +1174,28 @@ async def clear_cache(request: Request):
     user = get_user(request)
     if not user:
         return {"error": "unauthorized"}
-    global _cache
+    global _cache, _fd_cookie
     _cache = {}
+    _fd_cookie = None  # force fresh FD login too
     return {"status": "cleared"}
+
+@app.get("/fd-status")
+async def fd_status(request: Request):
+    user = get_user(request)
+    if not user:
+        return {"fanduel": "unauthorized"}
+    configured = bool(os.environ.get("FD_EMAIL"))
+    connected  = _fd_cookie is not None
+    if configured and not connected:
+        try:
+            await get_fd_cookie()
+            connected = _fd_cookie is not None
+        except Exception:
+            connected = False
+    return {
+        "fanduel":    "connected" if connected else ("disconnected" if configured else "not_configured"),
+        "configured": configured,
+    }
 
 @app.get("/health")
 async def health():
