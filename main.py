@@ -1,4 +1,4 @@
-# NBA Money Buckets — main.py (v2 — 100% ESPN API, no NBA Stats API)
+# NBA Money Buckets â€” main.py (v2 â€” 100% ESPN API, no NBA Stats API)
 # NBA Stats API blocks server IPs. ESPN gives schedule + rosters + player game logs free.
 
 import asyncio
@@ -18,7 +18,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 
 app = FastAPI(title="NBA Money Buckets")
 
-# ─── Auth ─────────────────────────────────────────────────────────────────────
+# â”€â”€â”€ Auth â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 USERS_RAW = os.environ.get("USERS", "admin:buckets")
 USERS: Dict[str, str] = {}
 for _pair in USERS_RAW.split(","):
@@ -34,15 +34,15 @@ def make_token(username: str) -> str:
 def get_user(request: Request) -> Optional[str]:
     return "higgi"  # auth handled by Hub JWT gate
 
-# ─── Stat Config ──────────────────────────────────────────────────────────────
+# â”€â”€â”€ Stat Config â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # ESPN gamelog stats array order:
 # [0]=MIN [1]=FG [2]=FG% [3]=3PT [4]=3P% [5]=FT [6]=FT% [7]=REB [8]=AST
 # [9]=BLK [10]=STL [11]=PF [12]=TO [13]=PTS
 STAT_CONFIG = {
-    'PTS':  {'label': 'Points',     'emoji': '🏀', 'idx': 13, 'thresholds': list(range(45, 4, -1))},
-    'REB':  {'label': 'Rebounds',   'emoji': '📊', 'idx': 7,  'thresholds': list(range(20, 1, -1))},
-    'AST':  {'label': 'Assists',    'emoji': '🎯', 'idx': 8,  'thresholds': list(range(15, 1, -1))},
-    'FG3M': {'label': '3-Pointers', 'emoji': '🔥', 'idx': 3,  'thresholds': list(range(8,  0, -1))},
+    'PTS':  {'label': 'Points',     'emoji': 'ðŸ€', 'idx': 13, 'thresholds': list(range(45, 4, -1))},
+    'REB':  {'label': 'Rebounds',   'emoji': 'ðŸ“Š', 'idx': 7,  'thresholds': list(range(20, 1, -1))},
+    'AST':  {'label': 'Assists',    'emoji': 'ðŸŽ¯', 'idx': 8,  'thresholds': list(range(15, 1, -1))},
+    'FG3M': {'label': '3-Pointers', 'emoji': 'ðŸ”¥', 'idx': 3,  'thresholds': list(range(8,  0, -1))},
 }
 
 HIT_RATE_MIN  = 0.75
@@ -63,10 +63,10 @@ MIN_MINUTES   = 10.0
 ESPN_SEASONS  = [2026, 2025, 2024]   # ESPN uses season END year
 TOP_N         = 10
 
-# ─── Cache ────────────────────────────────────────────────────────────────────
+# â”€â”€â”€ Cache â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 _cache: Dict[str, Any] = {}
 
-# ─── FanDuel Session ──────────────────────────────────────────────────────────
+# â”€â”€â”€ FanDuel Session â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 _fd_cookie: Optional[str] = None
 _fd_lock    = asyncio.Lock()
 
@@ -111,10 +111,10 @@ async def _fanduel_login() -> str:
         cookies = await ctx.cookies()
         await browser.close()
     cookie_str = "; ".join(f"{c['name']}={c['value']}" for c in cookies)
-    print(f"[FanDuel] Login done — {len(cookies)} cookies")
+    print(f"[FanDuel] Login done â€” {len(cookies)} cookies")
     return cookie_str
 
-# ─── NBA FanDuel Props ────────────────────────────────────────────────────────
+# â”€â”€â”€ NBA FanDuel Props â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # Maps our stat keys to FanDuel market name fragments (NBA)
 FD_MARKET_MAP = {
     "PTS":  ["points", "pts"],
@@ -272,7 +272,7 @@ def attach_fd_lines(picks: List[Dict], fd_lines: Dict[str, Dict]) -> List[Dict]:
         pick["fd_line"] = fd_line
     return picks
 
-# ─── Helpers ──────────────────────────────────────────────────────────────────
+# â”€â”€â”€ Helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 def parse_stat(val) -> int:
     """Handle plain numbers AND made-attempted format like '3-11'."""
     s = str(val)
@@ -308,7 +308,7 @@ def find_best_threshold(values: List[float], thresholds: List[int]) -> Optional[
                     'hit_rate': rate, 'pct': round(rate * 100, 1)}
     return None
 
-# ─── ESPN API Functions ───────────────────────────────────────────────────────
+# â”€â”€â”€ ESPN API Functions â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 async def get_today_games(date_str: str = None) -> List[Dict]:
     if date_str:
         today_fmt = datetime.strptime(date_str, '%Y-%m-%d').strftime('%Y%m%d')
@@ -369,7 +369,7 @@ async def get_player_gamelogs_espn(player_id: str, season: int,
 
     events = gl.get('events', {})
 
-    # Build eventId → stats map from seasonTypes → categories → events
+    # Build eventId â†’ stats map from seasonTypes â†’ categories â†’ events
     stats_map: Dict[str, List] = {}
     for st in gl.get('seasonTypes', []):
         for cat in st.get('categories', []):
@@ -406,7 +406,7 @@ async def get_player_gamelogs_espn(player_id: str, season: int,
         })
     return games
 
-# ─── Analysis ─────────────────────────────────────────────────────────────────
+# â”€â”€â”€ Analysis â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def _nn(n):
     import unicodedata as ud, re
@@ -526,7 +526,7 @@ async def run_analysis(selected_date: str = None) -> Dict:
     total_entries = sum(len(v) for v in logs_by_player.values())
     log.append(f"{total_entries:,} historical game entries loaded")
 
-    # Pattern analysis — original algorithm (find best threshold >=75%)
+    # Pattern analysis â€” original algorithm (find best threshold >=75%)
     log.append("Scanning matchup patterns (75%+ threshold)...")
     picks = []
 
@@ -595,12 +595,12 @@ async def run_analysis(selected_date: str = None) -> Dict:
     _cache.update(result)
     return result
 
-# ─── HTML ─────────────────────────────────────────────────────────────────────
+# â”€â”€â”€ HTML â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 LOGIN_HTML = """<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>NBA Money Buckets — Money Picks Arena</title>
+<title>NBA Money Buckets â€” Money Picks Arena</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;700;900&family=Source+Sans+Pro:wght@300;400;600;700&display=swap" rel="stylesheet">
@@ -612,7 +612,7 @@ body{
   color:#e0e6f0;font-family:'Segoe UI',system-ui,sans-serif;
   min-height:100vh;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:0;
 }
-/* ── Spinning basketball ── */
+/* â”€â”€ Spinning basketball â”€â”€ */
 .spin-ball{
   width:80px;height:80px;border-radius:50%;
   background:radial-gradient(circle at 38% 35%,#fb923c 0%,#ea580c 55%,#7c2d12 100%);
@@ -633,7 +633,7 @@ body{
   border-top-color:transparent;border-bottom-color:transparent;
 }
 @keyframes spinBall{from{transform:rotate(0)}to{transform:rotate(360deg)}}
-/* ── Card ── */
+/* â”€â”€ Card â”€â”€ */
 .card{
   background:linear-gradient(145deg,rgba(15,23,42,.97),rgba(8,12,24,.99));
   border:1px solid rgba(30,58,95,.8);border-radius:24px;
@@ -683,12 +683,12 @@ input::placeholder{color:#374151}
   </div>
   <p class="sub">Pattern-Based Matchup Intelligence</p>
   <form method="post" action="/login">
-    <div class="field"><span class="fi">👤</span><input name="username" type="text" placeholder="Username" required autocomplete="username"></div>
-    <div class="field"><span class="fi">🔒</span><input name="password" type="password" placeholder="Password" required autocomplete="current-password"></div>
-    <button class="btn-in" type="submit">Access Picks →</button>
+    <div class="field"><span class="fi">ðŸ‘¤</span><input name="username" type="text" placeholder="Username" required autocomplete="username"></div>
+    <div class="field"><span class="fi">ðŸ”’</span><input name="password" type="password" placeholder="Password" required autocomplete="current-password"></div>
+    <button class="btn-in" type="submit">Access Picks â†’</button>
     {error}
   </form>
-  <p class="tagline">No Lines · Just Patterns · 75% Threshold</p>
+  <p class="tagline">No Lines Â· Just Patterns Â· 75% Threshold</p>
 </div>
 </body>
 </html>"""
@@ -852,74 +852,56 @@ footer{text-align:center;padding:32px 24px;color:#4b5563;font-size:.78rem;border
 
 <nav>
   <div class="logo">Money <span>Picks</span> Arena</div>
-  <div class="nav-right">
-    <span class="nav-sport">BASKETBALL</span>
-    <span class="nav-app">NBA Money Buckets</span>
-  </div>
 </nav>
 
 <div class="page">
 
 <div class="app-hdr">
   <h1>NBA <span>Money Buckets</span></h1>
-  <p>Pts &nbsp;·&nbsp; Reb &nbsp;·&nbsp; Ast &nbsp;·&nbsp; 3PM &nbsp;·&nbsp; Daily Picks</p>
+  <p>Pts &nbsp;Â·&nbsp; Reb &nbsp;Â·&nbsp; Ast &nbsp;Â·&nbsp; 3PM &nbsp;Â·&nbsp; Daily Picks</p>
 </div>
 
-<div class="controls-card">
-  <div class="date-row">
+<div class="card" style="text-align:center;margin-bottom:20px">
+  <h2 style="font-family:'Playfair Display',serif;font-size:1.5rem;font-weight:700;color:#fff;margin-bottom:6px">Run Today's Picks</h2>
+  <p style="color:#6b7280;font-size:.88rem;margin-bottom:22px">Select a date â€” NBA Stats API powers all hit rates</p>
+  <div class="date-row" style="justify-content:center">
     <label>Date</label>
     <input type="date" id="datePicker" value="__TODAY__">
   </div>
-  <button class="btn btn-run" onclick="runPicks()">Run Picks</button>
-  <button class="btn btn-refresh" onclick="clearAndRun()">Refresh</button>
-  <a href="/logout" class="btn btn-out">Sign Out</a>
-  <div class="fd-indicator" id="fdIndicator">
-    <span class="fd-dot" id="fdDot"></span>
-    <span class="fd-label" id="fdLabel">FanDuel</span>
-  </div>
+  <button class="btn btn-run" id="runBtn" onclick="runPicks()">Run Picks</button>
 </div>
 
-<div class="games-bar" id="gamesBar">
-  <div class="game-chip" style="color:#374151">Hit Run Picks to load today's games →</div>
-</div>
+<div class="games-bar" id="gamesBar" style="display:none"></div>
 
 <div id="filterBar" style="display:none" class="filter-bar">
   <button class="filter-btn active" onclick="filterStat('ALL')">All Stats</button>
-  <button class="filter-btn" onclick="filterStat('PTS')">🏀 Points</button>
-  <button class="filter-btn" onclick="filterStat('REB')">📊 Rebounds</button>
-  <button class="filter-btn" onclick="filterStat('AST')">🎯 Assists</button>
-  <button class="filter-btn" onclick="filterStat('FG3M')">🔥 3-Pointers</button>
+  <button class="filter-btn" onclick="filterStat('PTS')">ðŸ€ Points</button>
+  <button class="filter-btn" onclick="filterStat('REB')">ðŸ“Š Rebounds</button>
+  <button class="filter-btn" onclick="filterStat('AST')">ðŸŽ¯ Assists</button>
+  <button class="filter-btn" onclick="filterStat('FG3M')">ðŸ”¥ 3-Pointers</button>
 </div>
 
-<div id="content">
-  <div class="msg-card">
-    <span class="ico">🏀</span>
-    <h2>Welcome to NBA Money Buckets</h2>
-    <p>Hit <strong style="color:#f59e0b">Run Picks</strong> to scan today's matchups.<br>
-    Finds players hitting <strong style="color:#22c55e">75%+</strong> in Pts, Reb, Ast, or 3PM<br>
-    against today's specific opponent — home or away.</p>
-  </div>
-</div>
+<div id="content"></div>
 
 <div id="allPicksWrap" style="display:none">
   <div class="total-banner">
     <div class="tb-left">
-      <div class="tb-ico">📋</div>
+      <div class="tb-ico">ðŸ“‹</div>
       <div>
         <div class="tb-title">All Qualifying Patterns</div>
-        <div class="tb-sub">Every player hitting 75%+ · Grouped by game</div>
+        <div class="tb-sub">Every player hitting 75%+ Â· Grouped by game</div>
       </div>
     </div>
     <div class="tb-count" id="totalCount">0</div>
   </div>
   <div class="all-section-hdr">
-    <div class="all-section-title">🎯 All Patterns by Game</div>
+    <div class="all-section-title">ðŸŽ¯ All Patterns by Game</div>
     <div style="display:flex;gap:8px;flex-wrap:wrap" id="allFilterBar">
       <button class="filter-btn active" onclick="filterAll('ALL')">All</button>
-      <button class="filter-btn" onclick="filterAll('PTS')">🏀 Pts</button>
-      <button class="filter-btn" onclick="filterAll('REB')">📊 Reb</button>
-      <button class="filter-btn" onclick="filterAll('AST')">🎯 Ast</button>
-      <button class="filter-btn" onclick="filterAll('FG3M')">🔥 3PM</button>
+      <button class="filter-btn" onclick="filterAll('PTS')">ðŸ€ Pts</button>
+      <button class="filter-btn" onclick="filterAll('REB')">ðŸ“Š Reb</button>
+      <button class="filter-btn" onclick="filterAll('AST')">ðŸŽ¯ Ast</button>
+      <button class="filter-btn" onclick="filterAll('FG3M')">ðŸ”¥ 3PM</button>
     </div>
   </div>
   <div id="allPicksSection"></div>
@@ -928,12 +910,12 @@ footer{text-align:center;padding:32px 24px;color:#4b5563;font-size:.78rem;border
 </div>
 <footer>
   <div class="ft-logo">Money Picks Arena</div>
-  <div>NBA Money Buckets &nbsp;·&nbsp; Pts · Reb · Ast · 3PM</div>
+  <div>NBA Money Buckets &nbsp;Â·&nbsp; Pts Â· Reb Â· Ast Â· 3PM</div>
   <div style="margin-top:8px;font-size:.7rem">For entertainment and informational purposes only. We do not accept bets or guarantee results. Please gamble responsibly. Must be 18+.</div>
 </footer>
 
 <script>
-// ── Hub JWT Token Gate ───────────────────────────────────────────────────
+// â”€â”€ Hub JWT Token Gate â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 (function(){
   const HUB='https://www.moneypicksarena.com';
   const KEY='__mpa_token';
@@ -983,10 +965,10 @@ function filterAll(stat){
 
 function renderTop10Cards(picks){
   if(!picks.length){
-    document.getElementById('content').innerHTML='<div class="msg-card"><span class="ico">🔍</span><h2>No patterns</h2><p>Try "All Stats".</p></div>';
+    document.getElementById('content').innerHTML='<div class="msg-card"><span class="ico">ðŸ”</span><h2>No patterns</h2><p>Try "All Stats".</p></div>';
     return;
   }
-  let html=`<div class="section-hdr"><div class="section-title">🏆 Top 10 Picks Today</div><span class="count-pill">${picks.length} pick${picks.length!==1?'s':''}</span></div><div class="picks-grid">`;
+  let html=`<div class="section-hdr"><div class="section-title">ðŸ† Top 10 Picks Today</div><span class="count-pill">${picks.length} pick${picks.length!==1?'s':''}</span></div><div class="picks-grid">`;
   picks.forEach((p,i)=>{
     const [pc,bc]=pctClass(p.pct);
     html+=`
@@ -994,12 +976,12 @@ function renderTop10Cards(picks){
       <div class="pick-rank ${rankClass(i)}">${i+1}</div>
       <span class="pick-emoji">${p.emoji}</span>
       <div class="pick-player">${p.player}</div>
-      <div class="pick-team">${p.team_name} <span class="loc-badge">${p.location==='Home'?'🏠 Home':'✈️ Away'}</span></div>
+      <div class="pick-team">${p.team_name} <span class="loc-badge">${p.location==='Home'?'ðŸ  Home':'âœˆï¸ Away'}</span></div>
       <div class="stat-strip">${statTag(p.stat)}</div>
       <div class="pick-pattern">${p.threshold}+ ${p.stat_label} in ${p.hits} of ${p.games} ${p.location.toLowerCase()} games vs ${p.opp}</div>
       ${p.l10_games > 0 ? `<div class="l10vthr-desc">${p.player.split(" ").pop()} hit ${p.threshold}+ ${p.stat_label} ${p.l10_hits} of ${p.l10_games} last 10 games vs ${p.opp}</div>` : ""}
       ${p.fd_line ? `<div class="fd-line-badge">Sportsbook Line: <strong>${p.fd_line}</strong> ${p.fd_odds ? "(" + p.fd_odds + ")" : ""}${p.l10_sb_hits !== null && p.l10_sb_hits !== undefined ? " | Last 10 vs " + p.opp + ": " + p.l10_sb_hits + "/" + p.l10_games : ""}</div>` : ""}
-      <div class="pick-matchup">📍 Today: ${p.matchup}</div>
+      <div class="pick-matchup">ðŸ“ Today: ${p.matchup}</div>
       <div class="bar-wrap"><div class="bar-fill ${bc}" style="width:${Math.min(p.pct,100)}%"></div></div>
       <div class="stats-row"><span class="games-chip">${p.hits}/${p.games} games</span><span class="pct ${pc}">${p.pct}%</span></div>
     </div>`;
@@ -1010,7 +992,7 @@ function renderTop10Cards(picks){
 
 function renderAllByGame(picks){
   const el=document.getElementById('allPicksSection');
-  if(!picks.length){el.innerHTML='<div class="msg-card" style="padding:30px"><span class="ico">🔍</span><p>No patterns for this filter.</p></div>';return;}
+  if(!picks.length){el.innerHTML='<div class="msg-card" style="padding:30px"><span class="ico">ðŸ”</span><p>No patterns for this filter.</p></div>';return;}
   const groups={},order=[];
   for(const p of picks){if(!groups[p.matchup]){groups[p.matchup]=[];order.push(p.matchup);}groups[p.matchup].push(p);}
   let html='';
@@ -1019,8 +1001,8 @@ function renderAllByGame(picks){
     const gameId='g_'+matchup.replace(/[^a-z0-9]/gi,'_');
     html+=`<div class="game-group">
       <div class="game-group-hdr" onclick="toggleGroup('${gameId}',this)">
-        <span class="gg-label">🏀 ${matchup}</span>
-        <div class="gg-meta"><span class="count-pill">${gp.length} pattern${gp.length!==1?'s':''}</span><span class="gg-chevron">▾</span></div>
+        <span class="gg-label">ðŸ€ ${matchup}</span>
+        <div class="gg-meta"><span class="count-pill">${gp.length} pattern${gp.length!==1?'s':''}</span><span class="gg-chevron">â–¾</span></div>
       </div>
       <div class="compact-picks" id="${gameId}">`;
     for(const p of gp){
@@ -1028,8 +1010,8 @@ function renderAllByGame(picks){
       html+=`<div class="compact-row">
         <span class="cr-emoji">${p.emoji}</span>
         <div class="cr-info">
-          <div class="cr-player">${p.player} <span style="color:#1e3a5f;font-size:.65rem">${p.team}·${p.location==='Home'?'🏠':'✈️'}</span></div>
-          <div class="cr-pattern">${p.threshold}+ ${p.stat_label} · ${p.hits}/${p.games} ${p.location.toLowerCase()} vs ${p.opp}${p.fd_line ? ` · <span class="fd-inline">🏙️ ${p.fd_line}</span>` : ''}</div>
+          <div class="cr-player">${p.player} <span style="color:#1e3a5f;font-size:.65rem">${p.team}Â·${p.location==='Home'?'ðŸ ':'âœˆï¸'}</span></div>
+          <div class="cr-pattern">${p.threshold}+ ${p.stat_label} Â· ${p.hits}/${p.games} ${p.location.toLowerCase()} vs ${p.opp}${p.fd_line ? ` Â· <span class="fd-inline">ðŸ™ï¸ ${p.fd_line}</span>` : ''}</div>
           ${(p.fd_line !== null && p.fd_line !== undefined && p.l10vthr_hits !== null && p.l10vthr_hits !== undefined) ? `<div class="l10vthr-desc" style="font-size:.76rem;margin-top:2px">${Math.ceil(p.fd_line)}+ ${p.stat_label}: ${p.l10vthr_hits}/${p.l10vthr_games} vs ${p.opp}</div>` : ''}
         </div>
         <div class="cr-right">
@@ -1055,7 +1037,9 @@ function toggleGroup(id,hdr){
 }
 function renderGames(games){
   if(!games||!games.length)return;
-  document.getElementById('gamesBar').innerHTML=games.map(g=>
+  var gb=document.getElementById('gamesBar');
+  gb.style.display='flex';
+  gb.innerHTML=games.map(g=>
     `<div class="game-chip"><b>${g.away}</b><span class="sep">@</span><b>${g.home}</b></div>`
   ).join('');
 }
@@ -1072,11 +1056,11 @@ async function checkFD(){
     if(d.fanduel === 'connected'){
       dot.className = 'fd-dot connected';
       label.style.color = '#22c55e';
-      label.textContent = 'FanDuel ✓';
+      label.textContent = 'FanDuel âœ“';
     } else if(d.fanduel === 'disconnected'){
       dot.className = 'fd-dot disconnected';
       label.style.color = '#ef4444';
-      label.textContent = 'FanDuel ✗';
+      label.textContent = 'FanDuel âœ—';
     } else {
       dot.className = 'fd-dot';
       label.style.color = '#475569';
@@ -1090,12 +1074,8 @@ async function checkFD(){
 document.addEventListener('DOMContentLoaded', checkFD);
 
 async function clearAndRun(){
-  const btn = document.querySelector('.btn-refresh');
-  if(btn){ btn.textContent = '⏳ Clearing...'; btn.disabled = true; }
   await fetch('/clear-cache');
   await checkFD();
-  if(btn){ btn.textContent = '🔄 Refresh'; btn.disabled = false; }
-  // Just clears cache — user hits Run Picks when ready
 }
 
 async function runPicks(){
@@ -1106,7 +1086,7 @@ async function runPicks(){
       <div class="ball-shadow"></div>
       <h2 style="color:#f59e0b">Analyzing Matchup Patterns</h2>
       <p>Pulling data for <strong style="color:#60a5fa">${selectedDate}</strong> from NBA Stats API.<br>
-      <span style="color:#1e3a5f">This takes ~45 seconds — worth the wait.</span></p>
+      <span style="color:#1e3a5f">This takes ~45 seconds â€” worth the wait.</span></p>
     </div>`;
   document.getElementById('allPicksWrap').style.display='none';
   try{
@@ -1119,26 +1099,26 @@ async function runPicks(){
     activeTopStat='ALL';activeAllStat='ALL';
     const log=data.log||[];
     if(!top10.length){
-      document.getElementById('content').innerHTML=`<div class="msg-card"><span class="ico">🔍</span><h2>No Qualifying Patterns</h2><p>No 75%+ patterns for today's matchups.</p></div><div class="log-box">${log.join('<br>')}</div>`;
+      document.getElementById('content').innerHTML=`<div class="msg-card"><span class="ico">ðŸ”</span><h2>No Qualifying Patterns</h2><p>No 75%+ patterns for today's matchups.</p></div><div class="log-box">${log.join('<br>')}</div>`;
       return;
     }
     document.getElementById('filterBar').style.display='flex';
     renderTop10Cards(top10);
     const lb=document.createElement('div');
     lb.className='log-box';
-    lb.innerHTML=log.join('<br>')+`<br>📋 ${data.total} total patterns found`;
+    lb.innerHTML=log.join('<br>')+`<br>ðŸ“‹ ${data.total} total patterns found`;
     document.getElementById('content').appendChild(lb);
     document.getElementById('totalCount').textContent=allPicksData.length;
     document.getElementById('allPicksWrap').style.display='block';
     renderAllByGame(allPicksData);
   }catch(e){
-    document.getElementById('content').innerHTML=`<div class="msg-card"><span class="ico">❌</span><h2 style="color:#ef4444">Something went wrong</h2><p>${e.message}</p></div>`;
+    document.getElementById('content').innerHTML=`<div class="msg-card"><span class="ico">âŒ</span><h2 style="color:#ef4444">Something went wrong</h2><p>${e.message}</p></div>`;
   }
 }
 </script>
 </body>
 </html>"""
-# ─── Routes ───────────────────────────────────────────────────────────────────
+# â”€â”€â”€ Routes â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
     today_iso = date.today().isoformat()
@@ -1167,7 +1147,7 @@ async def login_post(request: Request):
         resp = RedirectResponse("/", status_code=302)
         resp.set_cookie("session", make_token(u), httponly=True, samesite="lax", max_age=86400*7)
         return resp
-    return HTMLResponse(LOGIN_HTML.replace('{error}', '<p class="err">⚠️ Invalid username or password</p>'), status_code=401)
+    return HTMLResponse(LOGIN_HTML.replace('{error}', '<p class="err">âš ï¸ Invalid username or password</p>'), status_code=401)
 
 @app.get("/logout")
 async def logout():
