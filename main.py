@@ -32,7 +32,7 @@ def make_token(username: str) -> str:
     return hashlib.sha256(f"{username}:{SECRET}".encode()).hexdigest()
 
 def get_user(request: Request) -> Optional[str]:
-    return "higgi"  # auth handled by Hub JWT gate
+    return "higgi"  # Hub JWT gate
 
 # ─── Stat Config ──────────────────────────────────────────────────────────────
 # ESPN gamelog stats array order:
@@ -600,10 +600,7 @@ LOGIN_HTML = """<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>NBA Money Buckets — Money Picks Arena</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;700;900&family=Source+Sans+Pro:wght@300;400;600;700&display=swap" rel="stylesheet">
+<title>NBA Money Buckets</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{
@@ -676,10 +673,139 @@ input::placeholder{color:#374151}
 </style>
 </head>
 <body>
+<div class="spin-ball"></div>
+<div class="card">
+  <div class="logo-line">
+    <h1>NBA Money Buckets</h1>
+  </div>
+  <p class="sub">Pattern-Based Matchup Intelligence</p>
+  <form method="post" action="/login">
+    <div class="field"><span class="fi">👤</span><input name="username" type="text" placeholder="Username" required autocomplete="username"></div>
+    <div class="field"><span class="fi">🔒</span><input name="password" type="password" placeholder="Password" required autocomplete="current-password"></div>
+    <button class="btn-in" type="submit">Access Picks →</button>
+    {error}
+  </form>
+  <p class="tagline">No Lines · Just Patterns · 75% Threshold</p>
+</div>
+</body>
+</html>"""
+
+MAIN_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>NBA Money Buckets &mdash; Money Picks Arena</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;700;900&family=Source+Sans+Pro:wght@300;400;600;700&display=swap" rel="stylesheet">
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#0f0f0f;color:#fff;font-family:'Source Sans Pro',sans-serif;min-height:100vh}
+.bg-glow{position:fixed;inset:0;background:radial-gradient(ellipse at 50% 20%,rgba(245,158,11,.05),transparent 65%);pointer-events:none;z-index:0}
+nav{position:fixed;top:0;width:100%;background:rgba(10,10,10,.95);backdrop-filter:blur(12px);border-bottom:1px solid #1c1c1c;z-index:100;padding:0 32px;height:80px;display:flex;align-items:center}
+.logo{font-family:'Playfair Display',serif;font-size:36px;font-weight:900;color:#f59e0b;letter-spacing:.02em;line-height:1}
+.logo span{color:#fff}
+.page{position:relative;z-index:1;max-width:1400px;margin:0 auto;padding:104px 24px 40px}
+.app-hdr{text-align:center;margin-bottom:32px}
+.app-hdr h1{font-family:'Playfair Display',serif;font-size:2.6rem;font-weight:900;color:#fff;margin-bottom:6px}
+.app-hdr h1 span{color:#f59e0b}
+.app-hdr p{font-size:.85rem;color:#6b7280;letter-spacing:.15em;text-transform:uppercase}
+.card{background:#161616;border:1px solid #262626;border-radius:20px;padding:24px;margin-bottom:16px}
+.date-row{display:flex;align-items:center;justify-content:center;gap:12px;margin-bottom:20px}
+.date-row label{color:#9ca3af;font-weight:600;font-size:.85rem;letter-spacing:.08em;text-transform:uppercase}
+.date-row input[type=date]{background:#0a0a0a;color:#fff;border:1px solid #2a2a2a;border-radius:10px;padding:10px 16px;font-size:.95rem;font-family:'Source Sans Pro',sans-serif;cursor:pointer;outline:none;transition:border .2s}
+.date-row input[type=date]:focus{border-color:#f59e0b}
+input[type=date]::-webkit-calendar-picker-indicator{filter:invert(1);opacity:.7;cursor:pointer}
+.btn{padding:10px 24px;border-radius:8px;font-size:.88rem;font-weight:700;cursor:pointer;border:none;transition:all .2s;font-family:'Source Sans Pro',sans-serif}
+.btn-run{background:#f59e0b;color:#000}
+.btn-run:hover{background:#fbbf24;transform:translateY(-1px);box-shadow:0 4px 20px rgba(245,158,11,.35)}
+.btn-run:disabled{background:#2a2a2a;color:#4b5563;cursor:not-allowed;transform:none;box-shadow:none}
+.games-bar{display:none;gap:8px;overflow-x:auto;padding-bottom:4px;margin-bottom:20px}
+.game-chip{background:#161616;border:1px solid #262626;border-radius:10px;padding:9px 18px;white-space:nowrap;font-size:.82rem;flex-shrink:0;transition:border-color .2s}
+.game-chip:hover{border-color:#f59e0b}
+.game-chip b{color:#fff;font-weight:700}
+.game-chip .sep{color:#374151;margin:0 5px}
+.filter-bar{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:20px}
+.filter-btn{padding:7px 18px;border-radius:999px;border:1px solid #262626;background:#161616;color:#6b7280;font-size:.81rem;cursor:pointer;transition:all .2s;font-weight:600;font-family:'Source Sans Pro',sans-serif}
+.filter-btn.active,.filter-btn:hover{background:rgba(245,158,11,.1);color:#f59e0b;border-color:rgba(245,158,11,.3)}
+.section-hdr{display:flex;align-items:center;justify-content:space-between;margin-bottom:18px}
+.section-title{font-size:1rem;font-weight:700;display:flex;align-items:center;gap:8px;color:#f59e0b;font-family:'Playfair Display',serif}
+.count-pill{background:rgba(245,158,11,.1);color:#f59e0b;padding:4px 14px;border-radius:999px;font-size:.78rem;font-weight:700;border:1px solid rgba(245,158,11,.2)}
+.picks-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:16px;margin-bottom:10px}
+.pick-card{background:#161616;border:1px solid #262626;border-radius:20px;padding:22px;position:relative;overflow:hidden;transition:border-color .25s,transform .22s}
+.pick-card:hover{border-color:rgba(245,158,11,.4);transform:translateY(-3px);box-shadow:0 14px 40px rgba(0,0,0,.5)}
+.pick-rank{position:absolute;top:14px;right:15px;width:32px;height:32px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:.82rem;font-weight:900}
+.rank-1{background:linear-gradient(135deg,#C4901A,#f59e0b);color:#000;box-shadow:0 0 14px rgba(245,158,11,.5)}
+.rank-2{background:linear-gradient(135deg,#374151,#9ca3af);color:#000}
+.rank-3{background:linear-gradient(135deg,#7c2d12,#c2410c);color:#fff}
+.rank-other{background:#1a1a1a;color:#4b5563;font-size:.75rem;border:1px solid #262626}
+.pick-emoji,.ball-svg,.ball-shadow,.fd-indicator,.tb-ico,.cr-emoji,.msg-card .ico{display:none}
+.pick-player{font-size:1.08rem;font-weight:800;color:#fff;margin-bottom:3px;letter-spacing:-.3px;padding-right:38px;font-family:'Playfair Display',serif}
+.pick-team{font-size:.75rem;color:#6b7280;margin-bottom:12px;display:flex;align-items:center;gap:6px}
+.loc-badge{background:#1a1a1a;padding:2px 9px;border-radius:10px;font-size:.7rem;color:#6b7280;border:1px solid #262626}
+.stat-strip{display:flex;gap:6px;margin-bottom:10px;flex-wrap:wrap}
+.stat-tag{padding:3px 10px;border-radius:10px;font-size:.7rem;font-weight:700;letter-spacing:.3px}
+.tag-pts{background:rgba(109,40,217,.15);color:#a78bfa;border:1px solid rgba(109,40,217,.25)}
+.tag-reb{background:rgba(37,99,235,.15);color:#60a5fa;border:1px solid rgba(37,99,235,.25)}
+.tag-ast{background:rgba(5,150,105,.15);color:#34d399;border:1px solid rgba(5,150,105,.25)}
+.tag-fg3m{background:rgba(220,38,38,.15);color:#f87171;border:1px solid rgba(220,38,38,.25)}
+.pick-pattern{font-size:.9rem;color:#7dd3fc;font-weight:700;margin-bottom:4px;line-height:1.4}
+.l10vthr-desc{font-size:.88rem;color:#f59e0b;font-weight:700;margin-bottom:5px;line-height:1.4}
+.fd-line-badge{display:inline-block;background:rgba(74,222,128,.08);border:1px solid rgba(74,222,128,.2);color:#4ade80;border-radius:6px;padding:3px 10px;font-size:.78rem;font-weight:700;margin-bottom:6px}
+.fd-inline{color:#4ade80;font-weight:700}
+.l10vthr-inline{color:#f59e0b;font-weight:700}
+.pick-matchup{font-size:.72rem;color:#374151;margin-bottom:16px}
+.bar-wrap{background:#1a1a1a;border-radius:6px;height:8px;overflow:hidden;margin-bottom:10px;border:1px solid #262626}
+.bar-fill{height:100%;border-radius:5px}
+.bar-green{background:linear-gradient(90deg,#15803d,#4ade80)}
+.bar-yellow{background:linear-gradient(90deg,#b45309,#f59e0b)}
+.bar-orange{background:linear-gradient(90deg,#c2410c,#f97316)}
+.stats-row{display:flex;justify-content:space-between;align-items:center}
+.games-chip{background:#1a1a1a;padding:4px 12px;border-radius:20px;font-size:.75rem;color:#4b5563;border:1px solid #262626}
+.pct{font-size:1.2rem;font-weight:900;letter-spacing:-.5px;font-family:'Playfair Display',serif}
+.pct-green{color:#4ade80}
+.pct-yellow{color:#f59e0b}
+.pct-orange{color:#f97316}
+.total-banner{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;background:#161616;border:1px solid rgba(74,222,128,.2);border-radius:18px;padding:18px 24px;margin:32px 0 20px}
+.tb-left{display:flex;align-items:center;gap:12px}
+.tb-title{font-size:.95rem;font-weight:700;color:#4ade80;font-family:'Playfair Display',serif}
+.tb-sub{font-size:.72rem;color:#374151;margin-top:2px;letter-spacing:.8px;text-transform:uppercase}
+.tb-count{font-size:2.2rem;font-weight:900;color:#4ade80;letter-spacing:-1.5px;font-family:'Playfair Display',serif}
+.all-section-hdr{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;flex-wrap:wrap;gap:10px}
+.all-section-title{font-size:.95rem;font-weight:700;color:#f59e0b;display:flex;align-items:center;gap:8px;font-family:'Playfair Display',serif}
+.game-group{margin-bottom:14px}
+.game-group-hdr{display:flex;align-items:center;justify-content:space-between;background:#161616;border:1px solid #262626;border-radius:13px;padding:12px 18px;margin-bottom:6px;cursor:pointer;user-select:none;transition:border-color .2s}
+.game-group-hdr:hover{border-color:rgba(245,158,11,.3)}
+.gg-label{font-size:.88rem;font-weight:700;color:#fff;display:flex;align-items:center;gap:8px}
+.gg-meta{display:flex;align-items:center;gap:8px}
+.gg-chevron{color:#4b5563;font-size:.85rem;transition:transform .2s}
+.compact-picks{display:flex;flex-direction:column;gap:5px;margin-bottom:4px}
+.compact-row{display:flex;align-items:center;gap:12px;background:#1a1a1a;border:1px solid #262626;border-radius:11px;padding:10px 15px;transition:border-color .2s}
+.compact-row:hover{border-color:rgba(245,158,11,.25)}
+.cr-info{flex:1;min-width:0}
+.cr-player{font-size:.86rem;font-weight:700;color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cr-pattern{font-size:.76rem;color:#60a5fa;font-weight:600;margin-top:2px}
+.cr-right{display:flex;flex-direction:column;align-items:flex-end;gap:3px;flex-shrink:0}
+.cr-bar-wrap{background:#1a1a1a;border-radius:4px;height:4px;width:68px;overflow:hidden;border:1px solid #262626}
+.cr-bar-fill{height:100%;border-radius:4px}
+.cr-pct{font-size:.9rem;font-weight:900;font-family:'Playfair Display',serif}
+.cr-sample{font-size:.65rem;color:#374151}
+.spinner{display:inline-block;width:14px;height:14px;border:2px solid rgba(245,158,11,.3);border-top-color:#f59e0b;border-radius:50%;animation:spin .6s linear infinite;margin-right:6px;vertical-align:middle}
+.loading-ball{width:48px;height:48px;border:3px solid rgba(245,158,11,.15);border-top:3px solid #f59e0b;border-radius:50%;animation:spin .8s linear infinite;margin:0 auto 18px}
+@keyframes spin{to{transform:rotate(360deg)}}
+@keyframes ballBounce{0%,100%{transform:translateY(0)}50%{transform:translateY(-22px)}}
+@keyframes shadowPulse{0%,100%{transform:scaleX(1)}50%{transform:scaleX(.55)}}
+.msg-card{background:#161616;border:1px solid #262626;border-radius:20px;padding:60px 30px;text-align:center}
+.msg-card h2{color:#fff;font-size:1.2rem;font-weight:800;margin-bottom:10px;font-family:'Playfair Display',serif}
+.msg-card p{color:#6b7280;font-size:.88rem;line-height:1.75}
+.log-box{background:#0a0a0a;border:1px solid #262626;border-radius:12px;padding:16px;font-size:.74rem;color:#374151;font-family:'Courier New',monospace;margin-top:20px;max-height:160px;overflow-y:auto;line-height:1.9}
+footer{text-align:center;padding:32px 24px;color:#4b5563;font-size:.78rem;border-top:1px solid #1c1c1c;margin-top:24px;font-family:'Source Sans Pro',sans-serif}
+.ft-logo{font-family:'Playfair Display',serif;color:#f59e0b;font-weight:700;font-size:.95rem;margin-bottom:6px}
+</style>
+</head>
+<body>
 <div class="bg-glow"></div>
-<nav>
-  <div class="logo">Money <span>Picks</span> Arena</div>
-</nav>
+<nav><div class="logo">Money <span>Picks</span> Arena</div></nav>
 <div class="page">
 <div class="app-hdr">
   <h1>NBA <span>Money Buckets</span></h1>
@@ -691,9 +817,7 @@ input::placeholder{color:#374151}
     <label>Date</label>
     <input type="date" id="datePicker" value="__TODAY__">
   </div>
-  <div style="text-align:center">
-    <button class="btn btn-run" id="runBtn" onclick="runPicks()">Run Picks</button>
-  </div>
+  <div style="text-align:center"><button class="btn btn-run" id="runBtn" onclick="runPicks()">Run Picks</button></div>
 </div>
 <div class="games-bar" id="gamesBar"></div>
 <div id="filterBar" style="display:none" class="filter-bar">
@@ -728,219 +852,17 @@ input::placeholder{color:#374151}
   <div id="allPicksSection"></div>
 </div>
 
+<footer>NBA Money Buckets · No Lines · Just Patterns · Powered by NBA Stats API &amp; ESPN</footer>
+
 <footer>
   <div class="ft-logo">Money Picks Arena</div>
   <div>NBA Money Buckets &middot; Pts &middot; Reb &middot; Ast &middot; 3PM</div>
   <div style="margin-top:8px;font-size:.7rem">For entertainment and informational purposes only. We do not accept bets or guarantee results. Please gamble responsibly. Must be 18+.</div>
-</div>
 </footer>
-
-<script>
-// Hub JWT Token Gate
-(function(){
-  var HUB='https://www.moneypicksarena.com';
-  var KEY='__mpa_token';
-  var p=new URLSearchParams(window.location.search);
-  var t=p.get('token');
-  if(t){localStorage.setItem(KEY,t);window.history.replaceState({},'',window.location.pathname);}
-  var tok=localStorage.getItem(KEY);
-  if(!tok){window.location.href=HUB;return;}
-  fetch('/api/verify-token',{headers:{'Authorization':'Bearer '+tok}})
-    .then(r=>{if(!r.ok){localStorage.removeItem(KEY);window.location.href=HUB;}})
-    .catch(()=>{localStorage.removeItem(KEY);window.location.href=HUB;});
-})();
-
-let top10=[], allPicksData=[], activeTopStat='ALL', activeAllStat='ALL';
-
-function pctClass(p){return p>=90?['pct-green','bar-green']:p>=80?['pct-yellow','bar-yellow']:['pct-orange','bar-orange']}
-function statTag(s){
-  const m={PTS:['tag-pts','Points'],REB:['tag-reb','Rebounds'],AST:['tag-ast','Assists'],FG3M:['tag-fg3m','3-Pointers']};
-  const [c,l]=m[s]||['',''];
-  return `<span class="stat-tag ${c}">${l}</span>`;
-}
-function rankClass(i){return i===0?'rank-1':i===1?'rank-2':i===2?'rank-3':'rank-other'}
-
-function filterStat(stat){
-  activeTopStat=stat;
-  document.querySelectorAll('#filterBar .filter-btn').forEach(b=>{
-    const t=b.textContent;
-    b.classList.toggle('active',
-      stat==='ALL'?t.includes('All'):stat==='PTS'?t.includes('Point'):
-      stat==='REB'?t.includes('Rebound'):stat==='AST'?t.includes('Assist'):t.includes('3-Point'));
-  });
-  renderTop10Cards(stat==='ALL'?top10:top10.filter(p=>p.stat===stat));
-}
-
-function filterAll(stat){
-  activeAllStat=stat;
-  document.querySelectorAll('#allFilterBar .filter-btn').forEach(b=>{
-    const t=b.textContent;
-    b.classList.toggle('active',
-      stat==='ALL'?t==='All':stat==='PTS'?t.includes('Pt'):
-      stat==='REB'?t.includes('Reb'):stat==='AST'?t.includes('Ast'):t.includes('3PM'));
-  });
-  const filtered=stat==='ALL'?allPicksData:allPicksData.filter(p=>p.stat===stat);
-  document.getElementById('totalCount').textContent=filtered.length;
-  renderAllByGame(filtered);
-}
-
-function renderTop10Cards(picks){
-  if(!picks.length){
-    document.getElementById('content').innerHTML='<div class="msg-card"><span class="ico">🔍</span><h2>No patterns</h2><p>Try "All Stats".</p></div>';
-    return;
-  }
-  let html=`<div class="section-hdr"><div class="section-title">🏆 Top 10 Picks Today</div><span class="count-pill">${picks.length} pick${picks.length!==1?'s':''}</span></div><div class="picks-grid">`;
-  picks.forEach((p,i)=>{
-    const [pc,bc]=pctClass(p.pct);
-    html+=`
-    <div class="pick-card">
-      <div class="pick-rank ${rankClass(i)}">${i+1}</div>
-      <span class="pick-emoji">${p.emoji}</span>
-      <div class="pick-player">${p.player}</div>
-      <div class="pick-team">${p.team_name} <span class="loc-badge">${p.location==='Home'?'🏠 Home':'✈️ Away'}</span></div>
-      <div class="stat-strip">${statTag(p.stat)}</div>
-      <div class="pick-pattern">${p.threshold}+ ${p.stat_label} in ${p.hits} of ${p.games} ${p.location.toLowerCase()} games vs ${p.opp}</div>
-      ${p.l10_games > 0 ? `<div class="l10vthr-desc">${p.player.split(" ").pop()} hit ${p.threshold}+ ${p.stat_label} ${p.l10_hits} of ${p.l10_games} last 10 games vs ${p.opp}</div>` : ""}
-      ${p.fd_line ? `<div class="fd-line-badge">Sportsbook Line: <strong>${p.fd_line}</strong> ${p.fd_odds ? "(" + p.fd_odds + ")" : ""}${p.l10_sb_hits !== null && p.l10_sb_hits !== undefined ? " | Last 10 vs " + p.opp + ": " + p.l10_sb_hits + "/" + p.l10_games : ""}</div>` : ""}
-      <div class="pick-matchup">📍 Today: ${p.matchup}</div>
-      <div class="bar-wrap"><div class="bar-fill ${bc}" style="width:${Math.min(p.pct,100)}%"></div></div>
-      <div class="stats-row"><span class="games-chip">${p.hits}/${p.games} games</span><span class="pct ${pc}">${p.pct}%</span></div>
-    </div>`;
-  });
-  html+='</div>';
-  document.getElementById('content').innerHTML=html;
-}
-
-function renderAllByGame(picks){
-  const el=document.getElementById('allPicksSection');
-  if(!picks.length){el.innerHTML='<div class="msg-card" style="padding:30px"><span class="ico">🔍</span><p>No patterns for this filter.</p></div>';return;}
-  const groups={},order=[];
-  for(const p of picks){if(!groups[p.matchup]){groups[p.matchup]=[];order.push(p.matchup);}groups[p.matchup].push(p);}
-  let html='';
-  for(const matchup of order){
-    const gp=groups[matchup];
-    const gameId='g_'+matchup.replace(/[^a-z0-9]/gi,'_');
-    html+=`<div class="game-group">
-      <div class="game-group-hdr" onclick="toggleGroup('${gameId}',this)">
-        <span class="gg-label">🏀 ${matchup}</span>
-        <div class="gg-meta"><span class="count-pill">${gp.length} pattern${gp.length!==1?'s':''}</span><span class="gg-chevron">▾</span></div>
-      </div>
-      <div class="compact-picks" id="${gameId}">`;
-    for(const p of gp){
-      const [pc,bc]=pctClass(p.pct);
-      html+=`<div class="compact-row">
-        <span class="cr-emoji">${p.emoji}</span>
-        <div class="cr-info">
-          <div class="cr-player">${p.player} <span style="color:#1e3a5f;font-size:.65rem">${p.team}·${p.location==='Home'?'🏠':'✈️'}</span></div>
-          <div class="cr-pattern">${p.threshold}+ ${p.stat_label} · ${p.hits}/${p.games} ${p.location.toLowerCase()} vs ${p.opp}${p.fd_line ? ` · <span class="fd-inline">🏙️ ${p.fd_line}</span>` : ''}</div>
-          ${(p.fd_line !== null && p.fd_line !== undefined && p.l10vthr_hits !== null && p.l10vthr_hits !== undefined) ? `<div class="l10vthr-desc" style="font-size:.76rem;margin-top:2px">${Math.ceil(p.fd_line)}+ ${p.stat_label}: ${p.l10vthr_hits}/${p.l10vthr_games} vs ${p.opp}</div>` : ''}
-        </div>
-        <div class="cr-right">
-          <div class="cr-bar-wrap"><div class="cr-bar-fill ${bc}" style="width:${Math.min(p.pct,100)}%"></div></div>
-          <div class="cr-pct ${pc}">${p.pct}%</div>
-          <div class="cr-sample">${p.hits}/${p.games}</div>
-        </div>
-      </div>`;
-    }
-    html+='</div></div>';
-  }
-  el.innerHTML=html;
-}
-
-function toggleGroup(id,hdr){
-  const el=document.getElementById(id);
-  const ch=hdr.querySelector('.gg-chevron');
-  if(!el)return;
-  const hidden=el.style.display==='none';
-  el.style.display=hidden?'flex':'none';
-  if(hidden)el.style.flexDirection='column';
-  if(ch)ch.style.transform=hidden?'':'rotate(-90deg)';
-}
-function renderGames(games){
-  if(!games||!games.length)return;
-  var gb=document.getElementById('gamesBar');
-  gb.style.display='flex';
-  gb.innerHTML=games.map(g=>
-    `<div class="game-chip"><b>${g.away}</b><span class="sep">@</span><b>${g.home}</b></div>`
-  ).join('');
-}
-// FanDuel status indicator
-async function checkFD(){
-  const dot   = document.getElementById('fdDot');
-  const label = document.getElementById('fdLabel');
-  if(!dot) return;
-  dot.className = 'fd-dot checking';
-  label.textContent = 'FanDuel...';
-  try{
-    const r = await fetch('/fd-status');
-    const d = await r.json();
-    if(d.fanduel === 'connected'){
-      dot.className = 'fd-dot connected';
-      label.style.color = '#22c55e';
-      label.textContent = 'FanDuel ✓';
-    } else if(d.fanduel === 'disconnected'){
-      dot.className = 'fd-dot disconnected';
-      label.style.color = '#ef4444';
-      label.textContent = 'FanDuel ✗';
-    } else {
-      dot.className = 'fd-dot';
-      label.style.color = '#475569';
-      label.textContent = 'FanDuel';
-    }
-  } catch(e){
-    dot.className = 'fd-dot';
-    label.textContent = 'FanDuel';
-  }
-}
-document.addEventListener('DOMContentLoaded', checkFD);
-
-async function clearAndRun(){ await fetch('/clear-cache'); }
-  await fetch('/clear-cache');
-  await checkFD();
-  if(btn){ btn.textContent = '🔄 Refresh'; btn.disabled = false; }
-  // Just clears cache — user hits Run Picks when ready
-}
-
-async function runPicks(){
-  const selectedDate=document.getElementById('datePicker').value;
-  document.getElementById('content').innerHTML=`
-    <div class="msg-card">
-      <div class="loading-ball"></div>
-      <div class="ball-shadow"></div>
-      <h2 style="color:#f59e0b">Analyzing Matchup Patterns</h2>
-      <p>Pulling data for <strong style="color:#60a5fa">${selectedDate}</strong> from NBA Stats API.<br>
-      <span style="color:#1e3a5f">This takes ~45 seconds — worth the wait.</span></p>
-    </div>`;
-  document.getElementById('allPicksWrap').style.display='none';
-  try{
-    const r=await fetch('/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({date:selectedDate})});
-    if(!r.ok)throw new Error('Server error '+r.status);
-    const data=await r.json();
-    renderGames(data.games);
-    top10=data.picks||[];
-    allPicksData=data.all_picks||[];
-    activeTopStat='ALL';activeAllStat='ALL';
-    const log=data.log||[];
-    if(!top10.length){
-      document.getElementById('content').innerHTML=`<div class="msg-card"><span class="ico">🔍</span><h2>No Qualifying Patterns</h2><p>No 75%+ patterns for today's matchups.</p></div><div class="log-box">${log.join('<br>')}</div>`;
-      return;
-    }
-    document.getElementById('filterBar').style.display='flex';
-    renderTop10Cards(top10);
-    const lb=document.createElement('div');
-    lb.className='log-box';
-    lb.innerHTML=log.join('<br>')+`<br>📋 ${data.total} total patterns found`;
-    document.getElementById('content').appendChild(lb);
-    document.getElementById('totalCount').textContent=allPicksData.length;
-    document.getElementById('allPicksWrap').style.display='block';
-    renderAllByGame(allPicksData);
-  }catch(e){
-    document.getElementById('content').innerHTML=`<div class="msg-card"><span class="ico">❌</span><h2 style="color:#ef4444">Something went wrong</h2><p>${e.message}</p></div>`;
-  }
-}
-</script>
+</div>
 </body>
 </html>"""
+
 # ─── Routes ───────────────────────────────────────────────────────────────────
 @app.get("/api/verify-token")
 async def verify_token_nba(request: Request):
