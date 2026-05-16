@@ -720,6 +720,7 @@ input[type=date]::-webkit-calendar-picker-indicator{filter:invert(1);opacity:.7;
 .btn-run{background:#f59e0b;color:#000}
 .btn-run:hover{background:#fbbf24;transform:translateY(-1px);box-shadow:0 4px 20px rgba(245,158,11,.35)}
 .btn-run:disabled{background:#2a2a2a;color:#4b5563;cursor:not-allowed;transform:none;box-shadow:none}
+.ball-svg,.ball-shadow,.fd-indicator,.pick-emoji,.cr-emoji,.tb-ico,.msg-card .ico,.btn-out,.btn-refresh{display:none}
 .games-bar{display:none;gap:8px;overflow-x:auto;padding-bottom:4px;margin-bottom:20px}
 .game-chip{background:#161616;border:1px solid #262626;border-radius:10px;padding:9px 18px;white-space:nowrap;font-size:.82rem;flex-shrink:0;transition:border-color .2s}
 .game-chip:hover{border-color:#f59e0b}
@@ -739,7 +740,6 @@ input[type=date]::-webkit-calendar-picker-indicator{filter:invert(1);opacity:.7;
 .rank-2{background:linear-gradient(135deg,#374151,#9ca3af);color:#000}
 .rank-3{background:linear-gradient(135deg,#7c2d12,#c2410c);color:#fff}
 .rank-other{background:#1a1a1a;color:#4b5563;font-size:.75rem;border:1px solid #262626}
-.pick-emoji,.ball-svg,.ball-shadow,.fd-indicator,.tb-ico,.cr-emoji,.msg-card .ico{display:none}
 .pick-player{font-size:1.08rem;font-weight:800;color:#fff;margin-bottom:3px;letter-spacing:-.3px;padding-right:38px;font-family:'Playfair Display',serif}
 .pick-team{font-size:.75rem;color:#6b7280;margin-bottom:12px;display:flex;align-items:center;gap:6px}
 .loc-badge{background:#1a1a1a;padding:2px 9px;border-radius:10px;font-size:.7rem;color:#6b7280;border:1px solid #262626}
@@ -852,14 +852,218 @@ footer{text-align:center;padding:32px 24px;color:#4b5563;font-size:.78rem;border
   <div id="allPicksSection"></div>
 </div>
 
-<footer>NBA Money Buckets · No Lines · Just Patterns · Powered by NBA Stats API &amp; ESPN</footer>
 
 <footer>
   <div class="ft-logo">Money Picks Arena</div>
   <div>NBA Money Buckets &middot; Pts &middot; Reb &middot; Ast &middot; 3PM</div>
-  <div style="margin-top:8px;font-size:.7rem">For entertainment and informational purposes only. We do not accept bets or guarantee results. Please gamble responsibly. Must be 18+.</div>
+  <div style="margin-top:8px;font-size:.7rem">For entertainment only. Not a betting service. Must be 18+.</div>
 </footer>
-</div>
+<script>
+// Hub JWT Token Gate
+(function(){
+  var HUB='https://www.moneypicksarena.com';
+  var KEY='__mpa_token';
+  var p=new URLSearchParams(window.location.search);
+  var t=p.get('token');
+  if(t){localStorage.setItem(KEY,t);window.history.replaceState({},'',window.location.pathname);}
+  var tok=localStorage.getItem(KEY);
+  if(!tok){window.location.href=HUB;return;}
+  fetch('/api/verify-token',{headers:{'Authorization':'Bearer '+tok}})
+    .then(r=>{if(!r.ok){localStorage.removeItem(KEY);window.location.href=HUB;}})
+    .catch(()=>{localStorage.removeItem(KEY);window.location.href=HUB;});
+})();
+let top10=[], allPicksData=[], activeTopStat='ALL', activeAllStat='ALL';
+
+function pctClass(p){return p>=90?['pct-green','bar-green']:p>=80?['pct-yellow','bar-yellow']:['pct-orange','bar-orange']}
+function statTag(s){
+  const m={PTS:['tag-pts','Points'],REB:['tag-reb','Rebounds'],AST:['tag-ast','Assists'],FG3M:['tag-fg3m','3-Pointers']};
+  const [c,l]=m[s]||['',''];
+  return `<span class="stat-tag ${c}">${l}</span>`;
+}
+function rankClass(i){return i===0?'rank-1':i===1?'rank-2':i===2?'rank-3':'rank-other'}
+
+function filterStat(stat){
+  activeTopStat=stat;
+  document.querySelectorAll('#filterBar .filter-btn').forEach(b=>{
+    const t=b.textContent;
+    b.classList.toggle('active',
+      stat==='ALL'?t.includes('All'):stat==='PTS'?t.includes('Point'):
+      stat==='REB'?t.includes('Rebound'):stat==='AST'?t.includes('Assist'):t.includes('3-Point'));
+  });
+  renderTop10Cards(stat==='ALL'?top10:top10.filter(p=>p.stat===stat));
+}
+
+function filterAll(stat){
+  activeAllStat=stat;
+  document.querySelectorAll('#allFilterBar .filter-btn').forEach(b=>{
+    const t=b.textContent;
+    b.classList.toggle('active',
+      stat==='ALL'?t==='All':stat==='PTS'?t.includes('Pt'):
+      stat==='REB'?t.includes('Reb'):stat==='AST'?t.includes('Ast'):t.includes('3PM'));
+  });
+  const filtered=stat==='ALL'?allPicksData:allPicksData.filter(p=>p.stat===stat);
+  document.getElementById('totalCount').textContent=filtered.length;
+  renderAllByGame(filtered);
+}
+
+function renderTop10Cards(picks){
+  if(!picks.length){
+    document.getElementById('content').innerHTML='<div class="msg-card"><span class="ico">🔍</span><h2>No patterns</h2><p>Try "All Stats".</p></div>';
+    return;
+  }
+  let html=`<div class="section-hdr"><div class="section-title">🏆 Top 10 Picks Today</div><span class="count-pill">${picks.length} pick${picks.length!==1?'s':''}</span></div><div class="picks-grid">`;
+  picks.forEach((p,i)=>{
+    const [pc,bc]=pctClass(p.pct);
+    html+=`
+    <div class="pick-card">
+      <div class="pick-rank ${rankClass(i)}">${i+1}</div>
+      <span class="pick-emoji">${p.emoji}</span>
+      <div class="pick-player">${p.player}</div>
+      <div class="pick-team">${p.team_name} <span class="loc-badge">${p.location==='Home'?'🏠 Home':'✈️ Away'}</span></div>
+      <div class="stat-strip">${statTag(p.stat)}</div>
+      <div class="pick-pattern">${p.threshold}+ ${p.stat_label} in ${p.hits} of ${p.games} ${p.location.toLowerCase()} games vs ${p.opp}</div>
+      ${p.l10_games > 0 ? `<div class="l10vthr-desc">${p.player.split(" ").pop()} hit ${p.threshold}+ ${p.stat_label} ${p.l10_hits} of ${p.l10_games} last 10 games vs ${p.opp}</div>` : ""}
+      ${p.fd_line ? `<div class="fd-line-badge">Sportsbook Line: <strong>${p.fd_line}</strong> ${p.fd_odds ? "(" + p.fd_odds + ")" : ""}${p.l10_sb_hits !== null && p.l10_sb_hits !== undefined ? " | Last 10 vs " + p.opp + ": " + p.l10_sb_hits + "/" + p.l10_games : ""}</div>` : ""}
+      <div class="pick-matchup">📍 Today: ${p.matchup}</div>
+      <div class="bar-wrap"><div class="bar-fill ${bc}" style="width:${Math.min(p.pct,100)}%"></div></div>
+      <div class="stats-row"><span class="games-chip">${p.hits}/${p.games} games</span><span class="pct ${pc}">${p.pct}%</span></div>
+    </div>`;
+  });
+  html+='</div>';
+  document.getElementById('content').innerHTML=html;
+}
+
+function renderAllByGame(picks){
+  const el=document.getElementById('allPicksSection');
+  if(!picks.length){el.innerHTML='<div class="msg-card" style="padding:30px"><span class="ico">🔍</span><p>No patterns for this filter.</p></div>';return;}
+  const groups={},order=[];
+  for(const p of picks){if(!groups[p.matchup]){groups[p.matchup]=[];order.push(p.matchup);}groups[p.matchup].push(p);}
+  let html='';
+  for(const matchup of order){
+    const gp=groups[matchup];
+    const gameId='g_'+matchup.replace(/[^a-z0-9]/gi,'_');
+    html+=`<div class="game-group">
+      <div class="game-group-hdr" onclick="toggleGroup('${gameId}',this)">
+        <span class="gg-label">🏀 ${matchup}</span>
+        <div class="gg-meta"><span class="count-pill">${gp.length} pattern${gp.length!==1?'s':''}</span><span class="gg-chevron">▾</span></div>
+      </div>
+      <div class="compact-picks" id="${gameId}">`;
+    for(const p of gp){
+      const [pc,bc]=pctClass(p.pct);
+      html+=`<div class="compact-row">
+        <span class="cr-emoji">${p.emoji}</span>
+        <div class="cr-info">
+          <div class="cr-player">${p.player} <span style="color:#1e3a5f;font-size:.65rem">${p.team}·${p.location==='Home'?'🏠':'✈️'}</span></div>
+          <div class="cr-pattern">${p.threshold}+ ${p.stat_label} · ${p.hits}/${p.games} ${p.location.toLowerCase()} vs ${p.opp}${p.fd_line ? ` · <span class="fd-inline">🏙️ ${p.fd_line}</span>` : ''}</div>
+          ${(p.fd_line !== null && p.fd_line !== undefined && p.l10vthr_hits !== null && p.l10vthr_hits !== undefined) ? `<div class="l10vthr-desc" style="font-size:.76rem;margin-top:2px">${Math.ceil(p.fd_line)}+ ${p.stat_label}: ${p.l10vthr_hits}/${p.l10vthr_games} vs ${p.opp}</div>` : ''}
+        </div>
+        <div class="cr-right">
+          <div class="cr-bar-wrap"><div class="cr-bar-fill ${bc}" style="width:${Math.min(p.pct,100)}%"></div></div>
+          <div class="cr-pct ${pc}">${p.pct}%</div>
+          <div class="cr-sample">${p.hits}/${p.games}</div>
+        </div>
+      </div>`;
+    }
+    html+='</div></div>';
+  }
+  el.innerHTML=html;
+}
+
+function toggleGroup(id,hdr){
+  const el=document.getElementById(id);
+  const ch=hdr.querySelector('.gg-chevron');
+  if(!el)return;
+  const hidden=el.style.display==='none';
+  el.style.display=hidden?'flex':'none';
+  if(hidden)el.style.flexDirection='column';
+  if(ch)ch.style.transform=hidden?'':'rotate(-90deg)';
+}
+function renderGames(games){
+  if(!games||!games.length)return;
+  var gb=document.getElementById('gamesBar');gb.style.display='flex';
+  gb.innerHTML=games.map(g=>
+    `<div class="game-chip"><b>${g.away}</b><span class="sep">@</span><b>${g.home}</b></div>`
+  ).join('');
+}
+// FanDuel status indicator
+async function checkFD(){
+  const dot   = document.getElementById('fdDot');
+  const label = document.getElementById('fdLabel');
+  if(!dot) return;
+  dot.className = 'fd-dot checking';
+  label.textContent = 'FanDuel...';
+  try{
+    const r = await fetch('/fd-status');
+    const d = await r.json();
+    if(d.fanduel === 'connected'){
+      dot.className = 'fd-dot connected';
+      label.style.color = '#22c55e';
+      label.textContent = 'FanDuel ✓';
+    } else if(d.fanduel === 'disconnected'){
+      dot.className = 'fd-dot disconnected';
+      label.style.color = '#ef4444';
+      label.textContent = 'FanDuel ✗';
+    } else {
+      dot.className = 'fd-dot';
+      label.style.color = '#475569';
+      label.textContent = 'FanDuel';
+    }
+  } catch(e){
+    dot.className = 'fd-dot';
+    label.textContent = 'FanDuel';
+  }
+}
+document.addEventListener('DOMContentLoaded', checkFD);
+
+async function clearAndRun(){
+  const btn = document.querySelector('.btn-refresh');
+  if(btn){ btn.textContent = '⏳ Clearing...'; btn.disabled = true; }
+  await fetch('/clear-cache');
+  await checkFD();
+  if(btn){ btn.textContent = '🔄 Refresh'; btn.disabled = false; }
+  // Just clears cache — user hits Run Picks when ready
+}
+
+async function runPicks(){
+  const selectedDate=document.getElementById('datePicker').value;
+  document.getElementById('content').innerHTML=`
+    <div class="msg-card">
+      <div class="loading-ball"></div>
+      <div class="ball-shadow"></div>
+      <h2 style="color:#f59e0b">Analyzing Matchup Patterns</h2>
+      <p>Pulling data for <strong style="color:#60a5fa">${selectedDate}</strong> from NBA Stats API.<br>
+      <span style="color:#1e3a5f">This takes ~45 seconds — worth the wait.</span></p>
+    </div>`;
+  document.getElementById('allPicksWrap').style.display='none';
+  try{
+    const r=await fetch('/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({date:selectedDate})});
+    if(!r.ok)throw new Error('Server error '+r.status);
+    const data=await r.json();
+    renderGames(data.games);
+    top10=data.picks||[];
+    allPicksData=data.all_picks||[];
+    activeTopStat='ALL';activeAllStat='ALL';
+    const log=data.log||[];
+    if(!top10.length){
+      document.getElementById('content').innerHTML=`<div class="msg-card"><span class="ico">🔍</span><h2>No Qualifying Patterns</h2><p>No 75%+ patterns for today's matchups.</p></div><div class="log-box">${log.join('<br>')}</div>`;
+      return;
+    }
+    document.getElementById('filterBar').style.display='flex';
+    renderTop10Cards(top10);
+    const lb=document.createElement('div');
+    lb.className='log-box';
+    lb.innerHTML=log.join('<br>')+`<br>📋 ${data.total} total patterns found`;
+    document.getElementById('content').appendChild(lb);
+    document.getElementById('totalCount').textContent=allPicksData.length;
+    document.getElementById('allPicksWrap').style.display='block';
+    renderAllByGame(allPicksData);
+  }catch(e){
+    document.getElementById('content').innerHTML=`<div class="msg-card"><span class="ico">❌</span><h2 style="color:#ef4444">Something went wrong</h2><p>${e.message}</p></div>`;
+  }
+}
+</script>
+</body>
+
 </body>
 </html>"""
 
