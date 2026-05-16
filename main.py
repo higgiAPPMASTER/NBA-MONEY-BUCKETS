@@ -725,6 +725,8 @@ nav{position:fixed;top:0;width:100%;background:rgba(10,10,10,.95);backdrop-filte
 .date-row label{color:#9ca3af;font-weight:600;font-size:.85rem;letter-spacing:.08em;text-transform:uppercase;margin-right:8px}
 .date-row input[type=date]{background:#0a0a0a;color:#fff;border:1px solid #2a2a2a;border-radius:10px;padding:9px 14px;font-size:.9rem;font-family:'Source Sans Pro',sans-serif;cursor:pointer;outline:none;transition:border .2s}
 .date-row input[type=date]:focus{border-color:#f59e0b}
+input[type=date]::-webkit-calendar-picker-indicator{filter:invert(1);opacity:.7;cursor:pointer}
+input[type=date]::-webkit-calendar-picker-indicator:hover{opacity:1}
 .btn{padding:10px 24px;border-radius:8px;font-size:.88rem;font-weight:700;cursor:pointer;border:none;transition:all .2s;font-family:'Source Sans Pro',sans-serif;letter-spacing:.03em;text-decoration:none;display:inline-block}
 .btn-run{background:#f59e0b;color:#000}
 .btn-run:hover{background:#fbbf24;transform:translateY(-1px);box-shadow:0 4px 20px rgba(245,158,11,.35)}
@@ -863,8 +865,7 @@ footer{text-align:center;padding:32px 24px;color:#4b5563;font-size:.78rem;border
 
 <div class="card" style="text-align:center;margin-bottom:20px">
   <h2 style="font-family:'Playfair Display',serif;font-size:1.5rem;font-weight:700;color:#fff;margin-bottom:6px">Run Today's Picks</h2>
-  <p style="color:#6b7280;font-size:.88rem;margin-bottom:22px">Select a date &mdash; NBA Stats API powers all hit rates</p>
-  <div class="date-row" style="justify-content:center;margin-bottom:20px">
+  <div class="date-row" style="justify-content:center;margin-bottom:20px;margin-top:10px">
     <label>Date</label>
     <input type="date" id="datePicker" value="__TODAY__">
   </div>
