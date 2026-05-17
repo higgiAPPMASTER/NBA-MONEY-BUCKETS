@@ -907,10 +907,10 @@ function filterAll(stat){
 
 function renderTop10Cards(picks){
   if(!picks.length){
-    document.getElementById('content').innerHTML='<div class="msg-card"><span class="ico">🔍</span><h2>No patterns</h2><p>Try "All Stats".</p></div>';
+    document.getElementById('content').innerHTML='<div class="msg-card"><span class="ico"></span><h2>No patterns</h2><p>Try "All Stats".</p></div>';
     return;
   }
-  let html=`<div class="section-hdr"><div class="section-title">🏆 Top 10 Picks Today</div><span class="count-pill">${picks.length} pick${picks.length!==1?'s':''}</span></div><div class="picks-grid">`;
+  let html=`<div class="section-hdr"><div class="section-title"> Top 10 Picks Today</div><span class="count-pill">${picks.length} pick${picks.length!==1?'s':''}</span></div><div class="picks-grid">`;
   picks.forEach((p,i)=>{
     const [pc,bc]=pctClass(p.pct);
     html+=`
@@ -918,13 +918,13 @@ function renderTop10Cards(picks){
       <div class="pick-rank ${rankClass(i)}">${i+1}</div>
       <span class="pick-emoji">${p.emoji}</span>
       <div class="pick-player">${p.player}</div>
-      <div class="pick-team">${p.team_name} <span class="loc-badge">${p.location==='Home'?'🏠 Home':'✈️ Away'}</span></div>
+      <div class="pick-team">${p.team_name} <span class="loc-badge">${p.location==='Home'?' Home':' Away'}</span></div>
       <div class="stat-strip">${statTag(p.stat)}</div>
       <div class="pick-pattern">${p.threshold}+ ${p.stat_label} in ${p.hits} of ${p.games} ${p.location.toLowerCase()} games vs ${p.opp}</div>
       ${p.l10_games > 0 ? `<div class="l10vthr-desc">${p.player.split(" ").pop()} hit ${p.threshold}+ ${p.stat_label} ${p.l10_hits} of ${p.l10_games} last 10 games vs ${p.opp}</div>` : ""}
-      ${p.fd_line ? `<div class="fd-line-badge">📊 PrizePicks: <strong>${p.fd_line}</strong> | ${p.stat_label} ${p.threshold}+: ${p.l10_sb_hits !== null && p.l10_sb_hits !== undefined ? p.l10_sb_hits + "/" + p.l10_games + " vs " + p.opp : "—"}</div>` : ""}
-      ${p.dk_line ? `<div class="fd-line-badge" style="background:rgba(99,102,241,.15);border-color:rgba(99,102,241,.3);margin-top:4px">🏙️ O/U Line: <strong>${p.dk_line}</strong> ${p.dk_over_odds ? "O " + p.dk_over_odds : ""} ${p.dk_under_odds ? "U " + p.dk_under_odds : ""} | Hit ${p.dk_line}+: ${p.dk_hits !== null && p.dk_hits !== undefined ? p.dk_hits + "/" + p.l10_games + " vs " + p.opp : "—"}</div>` : ""}
-      <div class="pick-matchup">📍 Today: ${p.matchup}</div>
+      ${p.fd_line ? `<div class="fd-line-badge"> PrizePicks: <strong>${p.fd_line}</strong> | ${p.stat_label} ${p.threshold}+: ${p.l10_sb_hits !== null && p.l10_sb_hits !== undefined ? p.l10_sb_hits + "/" + p.l10_games + " vs " + p.opp : ""}</div>` : ""}
+      ${p.dk_line ? `<div class="fd-line-badge" style="background:rgba(99,102,241,.15);border-color:rgba(99,102,241,.3);margin-top:4px"> O/U Line: <strong>${p.dk_line}</strong> ${p.dk_over_odds ? "O " + p.dk_over_odds : ""} ${p.dk_under_odds ? "U " + p.dk_under_odds : ""} | Hit ${p.dk_line}+: ${p.dk_hits !== null && p.dk_hits !== undefined ? p.dk_hits + "/" + p.l10_games + " vs " + p.opp : ""}</div>` : ""}
+      <div class="pick-matchup"> Today: ${p.matchup}</div>
       <div class="bar-wrap"><div class="bar-fill ${bc}" style="width:${Math.min(p.pct,100)}%"></div></div>
       <div class="stats-row"><span class="games-chip">${p.hits}/${p.games} games</span><span class="pct ${pc}">${p.pct}%</span></div>
     </div>`;
@@ -935,7 +935,7 @@ function renderTop10Cards(picks){
 
 function renderAllByGame(picks){
   const el=document.getElementById('allPicksSection');
-  if(!picks.length){el.innerHTML='<div class="msg-card" style="padding:30px"><span class="ico">🔍</span><p>No patterns for this filter.</p></div>';return;}
+  if(!picks.length){el.innerHTML='<div class="msg-card" style="padding:30px"><span class="ico"></span><p>No patterns for this filter.</p></div>';return;}
   const groups={},order=[];
   for(const p of picks){if(!groups[p.matchup]){groups[p.matchup]=[];order.push(p.matchup);}groups[p.matchup].push(p);}
   let html='';
@@ -944,8 +944,8 @@ function renderAllByGame(picks){
     const gameId='g_'+matchup.replace(/[^a-z0-9]/gi,'_');
     html+=`<div class="game-group">
       <div class="game-group-hdr" onclick="toggleGroup('${gameId}',this)">
-        <span class="gg-label">🏀 ${matchup}</span>
-        <div class="gg-meta"><span class="count-pill">${gp.length} pattern${gp.length!==1?'s':''}</span><span class="gg-chevron">▾</span></div>
+        <span class="gg-label"> ${matchup}</span>
+        <div class="gg-meta"><span class="count-pill">${gp.length} pattern${gp.length!==1?'s':''}</span><span class="gg-chevron"></span></div>
       </div>
       <div class="compact-picks" id="${gameId}">`;
     for(const p of gp){
@@ -953,8 +953,8 @@ function renderAllByGame(picks){
       html+=`<div class="compact-row">
         <span class="cr-emoji">${p.emoji}</span>
         <div class="cr-info">
-          <div class="cr-player">${p.player} <span style="color:#1e3a5f;font-size:.65rem">${p.team}·${p.location==='Home'?'🏠':'✈️'}</span></div>
-          <div class="cr-pattern">${p.threshold}+ ${p.stat_label} · ${p.hits}/${p.games} ${p.location.toLowerCase()} vs ${p.opp}${p.fd_line ? ` · <span class="fd-inline">🏙️ ${p.fd_line}</span>` : ''}</div>
+          <div class="cr-player">${p.player} <span style="color:#1e3a5f;font-size:.65rem">${p.team}${p.location==='Home'?'':''}</span></div>
+          <div class="cr-pattern">${p.threshold}+ ${p.stat_label}  ${p.hits}/${p.games} ${p.location.toLowerCase()} vs ${p.opp}${p.fd_line ? `  <span class="fd-inline"> ${p.fd_line}</span>` : ''}</div>
           ${(p.fd_line !== null && p.fd_line !== undefined && p.l10vthr_hits !== null && p.l10vthr_hits !== undefined) ? `<div class="l10vthr-desc" style="font-size:.76rem;margin-top:2px">${Math.ceil(p.fd_line)}+ ${p.stat_label}: ${p.l10vthr_hits}/${p.l10vthr_games} vs ${p.opp}</div>` : ''}
         </div>
         <div class="cr-right">
@@ -995,7 +995,7 @@ async function runPicks(){
       <div class="ball-shadow"></div>
       <h2 style="color:#FDB827">Analyzing Matchup Patterns</h2>
       <p>Pulling data for <strong style="color:#FDB827">${selectedDate}</strong> from NBA Stats API.<br>
-      <span style="color:#1e3a5f">This takes ~45 seconds — worth the wait.</span></p>
+      <span style="color:#1e3a5f">This takes ~45 seconds  worth the wait.</span></p>
     </div>`;
   document.getElementById('allPicksWrap').style.display='none';
   try{
@@ -1008,7 +1008,7 @@ async function runPicks(){
     activeTopStat='ALL';activeAllStat='ALL';
     const log=data.log||[];
     if(!top10.length){
-      document.getElementById('content').innerHTML=`<div class="msg-card"><span class="ico">🔍</span><h2>No Qualifying Patterns</h2><p>No 75%+ patterns for today's matchups.</p></div><div class="log-box">${log.join('<br>')}</div>`;
+      document.getElementById('content').innerHTML=`<div class="msg-card"><span class="ico"></span><h2>No Qualifying Patterns</h2><p>No 75%+ patterns for today matchups.</p></div><div class="log-box">${log.join('<br>')}</div>`;
       renderPropsSection(data.props_picks, data.props_nopick);
       return;
     }
@@ -1016,14 +1016,14 @@ async function runPicks(){
     renderTop10Cards(top10);
     const lb=document.createElement('div');
     lb.className='log-box';
-    lb.innerHTML=log.join('<br>')+`<br>📋 ${data.total} total patterns found`;
+    lb.innerHTML=log.join('<br>')+`<br> ${data.total} total patterns found`;
     document.getElementById('content').appendChild(lb);
     document.getElementById('totalCount').textContent=allPicksData.length;
     document.getElementById('allPicksWrap').style.display='block';
     renderAllByGame(allPicksData);
     renderPropsSection(data.props_picks, data.props_nopick);
   }catch(e){
-    document.getElementById('content').innerHTML=`<div class="msg-card"><span class="ico">❌</span><h2 style="color:#ef4444">Something went wrong</h2><p>${e.message}</p></div>`;
+    document.getElementById('content').innerHTML=`<div class="msg-card"><span class="ico"></span><h2 style="color:#ef4444">Something went wrong</h2><p>${e.message}</p></div>`;
   }
 }
 
@@ -1034,13 +1034,13 @@ function renderPropsSection(picks, nopick) {
   sec.style.display = 'block';
   var all = (picks||[]).concat((nopick||[]).filter(function(p){return p.games>0;}));
   if (all.length === 0) {
-    body.innerHTML = '<tr><td colspan="11" style="text-align:center;padding:20px;color:#555">No prop lines available yet — check back closer to tip-off.</td></tr>';
+    body.innerHTML = '<tr><td colspan="11" style="text-align:center;padding:20px;color:#555">No prop lines available yet  check back closer to tip-off.</td></tr>';
     return;
   }
   body.innerHTML = all.map(function(p,i) {
     var isOver=p.pick==='OVER'||p.pick==='O', isUnder=p.pick==='UNDER'||p.pick==='U';
     var clr = isOver?'#4ade80':isUnder?'#f87171':'#555';
-    var gap = p.gap!=null?(p.gap>0?'+':'')+p.gap:'—';
+    var gap = p.gap!=null?(p.gap>0?'+':'')+p.gap:'';
     var sideBg = p.side==='HOME'?'rgba(253,184,39,.15)':'rgba(99,102,241,.15)';
     return '<tr style="border-bottom:1px solid #1a1a1a">' +
       '<td style="padding:9px 12px;color:#555">'+(i+1)+'</td>' +
@@ -1049,11 +1049,11 @@ function renderPropsSection(picks, nopick) {
       '<td style="padding:9px 12px"><span style="background:'+sideBg+';padding:2px 7px;border-radius:4px;font-size:.75rem">'+p.side+'</span></td>' +
       '<td style="padding:9px 12px;color:#999;font-size:.8rem">'+p.opp_name+'</td>' +
       '<td style="padding:9px 12px;font-family:monospace;font-weight:700">'+p.line+'</td>' +
-      '<td style="padding:9px 12px;font-family:monospace;font-weight:700;color:'+clr+';font-size:1rem">'+(p.avg!=null?p.avg:'—')+'</td>' +
+      '<td style="padding:9px 12px;font-family:monospace;font-weight:700;color:'+clr+';font-size:1rem">'+(p.avg!=null?p.avg:'')+'</td>' +
       '<td style="padding:9px 12px;font-family:monospace;color:'+clr+';font-weight:700">'+gap+'</td>' +
       '<td style="padding:9px 12px;color:#555">'+p.games+'g</td>' +
       '<td style="padding:9px 12px;font-family:monospace;font-size:.7rem;color:#555;max-width:130px">'+p.history+'</td>' +
-      '<td style="padding:9px 12px"><span style="color:'+clr+';font-weight:900;font-size:.95rem">'+(p.pick==='OVER'?'O':p.pick==='UNDER'?'U':(p.pick||'—'))+'</span></td>' +
+      '<td style="padding:9px 12px"><span style="color:'+clr+';font-weight:900;font-size:.95rem">'+(p.pick==='OVER'?'O':p.pick==='UNDER'?'U':(p.pick||''))+'</span></td>' +
       '</tr>';
   }).join('');
 }
