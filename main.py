@@ -861,7 +861,16 @@ footer{text-align:center;padding:32px 24px;color:#4b5563;font-size:.78rem;border
   <div style="margin-top:8px;font-size:.7rem">For entertainment only. Not a betting service. Must be 18+.</div>
 </footer>
 <script>
-// No redirect gate - access controlled by Hub subscription
+// Hub Access Gate - client side only, no server round-trip
+(function(){
+  var HUB='https://www.moneypicksarena.com';
+  var KEY='__mpa_token';
+  var p=new URLSearchParams(window.location.search);
+  var t=p.get('token');
+  if(t){localStorage.setItem(KEY,t);window.history.replaceState({},'',window.location.pathname);}
+  var tok=localStorage.getItem(KEY);
+  if(!tok||tok.split('.').length!==3){window.location.href=HUB;}
+})(); - access controlled by Hub subscription
 let top10=[], allPicksData=[], activeTopStat='ALL', activeAllStat='ALL';
 
 function pctClass(p){return p>=90?['pct-green','bar-green']:p>=80?['pct-yellow','bar-yellow']:['pct-orange','bar-orange']}
