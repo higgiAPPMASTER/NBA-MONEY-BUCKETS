@@ -870,7 +870,7 @@ footer{text-align:center;padding:32px 24px;color:#4b5563;font-size:.78rem;border
   if(t){localStorage.setItem(KEY,t);window.history.replaceState({},'',window.location.pathname);}
   var tok=localStorage.getItem(KEY);
   if(!tok||tok.split('.').length!==3){window.location.href=HUB;}
-})(); - access controlled by Hub subscription
+})();
 let top10=[], allPicksData=[], activeTopStat='ALL', activeAllStat='ALL';
 
 function pctClass(p){return p>=90?['pct-green','bar-green']:p>=80?['pct-yellow','bar-yellow']:['pct-orange','bar-orange']}
