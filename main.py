@@ -1,7 +1,7 @@
 # NBA Money Buckets — main.py (v2 — 100% ESPN API, no NBA Stats API)
 # NBA Stats API blocks server IPs. ESPN gives schedule + rosters + player game logs free.
 
-import asyncio
+import asyncio, pathlib, time
 import json
 import os
 import hashlib
@@ -63,7 +63,39 @@ ESPN_SEASONS  = [2026, 2025, 2024, 2023, 2022, 2021, 2020]   # ESPN uses season 
 TOP_N         = 10
 
 # ─── Cache ────────────────────────────────────────────────────────────────────
-_cache: Dict[str, Any] = {}
+_cache: Dict[str, Any] = {}  # kept for compat
+# ── File-based Picks Cache ────────────────────────────────────────────────────
+import pathlib
+_CACHE_DIR = pathlib.Path("/tmp/mpa_cache")
+_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+_CACHE_TTL = 6 * 3600  # 6 hours
+
+def _cache_path(app: str, date_key: str) -> pathlib.Path:
+    return _CACHE_DIR / f"{app}_{date_key}.json"
+
+def _cache_get(app: str, date_key: str):
+    p = _cache_path(app, date_key)
+    try:
+        if p.exists() and (time.time() - p.stat().st_mtime) < _CACHE_TTL:
+            data = json.loads(p.read_text(encoding="utf-8"))
+            print(f"[Cache] FILE HIT {app}/{date_key}")
+            return data
+    except Exception as e:
+        print(f"[Cache] Read error: {e}")
+    return None
+
+def _cache_set(app: str, date_key: str, result: dict):
+    try:
+        _cache_path(app, date_key).write_text(
+            json.dumps(result, ensure_ascii=False), encoding="utf-8")
+        print(f"[Cache] FILE SET {app}/{date_key}")
+    except Exception as e:
+        print(f"[Cache] Write error: {e}")
+
+def _cache_clear(app: str = None):
+    for p in _CACHE_DIR.glob("*.json"):
+        if app is None or p.name.startswith(app + "_"):
+            p.unlink(missing_ok=True)
 
 async def get_today_games(date_str: str = None) -> List[Dict]:
     if date_str:
@@ -340,6 +372,11 @@ def find_best_threshold(values, thresholds):
 
 async def run_analysis(selected_date: str = None) -> Dict:
     today_str = selected_date if selected_date else date.today().isoformat()
+    # File cache check first
+    _fc = _cache_get('nba', today_str)
+    if _fc:
+        _cache.update(_fc)
+        return _fc
     if _cache.get('date') == today_str and _cache.get('picks') is not None and _cache.get('odds_loaded'):
         return _cache
 
@@ -520,6 +557,7 @@ async def run_analysis(selected_date: str = None) -> Dict:
     log.append(f"Props: {len(props_picks)} picks")
     result = {'date':today_str,'picks':top_picks,'all_picks':picks,'games':games,'log':log,'total':len(picks),'odds_loaded':odds_loaded,'props_picks':props_picks,'props_nopick':props_nopick}
     _cache.update(result)
+    _cache_set("nba", today_str, result)
     return result
 
 # ─── HTML ─────────────────────────────────────────────────────────────────────
@@ -607,7 +645,7 @@ input::placeholder{color:#374151}
   var p=new URLSearchParams(window.location.search);
   var t=p.get('token');
   if(t){localStorage.setItem(KEY,t);window.history.replaceState({},'',window.location.pathname);}
-  if(!localStorage.getItem(KEY)){window.location.href=HUB;}
+  // no redirect
 })();
 </script>
 
@@ -823,19 +861,7 @@ footer{text-align:center;padding:32px 24px;color:#4b5563;font-size:.78rem;border
   <div style="margin-top:8px;font-size:.7rem">For entertainment only. Not a betting service. Must be 18+.</div>
 </footer>
 <script>
-// Hub JWT Token Gate
-(function(){
-  var HUB='https://www.moneypicksarena.com';
-  var KEY='__mpa_token';
-  var p=new URLSearchParams(window.location.search);
-  var t=p.get('token');
-  if(t){localStorage.setItem(KEY,t);window.history.replaceState({},'',window.location.pathname);}
-  var tok=localStorage.getItem(KEY);
-  if(!tok){window.location.href=HUB;return;}
-  fetch('/api/verify-token',{headers:{'Authorization':'Bearer '+tok}})
-    .then(r=>{if(!r.ok){localStorage.removeItem(KEY);window.location.href=HUB;}})
-    .catch(()=>{localStorage.removeItem(KEY);window.location.href=HUB;});
-})();
+// No redirect gate - access controlled by Hub subscription
 let top10=[], allPicksData=[], activeTopStat='ALL', activeAllStat='ALL';
 
 function pctClass(p){return p>=90?['pct-green','bar-green']:p>=80?['pct-yellow','bar-yellow']:['pct-orange','bar-orange']}
@@ -1058,6 +1084,23 @@ async def login_post(request: Request):
         resp.set_cookie("session", make_token(u), httponly=True, samesite="lax", max_age=86400*7)
         return resp
     return HTMLResponse(LOGIN_HTML.replace('{error}', '<p class="err">⚠️ Invalid username or password</p>'), status_code=401)
+
+
+@app.get("/api/warm")
+async def api_warm_nba():
+    """Pre-compute today's picks — called by cron-job.org at 10 AM."""
+    from datetime import date as _date
+    today = _date.today().isoformat()
+    cached = _cache_get("nba", today)
+    if cached:
+        return {"ok": True, "source": "cache", "date": today,
+                "picks": len(cached.get("picks", []))}
+    try:
+        result = await run_logic()
+        return {"ok": True, "source": "computed", "date": today,
+                "picks": len(result.get("picks", []))}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
 
 @app.post("/run")
 async def run(request: Request):
