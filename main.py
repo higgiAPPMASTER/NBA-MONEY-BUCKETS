@@ -248,19 +248,22 @@ async def get_odds_lines(today_str):
         async with httpx.AsyncClient(timeout=20) as c:
             # Try regular season key first, then playoffs key
             events = []
+            from datetime import date as _d, timedelta as _td
+            tomorrow_str = (_d.fromisoformat(today_str) + _td(days=1)).isoformat()
             active_key = 'basketball_nba'
             for sport_key in ('basketball_nba', 'basketball_nba_championship'):
                 r = await c.get(f"{ODDS_API_BASE}/sports/{sport_key}/events",
                                 params={'apiKey': api_key, 'dateFormat': 'iso'})
                 if r.status_code == 200:
-                    found = [e for e in r.json() if e.get('commence_time','')[:10] == today_str]
+                    found = [e for e in r.json()
+                             if e.get('commence_time','')[:10] in (today_str, tomorrow_str)]
                     if found:
                         events = found
                         active_key = sport_key
-                        print(f'[OddsAPI] {len(events)} NBA events today ({sport_key})')
+                        print(f'[OddsAPI] {len(events)} NBA events ({sport_key}) for {today_str}')
                         break
             if not events:
-                print('[OddsAPI] No NBA events found')
+                print(f'[OddsAPI] No NBA events found for {today_str} or {tomorrow_str}')
                 return []
             markets = ','.join(ODDS_MARKET_MAP.keys())
             for ev in events:
