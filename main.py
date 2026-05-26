@@ -235,64 +235,9 @@ async def get_prizepicks_lines():
     return props
 
 
-UNDERDOG_STAT_MAP = {
-    "points":           "PTS",
-    "rebounds":         "REB",
-    "assists":          "AST",
-    "three_points_made":"FG3M",
-}
-
 async def get_underdog_lines():
-    """Fetch NBA player O/U lines from Underdog Fantasy — free, no key needed.
-    Returns real sportsbook-style lines with American odds."""
-    props = []
-    try:
-        async with httpx.AsyncClient(timeout=20, headers={
-            "User-Agent": "Mozilla/5.0",
-            "Accept": "application/json"
-        }) as client:
-            r = await client.get("https://api.underdogfantasy.com/beta/v5/over_under_lines")
-            if r.status_code != 200:
-                print(f"[Underdog] status {r.status_code}")
-                return []
-            data    = r.json()
-            lines   = data.get("over_under_lines", [])
-            apps    = {a["id"]: a for a in data.get("appearances", [])}
-            games   = {g["id"]: g for g in data.get("games", [])}
-
-            for line in lines:
-                if line.get("status") != "active":
-                    continue
-                ou       = line.get("over_under", {})
-                app_stat = ou.get("appearance_stat", {})
-                stat_raw = app_stat.get("stat", "")
-                stat     = UNDERDOG_STAT_MAP.get(stat_raw)
-                if not stat:
-                    continue
-                app_id   = app_stat.get("appearance_id", "")
-                app      = apps.get(app_id, {})
-                game     = games.get(app.get("match_id", ""), {})
-                if game.get("sport_id") != "NBA":
-                    continue
-                options   = line.get("options", [])
-                name      = options[0].get("selection_header", "") if options else ""
-                if not name:
-                    continue
-                line_val  = float(line.get("stat_value") or 0)
-                over_odds = next((o.get("american_price","") for o in options if o.get("choice")=="higher"), "")
-                under_odds= next((o.get("american_price","") for o in options if o.get("choice")=="lower"), "")
-                props.append({
-                    "player":     name,
-                    "stat":       stat,
-                    "line":       line_val,
-                    "over_odds":  over_odds,
-                    "under_odds": under_odds,
-                    "source":     "Underdog",
-                })
-        print(f"[Underdog] {len(props)} NBA lines fetched")
-    except Exception as e:
-        print(f"[Underdog] error: {e}")
-    return props
+    """DEPRECATED — Underdog removed. Odds API is the sole line source."""
+    return []
 
 async def get_odds_lines(today_str):
     api_key = os.environ.get('ODDS_API_KEY', '')
@@ -301,12 +246,20 @@ async def get_odds_lines(today_str):
     props = []
     try:
         async with httpx.AsyncClient(timeout=20) as c:
-            r = await c.get(f"{ODDS_API_BASE}/sports/basketball_nba/events",
-                            params={'apiKey': api_key, 'dateFormat': 'iso'})
-            if r.status_code != 200:
-                print(f'[OddsAPI] events status {r.status_code}')
+            # Try regular season key first, then playoffs key
+            events = []
+            for sport_key in ('basketball_nba', 'basketball_nba_championship'):
+                r = await c.get(f"{ODDS_API_BASE}/sports/{sport_key}/events",
+                                params={'apiKey': api_key, 'dateFormat': 'iso'})
+                if r.status_code == 200:
+                    found = [e for e in r.json() if e.get('commence_time','')[:10] == today_str]
+                    if found:
+                        events = found
+                        print(f'[OddsAPI] {len(events)} NBA events today ({sport_key})')
+                        break
+            if not events:
+                print('[OddsAPI] No NBA events found')
                 return []
-            events = [e for e in r.json() if e.get('commence_time','')[:10] == today_str]
             print(f'[OddsAPI] {len(events)} NBA events today')
             markets = ','.join(ODDS_MARKET_MAP.keys())
             for ev in events:
@@ -393,8 +346,9 @@ async def run_analysis(selected_date: str = None) -> Dict:
         # PrizePicks = pattern picks source
         # Underdog = real sportsbook O/U lines (shown as DK line)
         # Odds API = extra backup
-        seen = {f"{p['player']}|{p['stat']}" for p in pp}
-        odds_props = pp + [p for p in odds_raw if f"{p['player']}|{p['stat']}" not in seen]
+        # Odds API lines first (real sportsbook lines), PrizePicks as fallback
+        seen = {f"{p['player']}|{p['stat']}" for p in odds_raw}
+        odds_props = odds_raw + [p for p in pp if f"{p['player']}|{p['stat']}" not in seen]
         games = await get_today_games(today_str)
         log.append(f"PrizePicks: {len(pp)} | Underdog O/U: {len(ud_lines)} | OddsAPI: {len(odds_raw)} lines")
     except Exception as e:
@@ -408,22 +362,20 @@ async def run_analysis(selected_date: str = None) -> Dict:
     log.append("Games: " + " | ".join(f"{g['away']} @ {g['home']}" for g in games))
     log.append(f"{len(odds_props)} sportsbook prop lines loaded")
 
-    # Build lookups: pp_lookup = PrizePicks, dk_lookup = Odds API (real sportsbook)
+    # Build lookups
     odds_lookup: Dict[tuple, Dict] = {}
     for prop in odds_props:
         key = (_nn(prop['player']), prop['stat'])
         odds_lookup[key] = {'line': prop['line'], 'odds': str(prop.get('odds', ''))}
 
-    # dk_lookup uses Underdog lines (real O/U with American odds)
-    dk_lookup: Dict[tuple, Dict] = {}
-    for prop in ud_lines:
+    # PrizePicks lookup (for PP Line column display)
+    pp_lookup: Dict[tuple, Dict] = {}
+    for prop in pp:
         key = (_nn(prop['player']), prop['stat'])
-        dk_lookup[key] = {
-            'line':       prop['line'],
-            'over_odds':  prop.get('over_odds',''),
-            'under_odds': prop.get('under_odds',''),
-        }
-    # Fill gaps with Odds API
+        pp_lookup[key] = {'line': prop['line']}
+
+    # dk_lookup uses Odds API lines as the sole sportsbook source
+    dk_lookup: Dict[tuple, Dict] = {}
     for prop in odds_raw:
         key = (_nn(prop['player']), prop['stat'])
         if key not in dk_lookup:
@@ -493,7 +445,9 @@ async def run_analysis(selected_date: str = None) -> Dict:
                                   'l10_hits': l10h, 'l10_games': len(last10),
                                   'fd_line': fd_line, 'fd_odds': fd_odds,
                                   'l10_sb_hits': l10_sb_hits,
-                                  'dk_line': dk_line, 'dk_over_odds': dk_over_odds, 'dk_under_odds': dk_under_odds, 'dk_hits': dk_hits})
+                                  'dk_line': dk_line, 'dk_over_odds': dk_over_odds, 'dk_under_odds': dk_under_odds, 'dk_hits': dk_hits,
+                                  'pp_line': pp_lookup.get((_nn(pname), sk), {}).get('line'),
+                                  'pp_hits': sum(1 for l in last10 if float(l[sk]) > pp_lookup.get((_nn(pname), sk), {}).get('line', 9999)) if pp_lookup.get((_nn(pname), sk), {}).get('line') and last10 else None})
 
         for player in rosters.get(game['away_id'], []):
             pid, pname = player['id'], player['name']
@@ -522,7 +476,9 @@ async def run_analysis(selected_date: str = None) -> Dict:
                                   'l10_hits': l10h, 'l10_games': len(last10),
                                   'fd_line': fd_line, 'fd_odds': fd_odds,
                                   'l10_sb_hits': l10_sb_hits,
-                                  'dk_line': dk_line, 'dk_over_odds': dk_over_odds, 'dk_under_odds': dk_under_odds, 'dk_hits': dk_hits})
+                                  'dk_line': dk_line, 'dk_over_odds': dk_over_odds, 'dk_under_odds': dk_under_odds, 'dk_hits': dk_hits,
+                                  'pp_line': pp_lookup.get((_nn(pname), sk), {}).get('line'),
+                                  'pp_hits': sum(1 for l in last10 if float(l[sk]) > pp_lookup.get((_nn(pname), sk), {}).get('line', 9999)) if pp_lookup.get((_nn(pname), sk), {}).get('line') and last10 else None})
 
     picks.sort(key=lambda x: (x['hit_rate'], x['threshold']), reverse=True)
     top_picks = picks[:TOP_N]
@@ -922,8 +878,8 @@ function renderTop10Cards(picks){
       <div class="stat-strip">${statTag(p.stat)}</div>
       <div class="pick-pattern">${p.threshold}+ ${p.stat_label} in ${p.hits} of ${p.games} ${p.location.toLowerCase()} games vs ${p.opp}</div>
       ${p.l10_games > 0 ? `<div class="l10vthr-desc">${p.player.split(" ").pop()} hit ${p.threshold}+ ${p.stat_label} ${p.l10_hits} of ${p.l10_games} last 10 games vs ${p.opp}</div>` : ""}
-      ${p.fd_line ? `<div class="fd-line-badge"> PrizePicks: <strong>${p.fd_line}</strong> | ${p.stat_label} ${p.threshold}+: ${p.l10_sb_hits !== null && p.l10_sb_hits !== undefined ? p.l10_sb_hits + "/" + p.l10_games + " vs " + p.opp : ""}</div>` : ""}
-      ${p.dk_line ? `<div class="fd-line-badge" style="background:rgba(99,102,241,.15);border-color:rgba(99,102,241,.3);margin-top:4px"> O/U Line: <strong>${p.dk_line}</strong> ${p.dk_over_odds ? "O " + p.dk_over_odds : ""} ${p.dk_under_odds ? "U " + p.dk_under_odds : ""} | Hit ${p.dk_line}+: ${p.dk_hits !== null && p.dk_hits !== undefined ? p.dk_hits + "/" + p.l10_games + " vs " + p.opp : ""}</div>` : ""}
+      ${p.dk_line ? `<div class="fd-line-badge" style="background:rgba(99,102,241,.15);border-color:rgba(99,102,241,.3);margin-top:4px">♠️ Sportsbook Line: <strong>${p.dk_line}</strong> ${p.dk_over_odds ? "O " + p.dk_over_odds : ""} ${p.dk_under_odds ? "U " + p.dk_under_odds : ""} | Hit ${p.dk_line}+: ${p.dk_hits !== null && p.dk_hits !== undefined ? p.dk_hits + "/" + p.l10_games + " vs " + p.opp : ""}</div>` : ""}
+      ${p.pp_line ? `<div class="fd-line-badge" style="background:rgba(255,165,0,.12);border-color:rgba(255,165,0,.3);margin-top:4px">🟠 PrizePicks: <strong>${p.pp_line}</strong> | Hit ${p.pp_line}+: ${p.pp_hits !== null && p.pp_hits !== undefined ? p.pp_hits + "/" + p.l10_games + " vs " + p.opp : ""}</div>` : ""}
       <div class="pick-matchup"> Today: ${p.matchup}</div>
       <div class="bar-wrap"><div class="bar-fill ${bc}" style="width:${Math.min(p.pct,100)}%"></div></div>
       <div class="stats-row"><span class="games-chip">${p.hits}/${p.games} games</span><span class="pct ${pc}">${p.pct}%</span></div>
