@@ -246,24 +246,39 @@ async def get_odds_lines(today_str):
     props = []
     try:
         async with httpx.AsyncClient(timeout=20) as c:
-            # Try regular season key first, then playoffs key
+            # Time-window filter (UTC): include any event starting between
+            # 6 hours ago and 48 hours from now. This covers every ET/UTC
+            # edge case (e.g. a 10pm ET game = next-day UTC).
+            from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+            now_utc = _dt.now(_tz.utc)
+            window_start = now_utc - _td(hours=6)
+            window_end   = now_utc + _td(hours=48)
+
+            def _in_window(iso_ts: str) -> bool:
+                try:
+                    t = _dt.fromisoformat(iso_ts.replace('Z', '+00:00'))
+                    return window_start <= t <= window_end
+                except Exception:
+                    return False
+
             events = []
-            from datetime import date as _d, timedelta as _td
-            tomorrow_str = (_d.fromisoformat(today_str) + _td(days=1)).isoformat()
             active_key = 'basketball_nba'
             for sport_key in ('basketball_nba', 'basketball_nba_championship'):
                 r = await c.get(f"{ODDS_API_BASE}/sports/{sport_key}/events",
                                 params={'apiKey': api_key, 'dateFormat': 'iso'})
                 if r.status_code == 200:
-                    found = [e for e in r.json()
-                             if e.get('commence_time','')[:10] in (today_str, tomorrow_str)]
+                    raw = r.json()
+                    found = [e for e in raw if _in_window(e.get('commence_time', ''))]
+                    print(f'[OddsAPI] {sport_key}: {len(raw)} total events, {len(found)} in window')
                     if found:
                         events = found
                         active_key = sport_key
-                        print(f'[OddsAPI] {len(events)} NBA events ({sport_key}) for {today_str}')
+                        print(f'[OddsAPI] {len(events)} NBA events ({sport_key}) within 48h window')
                         break
+                else:
+                    print(f'[OddsAPI] events {r.status_code} for {sport_key}: {r.text[:150]}')
             if not events:
-                print(f'[OddsAPI] No NBA events found for {today_str} or {tomorrow_str}')
+                print(f'[OddsAPI] No NBA events found within 48h window (now_utc={now_utc.isoformat()})')
                 return []
             markets = ','.join(ODDS_MARKET_MAP.keys())
             for ev in events:
