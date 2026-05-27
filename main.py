@@ -532,7 +532,13 @@ async def run_analysis(selected_date: str = None) -> Dict:
     log.append(f"Props: {len(props_picks)} picks")
     result = {'date':today_str,'picks':top_picks,'all_picks':picks,'games':games,'log':log,'total':len(picks),'odds_loaded':odds_loaded,'props_picks':props_picks,'props_nopick':props_nopick}
     _cache.update(result)
-    _cache_set("nba", today_str, result)
+    # Only cache if we actually got prop lines from PrizePicks or Odds API.
+    # Otherwise the empty result gets pinned for 6h even after sportsbooks post lines.
+    has_lines = bool(props_picks) or bool(props_nopick)
+    if has_lines:
+        _cache_set("nba", today_str, result)
+    else:
+        print(f"[Cache] SKIP write — no prop lines yet for {today_str} (will retry on next request)")
     return result
 
 # ─── HTML ─────────────────────────────────────────────────────────────────────
