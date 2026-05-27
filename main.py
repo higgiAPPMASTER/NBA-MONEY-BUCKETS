@@ -55,7 +55,7 @@ ODDS_MARKET_MAP = {
     "player_points":        "PTS",
     "player_rebounds":      "REB",
     "player_assists":       "AST",
-    "player_threes_scored": "FG3M",
+    "player_threes":        "FG3M",
 }
 MIN_GAMES     = 3
 MIN_MINUTES   = 10.0
