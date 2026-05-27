@@ -11,6 +11,7 @@ from datetime import date, datetime
 from typing import Dict, List, Optional, Any
 
 import httpx
+from replit_push import push_picks_to_replit  # pushes daily picks to Replit DB
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
@@ -1087,6 +1088,7 @@ async def api_warm_nba():
                 "picks": len(cached.get("picks", []))}
     try:
         result = await run_logic()
+        push_picks_to_replit("nba", result)  # also push to Replit DB
         return {"ok": True, "source": "computed", "date": today,
                 "picks": len(result.get("picks", []))}
     except Exception as e:
@@ -1102,6 +1104,7 @@ async def run(request: Request):
     except Exception:
         selected_date = date.today().isoformat()
     result = await run_analysis(selected_date)
+    push_picks_to_replit("nba", result)  # also push to Replit DB
     return result
 
 @app.get("/clear-cache")
