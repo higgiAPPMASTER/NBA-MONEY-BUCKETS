@@ -208,33 +208,6 @@ def _nm(a, b):
     return len(pa) >= 2 and len(pb) >= 2 and pa[0][0] == pb[0][0] and pa[-1] == pb[-1]
 
 
-PRIZEPICKS_STAT_MAP = {"Points":"PTS","Rebounds":"REB","Assists":"AST","3-PT Made":"FG3M"}
-
-async def get_prizepicks_lines():
-    props = []
-    try:
-        async with httpx.AsyncClient(timeout=20, headers={"User-Agent":"Mozilla/5.0","Referer":"https://app.prizepicks.com/"}) as client:
-            r = await client.get("https://api.prizepicks.com/projections", params={"league_id":7,"per_page":250,"single_stat":"true"})
-            if r.status_code != 200:
-                return []
-            data = r.json()
-            player_map = {item["id"]: item["attributes"].get("name","") for item in data.get("included",[]) if item.get("type")=="new_player"}
-            for proj in data.get("data",[]):
-                attrs = proj.get("attributes",{})
-                stat  = PRIZEPICKS_STAT_MAP.get(attrs.get("stat_type",""))
-                if not stat: continue
-                line  = float(attrs.get("line_score") or 0)
-                if line <= 0: continue
-                pid  = proj.get("relationships",{}).get("new_player",{}).get("data",{}).get("id","")
-                name = player_map.get(pid, attrs.get("description",""))
-                if name:
-                    props.append({"player":name,"stat":stat,"line":line,"odds":"","home":"","away":""})
-    except Exception as e:
-        print(f"[PrizePicks] {e}")
-    print(f"[PrizePicks] {len(props)} lines")
-    return props
-
-
 async def get_underdog_lines():
     """DEPRECATED — Underdog removed. Odds API is the sole line source."""
     return []
@@ -357,19 +330,11 @@ async def run_analysis(selected_date: str = None) -> Dict:
 
     # Fetch games + Odds API lines concurrently
     try:
-        pp, ud_lines, odds_raw = await asyncio.gather(
-            get_prizepicks_lines(),
-            get_underdog_lines(),
-            get_odds_lines(today_str)
-        )
-        # PrizePicks = pattern picks source
-        # Underdog = real sportsbook O/U lines (shown as DK line)
-        # Odds API = extra backup
-        # Odds API lines first (real sportsbook lines), PrizePicks as fallback
-        seen = {f"{p['player']}|{p['stat']}" for p in odds_raw}
-        odds_props = odds_raw + [p for p in pp if f"{p['player']}|{p['stat']}" not in seen]
+        odds_raw = await get_odds_lines(today_str)
+        # The Odds API is the sole sportsbook line source.
+        odds_props = odds_raw
         games = await get_today_games(today_str)
-        log.append(f"PrizePicks: {len(pp)} | Underdog O/U: {len(ud_lines)} | OddsAPI: {len(odds_raw)} lines")
+        log.append(f"OddsAPI: {len(odds_raw)} lines")
     except Exception as e:
         return {'date': today_str, 'picks': [], 'all_picks': [], 'games': [],
                 'log': [f'Error: {e}'], 'total': 0}
@@ -386,12 +351,6 @@ async def run_analysis(selected_date: str = None) -> Dict:
     for prop in odds_props:
         key = (_nn(prop['player']), prop['stat'])
         odds_lookup[key] = {'line': prop['line'], 'odds': str(prop.get('odds', ''))}
-
-    # PrizePicks lookup (for PP Line column display)
-    pp_lookup: Dict[tuple, Dict] = {}
-    for prop in pp:
-        key = (_nn(prop['player']), prop['stat'])
-        pp_lookup[key] = {'line': prop['line']}
 
     # dk_lookup uses Odds API lines as the sole sportsbook source
     dk_lookup: Dict[tuple, Dict] = {}
@@ -464,9 +423,7 @@ async def run_analysis(selected_date: str = None) -> Dict:
                                   'l10_hits': l10h, 'l10_games': len(last10),
                                   'fd_line': fd_line, 'fd_odds': fd_odds,
                                   'l10_sb_hits': l10_sb_hits,
-                                  'dk_line': dk_line, 'dk_over_odds': dk_over_odds, 'dk_under_odds': dk_under_odds, 'dk_hits': dk_hits,
-                                  'pp_line': pp_lookup.get((_nn(pname), sk), {}).get('line'),
-                                  'pp_hits': sum(1 for l in last10 if float(l[sk]) > pp_lookup.get((_nn(pname), sk), {}).get('line', 9999)) if pp_lookup.get((_nn(pname), sk), {}).get('line') and last10 else None})
+                                  'dk_line': dk_line, 'dk_over_odds': dk_over_odds, 'dk_under_odds': dk_under_odds, 'dk_hits': dk_hits})
 
         for player in rosters.get(game['away_id'], []):
             pid, pname = player['id'], player['name']
@@ -495,9 +452,7 @@ async def run_analysis(selected_date: str = None) -> Dict:
                                   'l10_hits': l10h, 'l10_games': len(last10),
                                   'fd_line': fd_line, 'fd_odds': fd_odds,
                                   'l10_sb_hits': l10_sb_hits,
-                                  'dk_line': dk_line, 'dk_over_odds': dk_over_odds, 'dk_under_odds': dk_under_odds, 'dk_hits': dk_hits,
-                                  'pp_line': pp_lookup.get((_nn(pname), sk), {}).get('line'),
-                                  'pp_hits': sum(1 for l in last10 if float(l[sk]) > pp_lookup.get((_nn(pname), sk), {}).get('line', 9999)) if pp_lookup.get((_nn(pname), sk), {}).get('line') and last10 else None})
+                                  'dk_line': dk_line, 'dk_over_odds': dk_over_odds, 'dk_under_odds': dk_under_odds, 'dk_hits': dk_hits})
 
     picks.sort(key=lambda x: (x['hit_rate'], x['threshold']), reverse=True)
     top_picks = picks[:TOP_N]
@@ -532,7 +487,7 @@ async def run_analysis(selected_date: str = None) -> Dict:
     log.append(f"Props: {len(props_picks)} picks")
     result = {'date':today_str,'picks':top_picks,'all_picks':picks,'games':games,'log':log,'total':len(picks),'odds_loaded':odds_loaded,'props_picks':props_picks,'props_nopick':props_nopick}
     _cache.update(result)
-    # Only cache if we actually got prop lines from PrizePicks or Odds API.
+    # Only cache if we actually got prop lines from the Odds API.
     # Otherwise the empty result gets pinned for 6h even after sportsbooks post lines.
     has_lines = bool(props_picks) or bool(props_nopick)
     if has_lines:
@@ -918,7 +873,6 @@ function renderTop10Cards(picks){
       <div class="pick-pattern">${p.threshold}+ ${p.stat_label} in ${p.hits} of ${p.games} ${p.location.toLowerCase()} games vs ${p.opp}</div>
       ${p.l10_games > 0 ? `<div class="l10vthr-desc">${p.player.split(" ").pop()} hit ${p.threshold}+ ${p.stat_label} ${p.l10_hits} of ${p.l10_games} last 10 games vs ${p.opp}</div>` : ""}
       ${p.dk_line ? `<div class="fd-line-badge" style="background:rgba(99,102,241,.15);border-color:rgba(99,102,241,.3);margin-top:4px">♠️ Sportsbook Line: <strong>${p.dk_line}</strong> ${p.dk_over_odds ? "O " + p.dk_over_odds : ""} ${p.dk_under_odds ? "U " + p.dk_under_odds : ""} | Hit ${p.dk_line}+: ${p.dk_hits !== null && p.dk_hits !== undefined ? p.dk_hits + "/" + p.l10_games + " vs " + p.opp : ""}</div>` : ""}
-      ${p.pp_line ? `<div class="fd-line-badge" style="background:rgba(255,165,0,.12);border-color:rgba(255,165,0,.3);margin-top:4px">🟠 PrizePicks: <strong>${p.pp_line}</strong> | Hit ${p.pp_line}+: ${p.pp_hits !== null && p.pp_hits !== undefined ? p.pp_hits + "/" + p.l10_games + " vs " + p.opp : ""}</div>` : ""}
       <div class="pick-matchup"> Today: ${p.matchup}</div>
       <div class="bar-wrap"><div class="bar-fill ${bc}" style="width:${Math.min(p.pct,100)}%"></div></div>
       <div class="stats-row"><span class="games-chip">${p.hits}/${p.games} games</span><span class="pct ${pc}">${p.pct}%</span></div>
