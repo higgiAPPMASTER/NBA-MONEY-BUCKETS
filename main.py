@@ -541,7 +541,16 @@ async def run_analysis(selected_date: str = None) -> Dict:
         print(f"[Cache] SKIP write — no prop lines yet for {today_str} (will retry on next request)")
     try:
         from replit_push import push_picks_to_replit
-        push_picks_to_replit("nba", result)
+        # Bake the picks into the page HTML so the Replit hub can serve an
+        # instant, no-cold-start snapshot at moneypicksarena.com/dashboard/nba.
+        import json as _json
+        _inject = (
+            '<script>window.__INITIAL_PICKS__ = '
+            + _json.dumps(result).replace('</', '<\\/')
+            + ';</script></head>'
+        )
+        _snapshot_html = MAIN_HTML.replace("__TODAY__", today_str).replace('</head>', _inject, 1)
+        push_picks_to_replit("nba", result, html=_snapshot_html)
     except Exception as _e:
         print(f"[replit_push] nba push failed: {_e}")
     return result
@@ -1043,6 +1052,32 @@ function renderPropsSection(picks, nopick) {
       '</tr>';
   }).join('');
 }
+
+// Snapshot mode: hub serves this page with picks baked in as
+// window.__INITIAL_PICKS__ — skip the /run fetch and render directly.
+document.addEventListener('DOMContentLoaded', function(){
+  if (!window.__INITIAL_PICKS__) return;
+  try {
+    var data = window.__INITIAL_PICKS__;
+    var dp = document.getElementById('datePicker');
+    if (dp && data.date) dp.value = data.date;
+    if (data.games) renderGames(data.games);
+    top10        = data.picks || [];
+    allPicksData = data.all_picks || [];
+    activeTopStat = 'ALL'; activeAllStat = 'ALL';
+    if (top10.length) {
+      var fb = document.getElementById('filterBar');
+      if (fb) fb.style.display = 'flex';
+      renderTop10Cards(top10);
+      var tc = document.getElementById('totalCount');
+      if (tc) tc.textContent = allPicksData.length;
+      var ap = document.getElementById('allPicksWrap');
+      if (ap) ap.style.display = 'block';
+      renderAllByGame(allPicksData);
+    }
+    renderPropsSection(data.props_picks, data.props_nopick);
+  } catch (e) { console.error('snapshot render failed', e); }
+});
 </script>
 </body>
 
