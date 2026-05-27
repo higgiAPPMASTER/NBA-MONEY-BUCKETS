@@ -11,7 +11,6 @@ from datetime import date, datetime
 from typing import Dict, List, Optional, Any
 
 import httpx
-from replit_push import push_picks_to_replit  # pushes daily picks to Replit DB
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
@@ -285,7 +284,7 @@ async def get_odds_lines(today_str):
             for ev in events:
                 r2 = await c.get(
                     f"{ODDS_API_BASE}/sports/{active_key}/events/{ev['id']}/odds",
-                    params={'apiKey': api_key, 'regions': 'us,us2',
+                    params={'apiKey': api_key, 'regions': 'us',
                             'markets': markets, 'oddsFormat': 'american'})
                 if r2.status_code != 200:
                     print(f'[OddsAPI] props {r2.status_code} for {ev.get("home_team","?")} game: {r2.text[:150]}')
@@ -540,6 +539,11 @@ async def run_analysis(selected_date: str = None) -> Dict:
         _cache_set("nba", today_str, result)
     else:
         print(f"[Cache] SKIP write — no prop lines yet for {today_str} (will retry on next request)")
+    try:
+        from replit_push import push_picks_to_replit
+        push_picks_to_replit("nba", result)
+    except Exception as _e:
+        print(f"[replit_push] nba push failed: {_e}")
     return result
 
 # ─── HTML ─────────────────────────────────────────────────────────────────────
@@ -1087,8 +1091,7 @@ async def api_warm_nba():
         return {"ok": True, "source": "cache", "date": today,
                 "picks": len(cached.get("picks", []))}
     try:
-        result = await run_analysis(today)
-        push_picks_to_replit("nba", result)  # also push to Replit DB
+        result = await run_logic()
         return {"ok": True, "source": "computed", "date": today,
                 "picks": len(result.get("picks", []))}
     except Exception as e:
@@ -1104,7 +1107,6 @@ async def run(request: Request):
     except Exception:
         selected_date = date.today().isoformat()
     result = await run_analysis(selected_date)
-    push_picks_to_replit("nba", result)  # also push to Replit DB
     return result
 
 @app.get("/clear-cache")
