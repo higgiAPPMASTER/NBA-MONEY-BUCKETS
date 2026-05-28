@@ -42,6 +42,7 @@ STAT_CONFIG = {
     'REB':  {'label': 'Rebounds',   'emoji': '📊', 'idx': 7,  'thresholds': list(range(20, 1, -1))},
     'AST':  {'label': 'Assists',    'emoji': '🎯', 'idx': 8,  'thresholds': list(range(15, 1, -1))},
     'FG3M': {'label': '3-Pointers', 'emoji': '🔥', 'idx': 3,  'thresholds': list(range(8,  0, -1))},
+    'PRA':  {'label': 'Pts+Reb+Ast','emoji': '🃏', 'idx': None, 'thresholds': list(range(60, 9, -1))},
 }
 
 HIT_RATE_MIN  = 0.75
@@ -52,10 +53,11 @@ TOP_N         = 12
 
 ODDS_API_BASE   = "https://api.the-odds-api.com/v4"
 ODDS_MARKET_MAP = {
-    "player_points":        "PTS",
-    "player_rebounds":      "REB",
-    "player_assists":       "AST",
-    "player_threes":        "FG3M",
+    "player_points":                    "PTS",
+    "player_rebounds":                   "REB",
+    "player_assists":                    "AST",
+    "player_threes":                     "FG3M",
+    "player_points_rebounds_assists":    "PRA",
 }
 MIN_GAMES     = 3
 MIN_MINUTES   = 10.0
@@ -200,6 +202,7 @@ async def get_player_gamelogs_espn(player_id: str, season: int,
             'REB':         parse_stat(stats[7]),
             'AST':         parse_stat(stats[8]),
             'FG3M':        parse_stat(stats[3]),
+            'PRA':         parse_stat(stats[13]) + parse_stat(stats[7]) + parse_stat(stats[8]),
         })
     return games
 
@@ -542,7 +545,10 @@ async def run_analysis(selected_date: str = None) -> Dict:
                 recent_vals = [float(l[sk]) for l in recent10]
                 line_rec, line_rec_pct, line_rec_hits = _line_pick(dk_line, recent_vals, recent10, sk)
                 streak_rec, streak_n = _streak_pick(dk_line, opp_logs_all, sk)
-                alt_rec, alt_evens, alt_odds = _alt_pick(dk_line, recent10, sk)
+                alt_rec, alt_evens, alt_odds = _alt_pick(dk_line, opp_logs_all, sk)
+                # Conflict resolution: streak (matchup-specific) beats MPA Special (rhythm) when they disagree
+                if streak_rec and alt_rec and streak_rec != alt_rec:
+                    alt_rec = None
                 # Include pick if EITHER consistency pattern OR streak OR MPA Special
                 if not result and not streak_rec and not alt_rec:
                     continue
@@ -591,7 +597,10 @@ async def run_analysis(selected_date: str = None) -> Dict:
                 recent_vals = [float(l[sk]) for l in recent10]
                 line_rec, line_rec_pct, line_rec_hits = _line_pick(dk_line, recent_vals, recent10, sk)
                 streak_rec, streak_n = _streak_pick(dk_line, opp_logs_all, sk)
-                alt_rec, alt_evens, alt_odds = _alt_pick(dk_line, recent10, sk)
+                alt_rec, alt_evens, alt_odds = _alt_pick(dk_line, opp_logs_all, sk)
+                # Conflict resolution: streak (matchup-specific) beats MPA Special (rhythm) when they disagree
+                if streak_rec and alt_rec and streak_rec != alt_rec:
+                    alt_rec = None
                 if not result and not streak_rec and not alt_rec:
                     continue
                 base = result or {'threshold': 0, 'hits': 0, 'games': len(last10),
@@ -916,6 +925,7 @@ footer{text-align:center;padding:32px 24px;color:#4b5563;font-size:.78rem;border
   <button class="filter-btn" onclick="filterStat('REB')">Rebounds</button>
   <button class="filter-btn" onclick="filterStat('AST')">Assists</button>
   <button class="filter-btn" onclick="filterStat('FG3M')">3-Pointers</button>
+  <button class="filter-btn" onclick="filterStat('PRA')">🃏 PRA</button>
 </div>
 <div id="content"></div>
 <div id="allPicksWrap" style="display:none">
@@ -937,6 +947,7 @@ footer{text-align:center;padding:32px 24px;color:#4b5563;font-size:.78rem;border
       <button class="filter-btn" onclick="filterAll('REB')">📊 Reb</button>
       <button class="filter-btn" onclick="filterAll('AST')">🎯 Ast</button>
       <button class="filter-btn" onclick="filterAll('FG3M')">🔥 3PM</button>
+      <button class="filter-btn" onclick="filterAll('PRA')">🃏 PRA</button>
       <button class="filter-btn" id="oversBtn" onclick="toggleSide('OVER')" style="margin-left:8px">⬆ Overs only</button>
       <button class="filter-btn" id="undersBtn" onclick="toggleSide('UNDER')">⬇ Unders only</button>
     </div>
@@ -991,7 +1002,7 @@ let top10=[], allPicksData=[], activeTopStat='ALL', activeAllStat='ALL', sideFil
 
 function pctClass(p){return p>=90?['pct-green','bar-green']:p>=80?['pct-yellow','bar-yellow']:['pct-orange','bar-orange']}
 function statTag(s){
-  const m={PTS:['tag-pts','Points'],REB:['tag-reb','Rebounds'],AST:['tag-ast','Assists'],FG3M:['tag-fg3m','3-Pointers']};
+  const m={PTS:['tag-pts','Points'],REB:['tag-reb','Rebounds'],AST:['tag-ast','Assists'],FG3M:['tag-fg3m','3-Pointers'],PRA:['tag-pra','Pts+Reb+Ast']};
   const [c,l]=m[s]||['',''];
   return `<span class="stat-tag ${c}">${l}</span>`;
 }
@@ -1003,7 +1014,8 @@ function filterStat(stat){
     const t=b.textContent;
     b.classList.toggle('active',
       stat==='ALL'?t.includes('All'):stat==='PTS'?t.includes('Point'):
-      stat==='REB'?t.includes('Rebound'):stat==='AST'?t.includes('Assist'):t.includes('3-Point'));
+      stat==='REB'?t.includes('Rebound'):stat==='AST'?t.includes('Assist'):
+      stat==='PRA'?t.includes('PRA'):t.includes('3-Point'));
   });
   renderTop10Cards(stat==='ALL'?top10:top10.filter(p=>p.stat===stat));
 }
@@ -1013,8 +1025,10 @@ function filterAll(stat){
   document.querySelectorAll('#allFilterBar .filter-btn').forEach(b=>{
     const t=b.textContent;
     b.classList.toggle('active',
-      stat==='ALL'?t==='All':stat==='PTS'?t.includes('Pt'):
-      stat==='REB'?t.includes('Reb'):stat==='AST'?t.includes('Ast'):t.includes('3PM'));
+      stat==='ALL'?t==='All':stat==='PTS'?t.endsWith('Pts'):
+      stat==='REB'?t.includes('Reb')&&!t.includes('PRA'):
+      stat==='AST'?t.includes('Ast')&&!t.includes('PRA'):
+      stat==='PRA'?t.includes('PRA'):t.includes('3PM'));
   });
   applyAllFilters();
 }
