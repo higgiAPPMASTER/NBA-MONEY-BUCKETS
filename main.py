@@ -1247,14 +1247,26 @@ function renderPropsSection(picks, nopick) {
     body.innerHTML = '<tr><td colspan="11" style="text-align:center;padding:20px;color:#555">No prop lines available yet  check back closer to tip-off.</td></tr>';
     return;
   }
+  // Signal lookup from allPicksData (PATTERN/LINE/STREAK/MPA) keyed by player|stat
+  var sigMap = {};
+  (allPicksData||[]).forEach(function(s){ sigMap[s.player+'|'+s.stat] = s; });
+  function badgesFor(p){
+    var s = sigMap[p.player+'|'+p.stat]; if(!s) return '';
+    var out = [];
+    if (s.has_consistency) out.push('<span style="background:rgba(245,158,11,.15);color:#fbbf24;padding:1px 6px;border-radius:4px;font-size:.6rem;font-weight:700;margin-right:3px">PATTERN '+s.pct+'%</span>');
+    if (s.line_rec) out.push('<span style="background:'+(s.line_rec==='UNDER'?'rgba(239,68,68,.15)':'rgba(74,222,128,.15)')+';color:'+(s.line_rec==='UNDER'?'#f87171':'#4ade80')+';padding:1px 6px;border-radius:4px;font-size:.6rem;font-weight:700;margin-right:3px">LINE '+s.line_rec+' '+s.line_rec_pct+'%</span>');
+    if (s.streak_rec) out.push('<span style="background:rgba(249,115,22,.15);color:#fb923c;padding:1px 6px;border-radius:4px;font-size:.6rem;font-weight:700;margin-right:3px">🔥 '+s.streak_n+' '+s.streak_rec+'</span>');
+    if (s.alt_rec) out.push('<span style="background:rgba(168,85,247,.15);color:#c084fc;padding:1px 6px;border-radius:4px;font-size:.6rem;font-weight:700;margin-right:3px">⭐ MPA '+s.alt_rec+'</span>');
+    return out.length ? '<div style="margin-top:3px;display:flex;flex-wrap:wrap;gap:2px">'+out.join('')+'</div>' : '';
+  }
   body.innerHTML = all.map(function(p,i) {
     var isOver=p.pick==='OVER'||p.pick==='O', isUnder=p.pick==='UNDER'||p.pick==='U';
     var clr = isOver?'#4ade80':isUnder?'#f87171':'#555';
     var gap = p.gap!=null?(p.gap>0?'+':'')+p.gap:'';
     var sideBg = p.side==='HOME'?'rgba(253,184,39,.15)':'rgba(99,102,241,.15)';
     return '<tr style="border-bottom:1px solid #1a1a1a">' +
-      '<td style="padding:9px 12px;color:#555">'+(i+1)+'</td>' +
-      '<td style="padding:9px 12px;font-weight:700">'+p.player+'</td>' +
+      '<td style="padding:9px 12px;color:#555;vertical-align:top">'+(i+1)+'</td>' +
+      '<td style="padding:9px 12px;font-weight:700">'+p.player+badgesFor(p)+'</td>' +
       '<td style="padding:9px 12px;color:#FDB827;font-size:.8rem">'+p.emoji+' '+p.stat_label+'</td>' +
       '<td style="padding:9px 12px"><span style="background:'+sideBg+';padding:2px 7px;border-radius:4px;font-size:.75rem">'+p.side+'</span></td>' +
       '<td style="padding:9px 12px;color:#999;font-size:.8rem">'+p.opp_name+'</td>' +
