@@ -1269,8 +1269,12 @@ function toggleSig(id,hdr){
   if(ch)ch.style.transform=hidden?'rotate(180deg)':'';
 }
 function renderSignalLists(picks){
-  const streaks=(picks||[]).filter(p=>p.streak_rec).slice().sort((a,b)=>(b.streak_n||0)-(a.streak_n||0));
-  const mpas=(picks||[]).filter(p=>p.alt_rec);
+  // Build set of player|stat combos that have a strong PATTERN (always OVER-direction).
+  // Any STREAK/MPA UNDER on the same combo contradicts the pattern, so suppress it.
+  const patternKeys=new Set((picks||[]).filter(p=>p.has_consistency).map(p=>`${p.player}|${p.stat}`));
+  const contradicts=p=>{const k=`${p.player}|${p.stat}`;return patternKeys.has(k);};
+  const streaks=(picks||[]).filter(p=>p.streak_rec && !(p.streak_rec==='UNDER' && contradicts(p))).slice().sort((a,b)=>(b.streak_n||0)-(a.streak_n||0));
+  const mpas=(picks||[]).filter(p=>p.alt_rec && !(p.alt_rec==='UNDER' && contradicts(p)));
   const sc=document.getElementById('streakCount'); if(sc) sc.textContent=streaks.length;
   const mc=document.getElementById('mpaCount'); if(mc) mc.textContent=mpas.length;
   const dirColor=d=>d==='OVER'?'#4ade80':d==='UNDER'?'#f87171':'#9ca3af';
@@ -1343,7 +1347,8 @@ async function runPicks(){
     const lb=document.createElement('div');
     lb.className='log-box';
     lb.innerHTML=log.join('<br>')+`<br> ${data.total} total patterns found`;
-    document.getElementById('content').appendChild(lb);
+    // Log box hidden from end users — internal diagnostics only.
+    // document.getElementById('content').appendChild(lb);
     document.getElementById('totalCount').textContent=allPicksData.length;
     document.getElementById('allPicksWrap').style.display='block';
     renderSignalLists(allPicksData);
