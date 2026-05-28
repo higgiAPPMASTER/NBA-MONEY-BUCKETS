@@ -1240,11 +1240,9 @@ async def run(request: Request):
 
 @app.get("/clear-cache")
 async def clear_cache(request: Request):
-    user = get_user(request)
-    if not user:
-        return {"error": "unauthorized"}
     global _cache
     _cache = {}
+    _cache_clear('nba')   # wipe disk-cached picks file too
     return {"status": "cleared"}
 
 @app.get("/health")
