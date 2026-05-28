@@ -642,8 +642,17 @@ async def run_analysis(selected_date: str = None) -> Dict:
     # Sort: consistency picks first (by hit rate), then non-consistency
     # streak/MPA picks. None-safe.
     picks.sort(key=lambda x: (x.get('has_consistency', False), x.get('hit_rate') or 0, x.get('threshold') or 0), reverse=True)
-    top_picks = picks[:TOP_N]
-    log.append(f"{len(picks)} qualifying patterns -> top {TOP_N} shown")
+    # Take enough picks to surface TOP_N distinct players (cards group by player,
+    # so 12 picks from 11 unique players = only 11 cards). Walk the sorted list
+    # collecting picks until we hit TOP_N distinct names.
+    top_picks = []
+    _seen_players = set()
+    for _pk in picks:
+        top_picks.append(_pk)
+        _seen_players.add(_pk['player'])
+        if len(_seen_players) >= TOP_N:
+            break
+    log.append(f"{len(picks)} qualifying patterns -> {len(top_picks)} picks across top {len(_seen_players)} players shown")
     if odds_props:
         with_lines = sum(1 for p in picks if p.get('fd_line'))
         log.append(f"{with_lines} picks have sportsbook lines attached")
