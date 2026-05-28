@@ -305,6 +305,21 @@ def parse_min(val):
     try: return float(s)
     except: return 0.0
 
+def _line_pick(line, all_vals, last10, sk):
+    """Recommend OVER/UNDER vs the sportsbook line based on last-10 hit rate.
+    Returns (rec, pct, hits_text) or (None, None, None) if no line/data."""
+    if not line or not last10:
+        return None, None, None
+    n = len(last10)
+    over_hits = sum(1 for l in last10 if float(l[sk]) > line)
+    under_hits = n - over_hits
+    if over_hits == under_hits:
+        return None, None, None
+    if over_hits > under_hits:
+        return 'OVER', round(over_hits / n * 100, 1), f"{over_hits}/{n}"
+    return 'UNDER', round(under_hits / n * 100, 1), f"{under_hits}/{n}"
+
+
 def find_best_threshold(values, thresholds):
     n = len(values)
     if n < MIN_GAMES: return None
@@ -396,6 +411,13 @@ async def run_analysis(selected_date: str = None) -> Dict:
 
         for player in rosters.get(game['home_id'], []):
             pid, pname = player['id'], player['name']
+            # STARTER/ACTIVE FILTER: only consider players who have a sportsbook
+            # line posted today. Books drop lines for inactives and rarely post
+            # lines for deep bench players. This solves "pick 1 isn't playing"
+            # and the "more starters please" requests in one shot.
+            has_any_line = any((_nn(pname), s) in odds_lookup for s in STAT_CONFIG)
+            if not has_any_line:
+                continue
             opp_logs = [l for l in logs_by_player.get(pid, [])
                         if l['location'] == 'Home' and l['opp'] == a]
             for sk, sc in STAT_CONFIG.items():
@@ -415,6 +437,7 @@ async def run_analysis(selected_date: str = None) -> Dict:
                     dk_over_odds  = dk_ob.get('over_odds', '')
                     dk_under_odds = dk_ob.get('under_odds', '')
                     dk_hits = sum(1 for l in last10 if float(l[sk]) > dk_line) if dk_line and last10 else None
+                    line_rec, line_rec_pct, line_rec_hits = _line_pick(dk_line, vals, last10, sk)
                     picks.append({**result, 'player': pname, 'player_id': pid, 'team': h,
                                   'team_name': h_name, 'stat': sk,
                                   'stat_label': sc['label'], 'emoji': sc['emoji'],
@@ -423,10 +446,14 @@ async def run_analysis(selected_date: str = None) -> Dict:
                                   'l10_hits': l10h, 'l10_games': len(last10),
                                   'fd_line': fd_line, 'fd_odds': fd_odds,
                                   'l10_sb_hits': l10_sb_hits,
-                                  'dk_line': dk_line, 'dk_over_odds': dk_over_odds, 'dk_under_odds': dk_under_odds, 'dk_hits': dk_hits})
+                                  'dk_line': dk_line, 'dk_over_odds': dk_over_odds, 'dk_under_odds': dk_under_odds, 'dk_hits': dk_hits,
+                                  'line_rec': line_rec, 'line_rec_pct': line_rec_pct, 'line_rec_hits': line_rec_hits})
 
         for player in rosters.get(game['away_id'], []):
             pid, pname = player['id'], player['name']
+            has_any_line = any((_nn(pname), s) in odds_lookup for s in STAT_CONFIG)
+            if not has_any_line:
+                continue
             opp_logs = [l for l in logs_by_player.get(pid, [])
                         if l['location'] == 'Away' and l['opp'] == h]
             for sk, sc in STAT_CONFIG.items():
@@ -444,6 +471,7 @@ async def run_analysis(selected_date: str = None) -> Dict:
                     dk_over_odds  = dk_ob.get('over_odds', '')
                     dk_under_odds = dk_ob.get('under_odds', '')
                     dk_hits = sum(1 for l in last10 if float(l[sk]) > dk_line) if dk_line and last10 else None
+                    line_rec, line_rec_pct, line_rec_hits = _line_pick(dk_line, vals, last10, sk)
                     picks.append({**result, 'player': pname, 'player_id': pid, 'team': a,
                                   'team_name': a_name, 'stat': sk,
                                   'stat_label': sc['label'], 'emoji': sc['emoji'],
@@ -452,7 +480,8 @@ async def run_analysis(selected_date: str = None) -> Dict:
                                   'l10_hits': l10h, 'l10_games': len(last10),
                                   'fd_line': fd_line, 'fd_odds': fd_odds,
                                   'l10_sb_hits': l10_sb_hits,
-                                  'dk_line': dk_line, 'dk_over_odds': dk_over_odds, 'dk_under_odds': dk_under_odds, 'dk_hits': dk_hits})
+                                  'dk_line': dk_line, 'dk_over_odds': dk_over_odds, 'dk_under_odds': dk_under_odds, 'dk_hits': dk_hits,
+                                  'line_rec': line_rec, 'line_rec_pct': line_rec_pct, 'line_rec_hits': line_rec_hits})
 
     picks.sort(key=lambda x: (x['hit_rate'], x['threshold']), reverse=True)
     top_picks = picks[:TOP_N]
@@ -872,7 +901,9 @@ function renderTop10Cards(picks){
       <div class="stat-strip">${statTag(p.stat)}</div>
       <div class="pick-pattern">${p.threshold}+ ${p.stat_label} in ${p.hits} of ${p.games} ${p.location.toLowerCase()} games vs ${p.opp}</div>
       ${p.l10_games > 0 ? `<div class="l10vthr-desc">${p.player.split(" ").pop()} hit ${p.threshold}+ ${p.stat_label} ${p.l10_hits} of ${p.l10_games} last 10 games vs ${p.opp}</div>` : ""}
-      ${p.dk_line ? `<div class="fd-line-badge" style="background:rgba(99,102,241,.15);border-color:rgba(99,102,241,.3);margin-top:4px">♠️ Sportsbook Line: <strong>${p.dk_line}</strong> ${p.dk_over_odds ? "O " + p.dk_over_odds : ""} ${p.dk_under_odds ? "U " + p.dk_under_odds : ""} | Hit ${p.dk_line}+: ${p.dk_hits !== null && p.dk_hits !== undefined ? p.dk_hits + "/" + p.l10_games + " vs " + p.opp : ""}</div>` : ""}
+      <div class="fd-line-badge" style="background:rgba(245,158,11,.12);border-color:rgba(245,158,11,.35);margin-top:6px;color:#fbbf24"><strong> PATTERN PICK:</strong> OVER ${p.threshold-0.5} ${p.stat_label} <span style="color:#fff">(${p.pct}%)</span></div>
+      ${p.line_rec ? `<div class="fd-line-badge" style="background:${p.line_rec==='UNDER'?'rgba(239,68,68,.12)':'rgba(74,222,128,.12)'};border-color:${p.line_rec==='UNDER'?'rgba(239,68,68,.35)':'rgba(74,222,128,.35)'};margin-top:4px;color:${p.line_rec==='UNDER'?'#f87171':'#4ade80'}"><strong> LINE PICK:</strong> ${p.line_rec} ${p.dk_line} ${p.stat_label} <span style="color:#fff">(${p.line_rec_hits} = ${p.line_rec_pct}%)</span></div>` : ""}
+      ${p.dk_line ? `<div class="fd-line-badge" style="background:rgba(99,102,241,.12);border-color:rgba(99,102,241,.3);margin-top:4px;font-size:11px;color:#9ca3af">♠️ Book line: <strong style="color:#fff">${p.dk_line}</strong> ${p.dk_over_odds ? "O " + p.dk_over_odds : ""} ${p.dk_under_odds ? "U " + p.dk_under_odds : ""}</div>` : ""}
       <div class="pick-matchup"> Today: ${p.matchup}</div>
       <div class="bar-wrap"><div class="bar-fill ${bc}" style="width:${Math.min(p.pct,100)}%"></div></div>
       <div class="stats-row"><span class="games-chip">${p.hits}/${p.games} games</span><span class="pct ${pc}">${p.pct}%</span></div>
