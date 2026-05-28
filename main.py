@@ -124,6 +124,7 @@ async def get_today_games(date_str: str = None) -> List[Dict]:
             'away_id':   away['team']['id'],
             'home_name': home['team']['displayName'],
             'away_name': away['team']['displayName'],
+            'tipoff':    event.get('date', ''),
         })
     return games
 
@@ -135,7 +136,9 @@ async def get_team_roster_espn(team_id: str) -> List[Dict]:
             await asyncio.sleep(0.1)
             r = await c.get(url)
             data = r.json()
-        return [{'id': p['id'], 'name': p.get('displayName', '')}
+        return [{'id': p['id'], 'name': p.get('displayName', ''),
+                 'jersey': p.get('jersey', ''),
+                 'position': (p.get('position') or {}).get('abbreviation', '')}
                 for p in data.get('athletes', [])]
     except Exception as e:
         print(f"  Roster error {team_id}: {e}")
@@ -453,11 +456,15 @@ async def run_analysis(selected_date: str = None) -> Dict:
     log.append("Games: " + " | ".join(f"{g['away']} @ {g['home']}" for g in games))
     log.append(f"{len(odds_props)} sportsbook prop lines loaded")
 
-    # Build lookups
+    # Build lookups — both first-seen so compute (odds_lookup) and display
+    # (dk_lookup) reference the SAME line per player+stat. With multiple books
+    # (us + us2) posting different lines, last-write-wins caused mismatches
+    # where the card showed line X but the pick was computed against line Y.
     odds_lookup: Dict[tuple, Dict] = {}
     for prop in odds_props:
         key = (_nn(prop['player']), prop['stat'])
-        odds_lookup[key] = {'line': prop['line'], 'odds': str(prop.get('odds', ''))}
+        if key not in odds_lookup:
+            odds_lookup[key] = {'line': prop['line'], 'odds': str(prop.get('odds', ''))}
 
     # dk_lookup uses Odds API lines as the sole sportsbook source
     dk_lookup: Dict[tuple, Dict] = {}
@@ -562,6 +569,9 @@ async def run_analysis(selected_date: str = None) -> Dict:
                                   'hit_rate': 0.0, 'pct': 0.0}
                 l10h = sum(1 for l in last10 if float(l[sk]) >= base['threshold']) if base['threshold'] else 0
                 picks.append({**base, 'player': pname, 'player_id': pid, 'team': h,
+                              'team_id': game['home_id'],
+                              'jersey': player.get('jersey',''), 'position': player.get('position',''),
+                              'tipoff': game.get('tipoff',''),
                               'team_name': h_name, 'stat': sk,
                               'stat_label': sc['label'], 'emoji': sc['emoji'],
                               'location': 'Home', 'opp': a, 'opp_name': a_name,
@@ -613,6 +623,9 @@ async def run_analysis(selected_date: str = None) -> Dict:
                                   'hit_rate': 0.0, 'pct': 0.0}
                 l10h = sum(1 for l in last10 if float(l[sk]) >= base['threshold']) if base['threshold'] else 0
                 picks.append({**base, 'player': pname, 'player_id': pid, 'team': a,
+                              'team_id': game['away_id'],
+                              'jersey': player.get('jersey',''), 'position': player.get('position',''),
+                              'tipoff': game.get('tipoff',''),
                               'team_name': a_name, 'stat': sk,
                               'stat_label': sc['label'], 'emoji': sc['emoji'],
                               'location': 'Away', 'opp': h, 'opp_name': h_name,
@@ -1066,40 +1079,63 @@ function renderTop10Cards(picks){
     document.getElementById('content').innerHTML='<div class="msg-card"><span class="ico"></span><h2>No patterns</h2><p>Try "All Stats".</p></div>';
     return;
   }
-  let html=`<div class="section-hdr"><div class="section-title"> Top 10 Picks Today</div><span class="count-pill">${picks.length} pick${picks.length!==1?'s':''}</span></div><div class="picks-grid">`;
-  picks.forEach((p,i)=>{
-    const [pc,bc]=pctClass(p.pct);
+  // Group picks by player so each player gets ONE trading-card; first occurrence wins rank order.
+  const byPlayer={},order=[];
+  picks.forEach(p=>{ if(!byPlayer[p.player]){byPlayer[p.player]=[];order.push(p.player);} byPlayer[p.player].push(p); });
+  const dirColor=d=>d==='OVER'?'#4ade80':d==='UNDER'?'#f87171':'#9ca3af';
+  const dirBg=d=>d==='OVER'?'rgba(74,222,128,.14)':d==='UNDER'?'rgba(239,68,68,.14)':'rgba(156,163,175,.1)';
+  let html=`<div class="section-hdr"><div class="section-title">Top Picks Today</div><span class="count-pill">${order.length} player${order.length!==1?'s':''}</span></div><div class="picks-grid">`;
+  order.forEach((pname,i)=>{
+    const stats=byPlayer[pname];
+    const p=stats[0];
+    const teamLogo=`https://a.espncdn.com/i/teamlogos/nba/500/${(p.team||'').toLowerCase()}.png`;
+    const headshot=`https://cdn.nba.com/headshots/nba/latest/1040x760/${p.player_id}.png`;
+    const tip=p.tipoff?new Date(p.tipoff).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',timeZoneName:'short'}):'';
+    const statBlocks=stats.map(s=>{
+      const votes={OVER:0,UNDER:0};
+      if(s.has_consistency) votes.OVER++;
+      if(s.line_rec) votes[s.line_rec]++;
+      if(s.streak_rec) votes[s.streak_rec]++;
+      if(s.alt_rec) votes[s.alt_rec]++;
+      const tot=votes.OVER+votes.UNDER;
+      const verdict=tot?(votes.OVER>votes.UNDER?'OVER':votes.UNDER>votes.OVER?'UNDER':null):null;
+      const badges=[];
+      if(s.has_consistency) badges.push(`<span style="background:rgba(253,184,39,.18);color:#FDB827;padding:2px 7px;border-radius:5px;font-size:.65rem;font-weight:800">PATTERN ${s.pct}%</span>`);
+      if(s.line_rec) badges.push(`<span style="background:${dirBg(s.line_rec)};color:${dirColor(s.line_rec)};padding:2px 7px;border-radius:5px;font-size:.65rem;font-weight:800">LINE ${s.line_rec} ${s.line_rec_pct}%</span>`);
+      if(s.streak_rec) badges.push(`<span style="background:${dirBg(s.streak_rec)};color:${dirColor(s.streak_rec)};padding:2px 7px;border-radius:5px;font-size:.65rem;font-weight:800">🔥 ${s.streak_n} ${s.streak_rec}</span>`);
+      if(s.alt_rec) badges.push(`<span style="background:${dirBg(s.alt_rec)};color:${dirColor(s.alt_rec)};padding:2px 7px;border-radius:5px;font-size:.65rem;font-weight:800">⭐ MPA ${s.alt_rec}</span>`);
+      const verdictPill=verdict?`<span style="background:${dirBg(verdict)};color:${dirColor(verdict)};border:1px solid ${dirColor(verdict)}66;padding:3px 9px;border-radius:6px;font-size:.72rem;font-weight:900;white-space:nowrap">${verdict}${s.dk_line?' '+s.dk_line:''}</span>`:'';
+      return `<div style="background:#0d0d0d;border:1px solid #1f1f1f;border-radius:8px;padding:9px 11px;margin-top:7px">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:6px">
+          <div style="font-size:.78rem;min-width:0"><span>${s.emoji}</span> <strong style="color:#fff">${s.threshold?s.threshold+'+ ':''}${s.stat_label}</strong>${s.dk_line?` <span style="color:#777">· line ${s.dk_line}</span>`:''}</div>
+          ${verdictPill}
+        </div>
+        <div style="display:flex;flex-wrap:wrap;gap:4px">${badges.join('')}</div>
+      </div>`;
+    }).join('');
     html+=`
-    <div class="pick-card">
-      <div class="pick-rank ${rankClass(i)}">${i+1}</div>
-      <span class="pick-emoji">${p.emoji}</span>
-      <div class="pick-player">${p.player}</div>
-      <div class="pick-team">${p.team_name} <span class="loc-badge">${p.location==='Home'?' Home':' Away'}</span></div>
-      <div class="stat-strip">${statTag(p.stat)}</div>
-      ${(()=>{
-        const dirColor=d=>d==='OVER'?'#4ade80':d==='UNDER'?'#f87171':'#9ca3af';
-        const dirBg=d=>d==='OVER'?'rgba(74,222,128,.12)':d==='UNDER'?'rgba(239,68,68,.12)':'rgba(156,163,175,.1)';
-        const row=(label,labelColor,info,dir)=>`<div style="display:grid;grid-template-columns:90px 1fr auto;align-items:center;gap:8px;padding:5px 8px;border-radius:6px;background:#0d0d0d;margin-top:3px"><span style="color:${labelColor};font-weight:700;font-size:.7rem;letter-spacing:.04em">${label}</span><span style="color:#bbb;font-size:.75rem">${info}</span>${dir?`<span style="color:${dirColor(dir)};background:${dirBg(dir)};padding:2px 8px;border-radius:5px;font-weight:700;font-size:.7rem">${dir}</span>`:''}</div>`;
-        const votes={OVER:0,UNDER:0};
-        if(p.line_rec) votes[p.line_rec]++;
-        if(p.streak_rec) votes[p.streak_rec]++;
-        if(p.alt_rec) votes[p.alt_rec]++;
-        const total=votes.OVER+votes.UNDER;
-        const verdict=total?(votes.OVER>votes.UNDER?'OVER':votes.UNDER>votes.OVER?'UNDER':null):null;
-        const verdictCount=verdict?Math.max(votes.OVER,votes.UNDER):0;
-        let rows='';
-        if(p.has_consistency) rows+=row('PATTERN','#fbbf24',`${p.hits}/${p.games} vs ${p.opp} · ${p.pct}%`,'OVER');
-        if(p.line_rec) rows+=row('LINE','#60a5fa',`${p.line_rec_hits} = ${p.line_rec_pct}% vs ${p.opp}`,p.line_rec);
-        if(p.streak_rec) rows+=row('🔥 STREAK','#fb923c',`${p.streak_n} in a row vs ${p.opp}`,p.streak_rec);
-        if(p.alt_rec) rows+=row('⭐ MPA','#c084fc',`alternation pattern vs ${p.opp}`,p.alt_rec);
-        const header=`<div style="margin-top:6px;padding:6px 8px;background:#1a1a1a;border-radius:6px;font-size:.78rem;color:#ddd"><strong style="color:#fff">${p.threshold||'—'}+ ${p.stat_label}</strong> vs ${p.opp}${p.dk_line?` · line <strong style="color:#fff">${p.dk_line}</strong>`:''}</div>`;
-        const verdictBar=verdict?`<div style="margin-top:6px;padding:7px 10px;border-radius:6px;background:${dirBg(verdict)};border:1px solid ${dirColor(verdict)}55;color:${dirColor(verdict)};font-weight:800;font-size:.85rem;text-align:center">→ VERDICT: ${verdict} ${p.dk_line||''} <span style="color:#aaa;font-weight:600;font-size:.72rem">(${verdictCount} of ${total} agree)</span></div>`:'';
-        const book=p.dk_line?`<div style="margin-top:5px;font-size:.7rem;color:#888;text-align:center">♠️ Book: ${p.dk_line}${p.dk_over_odds?` · O ${p.dk_over_odds}`:''}${p.dk_under_odds?` · U ${p.dk_under_odds}`:''}</div>`:'';
-        return header+rows+verdictBar+book;
-      })()}
-      <div class="pick-matchup" style="margin-top:6px"> Today: ${p.matchup}</div>
-      <div class="bar-wrap"><div class="bar-fill ${bc}" style="width:${Math.min(p.pct,100)}%"></div></div>
-      <div class="stats-row"><span class="games-chip">${p.hits}/${p.games} games</span><span class="pct ${pc}">${p.pct}%</span></div>
+    <div class="pick-card" style="padding:0;overflow:hidden;border-radius:14px;background:linear-gradient(180deg,#161616 0%,#0f0f0f 100%);border:1px solid #262626">
+      <div style="background:linear-gradient(135deg,#1e3a5f 0%,#0a1a2e 100%);padding:11px 14px;display:flex;align-items:center;justify-content:space-between;border-bottom:2px solid #FDB827">
+        <div style="display:flex;align-items:center;gap:9px">
+          <div style="width:28px;height:28px;border-radius:50%;background:#FDB827;color:#000;display:flex;align-items:center;justify-content:center;font-weight:900;font-size:.78rem">${i+1}</div>
+          <div style="font-size:.62rem;letter-spacing:.12em;color:#FDB827;font-weight:800">NBA · ${p.team}</div>
+        </div>
+        <img src="${teamLogo}" alt="${p.team}" style="height:32px;width:32px;object-fit:contain" onerror="this.style.display='none'"/>
+      </div>
+      <div style="position:relative;height:140px;background:radial-gradient(ellipse at center top,rgba(253,184,39,.15),transparent 70%),linear-gradient(180deg,#1e3a5f 0%,#0a1a2e 100%);overflow:hidden">
+        <img src="${headshot}" alt="${pname}" style="position:absolute;bottom:-6px;left:50%;transform:translateX(-50%);height:148px;object-fit:contain" onerror="this.style.display='none'"/>
+        ${p.jersey?`<div style="position:absolute;top:8px;left:10px;background:rgba(0,0,0,.6);color:#FDB827;font-weight:900;font-size:.78rem;padding:3px 8px;border-radius:5px;border:1px solid #FDB827">#${p.jersey}</div>`:''}
+        ${p.position?`<div style="position:absolute;top:8px;right:10px;background:rgba(0,0,0,.6);color:#fff;font-weight:800;font-size:.7rem;padding:3px 8px;border-radius:5px;border:1px solid #444">${p.position}</div>`:''}
+      </div>
+      <div style="background:#FDB827;color:#000;text-align:center;padding:7px 10px;font-weight:900;font-size:.95rem">${pname}</div>
+      <div style="padding:10px 12px 12px">
+        <div style="display:flex;justify-content:space-between;align-items:center;font-size:.72rem;color:#888;margin-bottom:2px">
+          <span>vs <strong style="color:#fff">${p.opp}</strong></span>
+          ${tip?`<span>⏱ ${tip}</span>`:''}
+        </div>
+        <div style="font-size:.66rem;color:#555;margin-bottom:2px">${p.matchup}</div>
+        ${statBlocks}
+      </div>
     </div>`;
   });
   html+='</div>';
