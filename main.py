@@ -1123,16 +1123,25 @@ function renderTop10Cards(picks){
       const tot=votes.OVER+votes.UNDER;
       const verdict=tot?(votes.OVER>votes.UNDER?'OVER':votes.UNDER>votes.OVER?'UNDER':null):null;
       const badges=[];
-      if(s.has_consistency) badges.push(`<span style="background:rgba(253,184,39,.18);color:#FDB827;padding:2px 7px;border-radius:5px;font-size:.65rem;font-weight:800">PATTERN ${s.pct}%</span>`);
-      if(s.line_rec) badges.push(`<span style="background:${dirBg(s.line_rec)};color:${dirColor(s.line_rec)};padding:2px 7px;border-radius:5px;font-size:.65rem;font-weight:800">LINE ${s.line_rec} ${s.line_rec_pct}%</span>`);
-      if(s.streak_rec) badges.push(`<span style="background:${dirBg(s.streak_rec)};color:${dirColor(s.streak_rec)};padding:2px 7px;border-radius:5px;font-size:.65rem;font-weight:800">🔥 ${s.streak_n} ${s.streak_rec}</span>`);
+      if(s.has_consistency) badges.push(`<span style="background:rgba(253,184,39,.18);color:#FDB827;padding:2px 7px;border-radius:5px;font-size:.65rem;font-weight:800">PATTERN ${s.hits}/${s.games} (${s.pct}%)</span>`);
+      if(s.line_rec) badges.push(`<span style="background:${dirBg(s.line_rec)};color:${dirColor(s.line_rec)};padding:2px 7px;border-radius:5px;font-size:.65rem;font-weight:800">LINE ${s.line_rec} ${s.line_rec_hits}/10 (${s.line_rec_pct}%)</span>`);
+      if(s.streak_rec) badges.push(`<span style="background:${dirBg(s.streak_rec)};color:${dirColor(s.streak_rec)};padding:2px 7px;border-radius:5px;font-size:.65rem;font-weight:800">🔥 ${s.streak_n} STRAIGHT ${s.streak_rec}</span>`);
       if(s.alt_rec) badges.push(`<span style="background:${dirBg(s.alt_rec)};color:${dirColor(s.alt_rec)};padding:2px 7px;border-radius:5px;font-size:.65rem;font-weight:800">⭐ MPA ${s.alt_rec}</span>`);
       const verdictPill=verdict?`<span style="background:${dirBg(verdict)};color:${dirColor(verdict)};border:1px solid ${dirColor(verdict)}66;padding:3px 9px;border-radius:6px;font-size:.72rem;font-weight:900;white-space:nowrap">${verdict}${s.dk_line?' '+s.dk_line:''}</span>`:'';
+      // Data line: shows last-10 hit count vs threshold AND vs sportsbook line so user sees both pieces of evidence.
+      const dataBits=[];
+      if(s.threshold) dataBits.push(`<span style="color:#FDB827">${s.hits}/${s.games}</span> hit ${s.threshold}+`);
+      if(s.dk_line!=null && s.dk_hits!=null){
+        const over=s.dk_hits, under=10-over;
+        dataBits.push(`vs line <strong style="color:#fff">${s.dk_line}</strong>: <span style="color:#4ade80">${over} O</span> · <span style="color:#f87171">${under} U</span>`);
+      }
+      const dataLine=dataBits.length?`<div style="font-size:.65rem;color:#888;margin-bottom:6px">${dataBits.join(' &nbsp;·&nbsp; ')}</div>`:'';
       return `<div style="background:#0d0d0d;border:1px solid #1f1f1f;border-radius:8px;padding:9px 11px;margin-top:7px">
-        <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:6px">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:5px">
           <div style="font-size:.78rem;min-width:0"><span>${s.emoji}</span> <strong style="color:#fff">${s.threshold?s.threshold+'+ ':''}${s.stat_label}</strong>${s.dk_line?` <span style="color:#777">· line ${s.dk_line}</span>`:''}</div>
           ${verdictPill}
         </div>
+        ${dataLine}
         <div style="display:flex;flex-wrap:wrap;gap:4px">${badges.join('')}</div>
       </div>`;
     }).join('');
