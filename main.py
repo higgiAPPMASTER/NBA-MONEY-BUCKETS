@@ -116,8 +116,8 @@ async def get_today_games(date_str: str = None) -> List[Dict]:
         if not home or not away:
             continue
         games.append({
-            'home':      home['team']['abbreviation'],
-            'away':      away['team']['abbreviation'],
+            'home':      _norm_abbr(home['team']['abbreviation']),
+            'away':      _norm_abbr(away['team']['abbreviation']),
             'home_id':   home['team']['id'],
             'away_id':   away['team']['id'],
             'home_name': home['team']['displayName'],
@@ -181,10 +181,10 @@ async def get_player_gamelogs_espn(player_id: str, season: int,
             continue
 
         opp_info = ev_info.get('opponent', {})
-        opp_abbr = opp_info.get('abbreviation', '') if isinstance(opp_info, dict) else ''
+        opp_abbr = _norm_abbr(opp_info.get('abbreviation', '') if isinstance(opp_info, dict) else '')
         location = 'Away' if ev_info.get('atVs', '') == '@' else 'Home'
         team_info = ev_info.get('team', {})
-        player_team_abbr = team_info.get('abbreviation', '') if isinstance(team_info, dict) else ''
+        player_team_abbr = _norm_abbr(team_info.get('abbreviation', '') if isinstance(team_info, dict) else '')
 
         games.append({
             'opp':         opp_abbr,
@@ -308,6 +308,24 @@ def parse_min(val):
         except: return 0.0
     try: return float(s)
     except: return 0.0
+
+_ABBR_ALIASES = {
+    'SA': 'SAS', 'SAS': 'SAS',
+    'NO': 'NOP', 'NOP': 'NOP', 'NOH': 'NOP',
+    'GS': 'GSW', 'GSW': 'GSW',
+    'NY': 'NYK', 'NYK': 'NYK',
+    'UTAH': 'UTA', 'UTA': 'UTA',
+    'WSH': 'WAS', 'WAS': 'WAS',
+    'PHX': 'PHX', 'PHO': 'PHX',
+    'BKN': 'BKN', 'BRK': 'BKN',
+    'CHA': 'CHA', 'CHO': 'CHA',
+}
+def _norm_abbr(a):
+    """Normalize ESPN team abbreviation — scoreboard + gamelog APIs disagree
+    on some teams (SA vs SAS, NO vs NOP, GS vs GSW, etc)."""
+    if not a: return a
+    return _ABBR_ALIASES.get(a.upper(), a.upper())
+
 
 def _streak_pick(line, recent10, sk):
     """🔥 STREAK PICK: trailing consecutive games over the line.
