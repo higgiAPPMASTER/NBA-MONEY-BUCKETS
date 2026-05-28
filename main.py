@@ -1282,7 +1282,7 @@ function renderSignalLists(picks){
   const patternKeys=new Set((picks||[]).filter(p=>p.has_consistency).map(p=>`${p.player}|${p.stat}`));
   const contradicts=p=>{const k=`${p.player}|${p.stat}`;return patternKeys.has(k);};
   const streaks=(picks||[]).filter(p=>p.streak_rec && !(p.streak_rec==='UNDER' && contradicts(p))).slice().sort((a,b)=>(b.streak_n||0)-(a.streak_n||0));
-  const mpas=(picks||[]).filter(p=>p.alt_rec && !(p.alt_rec==='UNDER' && contradicts(p)));
+  const mpas=(picks||[]).filter(p=>p.alt_rec);
   const sc=document.getElementById('streakCount'); if(sc) sc.textContent=streaks.length;
   const mc=document.getElementById('mpaCount'); if(mc) mc.textContent=mpas.length;
   const dirColor=d=>d==='OVER'?'#4ade80':d==='UNDER'?'#f87171':'#9ca3af';
