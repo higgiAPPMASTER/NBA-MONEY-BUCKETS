@@ -400,9 +400,16 @@ def _line_pick(line, all_vals, last10, sk):
     under_hits = n - over_hits
     if over_hits == under_hits:
         return None, None, None
+    # Require at least 70% on the dominant side to qualify
     if over_hits > under_hits:
-        return 'OVER', round(over_hits / n * 100, 1), f"{over_hits}/{n}"
-    return 'UNDER', round(under_hits / n * 100, 1), f"{under_hits}/{n}"
+        pct = over_hits / n
+        if pct < 0.70:
+            return None, None, None
+        return 'OVER', round(pct * 100, 1), f"{over_hits}/{n}"
+    pct = under_hits / n
+    if pct < 0.70:
+        return None, None, None
+    return 'UNDER', round(pct * 100, 1), f"{under_hits}/{n}"
 
 
 def find_best_threshold(values, thresholds):
