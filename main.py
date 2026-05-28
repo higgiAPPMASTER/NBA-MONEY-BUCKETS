@@ -272,7 +272,7 @@ async def get_odds_lines(today_str):
             for ev in events:
                 r2 = await c.get(
                     f"{ODDS_API_BASE}/sports/{active_key}/events/{ev['id']}/odds",
-                    params={'apiKey': api_key, 'regions': 'us,us2',
+                    params={'apiKey': api_key, 'regions': 'us',
                             'markets': markets, 'oddsFormat': 'american'})
                 if r2.status_code != 200:
                     print(f'[OddsAPI] props {r2.status_code} for {ev.get("home_team","?")} game: {r2.text[:150]}')
