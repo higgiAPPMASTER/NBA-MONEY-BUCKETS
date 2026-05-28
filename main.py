@@ -1,4 +1,3 @@
-# NBA Money Buckets — main.py (v2 — 100% ESPN API, no NBA Stats API)
 # NBA Stats API blocks server IPs. ESPN gives schedule + rosters + player game logs free.
 
 import asyncio, pathlib, time
@@ -559,7 +558,9 @@ async def run_analysis(selected_date: str = None) -> Dict:
                               'line_rec': line_rec, 'line_rec_pct': line_rec_pct, 'line_rec_hits': line_rec_hits,
                               'streak_rec': streak_rec, 'streak_n': streak_n,
                               'alt_rec': alt_rec, 'alt_evens': alt_evens, 'alt_odds': alt_odds,
-                              'has_consistency': result is not None})
+                              'has_consistency': result is not None,
+                              'recent_avg': round(sum(recent_vals)/len(recent_vals), 1) if recent_vals else None,
+                              'gap': round((sum(recent_vals)/len(recent_vals)) - dk_line, 1) if recent_vals and dk_line else None})
 
         for player in rosters.get(game['away_id'], []):
             pid, pname = player['id'], player['name']
@@ -604,7 +605,9 @@ async def run_analysis(selected_date: str = None) -> Dict:
                               'line_rec': line_rec, 'line_rec_pct': line_rec_pct, 'line_rec_hits': line_rec_hits,
                               'streak_rec': streak_rec, 'streak_n': streak_n,
                               'alt_rec': alt_rec, 'alt_evens': alt_evens, 'alt_odds': alt_odds,
-                              'has_consistency': result is not None})
+                              'has_consistency': result is not None,
+                              'recent_avg': round(sum(recent_vals)/len(recent_vals), 1) if recent_vals else None,
+                              'gap': round((sum(recent_vals)/len(recent_vals)) - dk_line, 1) if recent_vals and dk_line else None})
 
     # Sort: consistency picks first (by hit rate), then non-consistency
     # streak/MPA picks. None-safe.
@@ -1023,9 +1026,14 @@ function applyAllFilters(){
   let filtered = activeAllStat==='ALL' ? allPicksData : allPicksData.filter(p=>p.stat===activeAllStat);
   if(sideFilter){
     filtered = filtered.filter(p => p.line_rec===sideFilter || p.streak_rec===sideFilter || p.alt_rec===sideFilter);
+    // Rank by gap: biggest +gap first for OVERs, biggest -gap first for UNDERs
+    filtered = filtered.slice().sort((a,b)=>{
+      const ga=a.gap==null?0:a.gap, gb=b.gap==null?0:b.gap;
+      return sideFilter==='OVER' ? (gb-ga) : (ga-gb);
+    });
   }
   document.getElementById('totalCount').textContent=filtered.length;
-  renderAllByGame(filtered);
+  renderAllByGame(filtered, sideFilter);
 }
 
 function renderTop10Cards(picks){
@@ -1112,6 +1120,7 @@ function renderAllByGame(picks){
             <div style="color:#bbb;font-size:.78rem">${patternLine}</div>
             <div style="margin-top:4px;display:flex;flex-wrap:wrap;gap:3px">${badges.join('')}</div>
           </div>
+          ${p.gap!=null ? `<div style="text-align:right;margin-right:8px"><div style="font-size:.78rem;font-weight:800;color:${p.gap>0?'#4ade80':'#f87171'}">${p.gap>0?'+':''}${p.gap}</div><div style="color:#666;font-size:.6rem">gap</div></div>` : ''}
           ${p.has_consistency ? `<div style="text-align:right"><div class="cr-pct ${pc}" style="font-size:.85rem;font-weight:800">${p.pct}%</div><div style="color:#666;font-size:.65rem">${p.hits}/${p.games}</div></div>` : ''}
         </div>`;
       }
