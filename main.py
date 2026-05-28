@@ -1109,7 +1109,9 @@ function renderTop10Cards(picks){
   const dirBg=d=>d==='OVER'?'rgba(74,222,128,.14)':d==='UNDER'?'rgba(239,68,68,.14)':'rgba(156,163,175,.1)';
   let html=`<div class="section-hdr"><div class="section-title">Top Picks Today</div><span class="count-pill">${order.length} player${order.length!==1?'s':''}</span></div><div class="picks-grid">`;
   order.forEach((pname,i)=>{
-    const stats=byPlayer[pname];
+    // Only show the single best pick per player card (highest-ranked, since
+    // picks are pre-sorted by has_consistency desc, hit_rate desc, threshold desc).
+    const stats=[byPlayer[pname][0]];
     const p=stats[0];
     const teamLogo=`https://a.espncdn.com/i/teamlogos/nba/500/${(p.team||'').toLowerCase()}.png`;
     const headshot=`https://a.espncdn.com/i/headshots/nba/players/full/${p.player_id}.png`;
@@ -1132,10 +1134,10 @@ function renderTop10Cards(picks){
       if(s.has_consistency){
         const pBg = patternMismatch ? 'rgba(120,120,120,.18)' : 'rgba(253,184,39,.18)';
         const pFg = patternMismatch ? '#888' : '#FDB827';
-        const pSuffix = patternMismatch ? ' <span style="color:#f87171;font-weight:700">⚠ below line</span>' : '';
+        const pSuffix = patternMismatch ? ` <span style="color:#f87171;font-weight:700">⚠ ${s.threshold} ≤ ${s.dk_line}</span>` : '';
         badges.push(`<span style="background:${pBg};color:${pFg};padding:4px 10px;border-radius:6px;font-size:.82rem;font-weight:800">PATTERN ${s.hits}/${s.games} (${s.pct}%)${pSuffix}</span>`);
       }
-      if(s.line_rec) badges.push(`<span style="background:${dirBg(s.line_rec)};color:${dirColor(s.line_rec)};padding:4px 10px;border-radius:6px;font-size:.82rem;font-weight:800">LINE ${s.line_rec} ${s.line_rec_hits}/10 (${s.line_rec_pct}%)</span>`);
+      if(s.line_rec) badges.push(`<span style="background:${dirBg(s.line_rec)};color:${dirColor(s.line_rec)};padding:4px 10px;border-radius:6px;font-size:.82rem;font-weight:800">LINE ${s.line_rec} ${s.line_rec_hits} (${s.line_rec_pct}%)</span>`);
       if(s.streak_rec) badges.push(`<span style="background:${dirBg(s.streak_rec)};color:${dirColor(s.streak_rec)};padding:4px 10px;border-radius:6px;font-size:.82rem;font-weight:800">🔥 ${s.streak_n} STRAIGHT ${s.streak_rec}</span>`);
       if(s.alt_rec) badges.push(`<span style="background:${dirBg(s.alt_rec)};color:${dirColor(s.alt_rec)};padding:4px 10px;border-radius:6px;font-size:.82rem;font-weight:800">⭐ MPA ${s.alt_rec}</span>`);
       const verdictPill=verdict?`<span style="background:${dirBg(verdict)};color:${dirColor(verdict)};border:1px solid ${dirColor(verdict)}66;padding:5px 12px;border-radius:7px;font-size:.92rem;font-weight:900;white-space:nowrap">${verdict}${s.dk_line?' '+s.dk_line:''}</span>`:'';
