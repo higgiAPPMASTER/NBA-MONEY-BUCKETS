@@ -59,7 +59,7 @@ ODDS_MARKET_MAP = {
     "player_threes":                     "FG3M",
     "player_points_rebounds_assists":    "PRA",
 }
-MIN_GAMES     = 3
+MIN_GAMES     = 1
 MIN_MINUTES   = 10.0
 ESPN_SEASONS  = [2026, 2025, 2024, 2023, 2022, 2021, 2020]   # ESPN uses season END year — 7 seasons for full career H/A history
 TOP_N         = 12
@@ -368,14 +368,14 @@ def _alt_pick(line, recent10, sk):
     hit overs ≥4/5 and odd-indexed hit ≤1/5 (or vice versa), pattern is strong.
     Tonight is the NEXT game so its parity is OPPOSITE of index 0.
     Returns (rec, evens_hit_text, odds_hit_text) or (None, None, None)."""
-    if not line or len(recent10) < 6:
+    if not line or len(recent10) < 2:
         return None, None, None
     evens = recent10[0::2][:5]  # idx 0,2,4,6,8
     odds  = recent10[1::2][:5]  # idx 1,3,5,7,9
     e_hits = sum(1 for g in evens if float(g[sk]) > line)
     o_hits = sum(1 for g in odds  if float(g[sk]) > line)
     e_n, o_n = len(evens), len(odds)
-    if e_n < 3 or o_n < 3:
+    if e_n < 1 or o_n < 1:
         return None, None, None
     e_pct = e_hits / e_n
     o_pct = o_hits / o_n
@@ -552,13 +552,13 @@ async def run_analysis(selected_date: str = None) -> Dict:
                 dk_over_odds  = dk_ob.get('over_odds', '')
                 dk_under_odds = dk_ob.get('under_odds', '')
                 dk_hits = sum(1 for l in last10 if float(l[sk]) > dk_line) if dk_line and last10 else None
-                # All signals (Line / Streak / MPA Special) are matchup-only
-                # vs the opponent. recent10/recent_vals kept for any other use.
+                # PATTERN / LINE / STREAK: matchup + location specific.
+                # MPA Special: player rhythm across all recent games (not opponent-filtered).
                 recent10 = all_logs_player[:10]
                 recent_vals = [float(l[sk]) for l in recent10]
                 line_rec, line_rec_pct, line_rec_hits = _line_pick(dk_line, [float(l[sk]) for l in opp_logs_all[:10]], opp_logs_all[:10], sk)
                 streak_rec, streak_n = _streak_pick(dk_line, opp_logs_all, sk)
-                alt_rec, alt_evens, alt_odds = _alt_pick(dk_line, opp_logs_all, sk)
+                alt_rec, alt_evens, alt_odds = _alt_pick(dk_line, recent10, sk)
                 # Conflict resolution: streak (matchup-specific) beats MPA Special (rhythm) when they disagree
                 if streak_rec and alt_rec and streak_rec != alt_rec:
                     alt_rec = None
@@ -615,7 +615,7 @@ async def run_analysis(selected_date: str = None) -> Dict:
                 recent_vals = [float(l[sk]) for l in recent10]
                 line_rec, line_rec_pct, line_rec_hits = _line_pick(dk_line, [float(l[sk]) for l in opp_logs_all[:10]], opp_logs_all[:10], sk)
                 streak_rec, streak_n = _streak_pick(dk_line, opp_logs_all, sk)
-                alt_rec, alt_evens, alt_odds = _alt_pick(dk_line, opp_logs_all, sk)
+                alt_rec, alt_evens, alt_odds = _alt_pick(dk_line, recent10, sk)
                 # Conflict resolution: streak (matchup-specific) beats MPA Special (rhythm) when they disagree
                 if streak_rec and alt_rec and streak_rec != alt_rec:
                     alt_rec = None
@@ -989,6 +989,7 @@ footer{text-align:center;padding:32px 24px;color:#4b5563;font-size:.78rem;border
   </div>
   <div class="all-section-hdr">
     <div class="all-section-title">🎯 All Patterns by Game</div>
+    <input id="playerSearchInput" type="text" placeholder="Search player…" oninput="applyAllFilters()" style="background:#111;color:#fff;border:1px solid #2a2a2a;border-radius:8px;padding:7px 14px;font-size:.85rem;font-family:'Source Sans Pro',sans-serif;outline:none;width:180px;margin-bottom:6px" />
     <div style="display:flex;gap:8px;flex-wrap:wrap" id="allFilterBar">
       <button class="filter-btn active" onclick="filterAll('ALL')">All</button>
       <button class="filter-btn" onclick="filterAll('PTS')">🏀 Pts</button>
@@ -1088,7 +1089,10 @@ function toggleSide(side){
 }
 
 function applyAllFilters(){
+  const searchQ=(document.getElementById('playerSearchInput')||{}).value||'';
+  const sq=searchQ.toLowerCase().trim();
   let filtered = activeAllStat==='ALL' ? allPicksData : allPicksData.filter(p=>p.stat===activeAllStat);
+  if(sq) filtered=filtered.filter(p=>(p.player||'').toLowerCase().includes(sq));
   if(sideFilter){
     filtered = filtered.filter(p => p.line_rec===sideFilter || p.streak_rec===sideFilter || p.alt_rec===sideFilter);
     // Rank by gap: biggest +gap first for OVERs, biggest -gap first for UNDERs
