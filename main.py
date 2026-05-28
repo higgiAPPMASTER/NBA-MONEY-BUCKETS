@@ -1117,44 +1117,52 @@ function renderTop10Cards(picks){
     const headshot=`https://a.espncdn.com/i/headshots/nba/players/full/${p.player_id}.png`;
     const tip=p.tipoff?new Date(p.tipoff).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',timeZoneName:'short'}):'';
     const statBlocks=stats.map(s=>{
-      // PATTERN only votes OVER on the sportsbook line if the pattern threshold
-      // actually clears the line. If pattern is "1+ threes" but line is 1.5,
-      // hitting the pattern does NOT clear the line, so it provides no OVER signal.
-      const patternClearsLine = s.has_consistency && (s.dk_line==null || (s.threshold && s.threshold > s.dk_line));
-      const votes={OVER:0,UNDER:0};
-      if(patternClearsLine) votes.OVER++;
-      if(s.line_rec) votes[s.line_rec]++;
-      if(s.streak_rec) votes[s.streak_rec]++;
-      if(s.alt_rec) votes[s.alt_rec]++;
-      const tot=votes.OVER+votes.UNDER;
-      const verdict=tot?(votes.OVER>votes.UNDER?'OVER':votes.UNDER>votes.OVER?'UNDER':null):null;
-      // Flag pattern-below-line as a warning so user sees the mismatch
-      const patternMismatch = s.has_consistency && s.dk_line!=null && s.threshold && s.threshold <= s.dk_line;
-      const badges=[];
+      // VERDICT RULES:
+      // 1) PATTERN is the strongest signal. If it qualifies, the pick IS the pattern
+      //    (e.g. "PATTERN 5+ REB") — MPA/LINE/STREAK do NOT override it with UNDER.
+      // 2) If no pattern, fall back to vote-based verdict from LINE/STREAK/MPA.
+      let verdict=null, verdictText='', verdictColor='', verdictBg='';
       if(s.has_consistency){
-        const pBg = patternMismatch ? 'rgba(120,120,120,.18)' : 'rgba(253,184,39,.18)';
-        const pFg = patternMismatch ? '#888' : '#FDB827';
-        const pSuffix = patternMismatch ? ` <span style="color:#f87171;font-weight:700">⚠ ${s.threshold} ≤ ${s.dk_line}</span>` : '';
-        badges.push(`<span style="background:${pBg};color:${pFg};padding:4px 10px;border-radius:6px;font-size:.82rem;font-weight:800">PATTERN ${s.hits}/${s.games} (${s.pct}%)${pSuffix}</span>`);
+        verdict='PATTERN';
+        verdictText=`PATTERN ${s.threshold}+`;
+        verdictColor='#FDB827';
+        verdictBg='rgba(253,184,39,.18)';
+      } else {
+        const votes={OVER:0,UNDER:0};
+        if(s.line_rec) votes[s.line_rec]++;
+        if(s.streak_rec) votes[s.streak_rec]++;
+        if(s.alt_rec) votes[s.alt_rec]++;
+        const tot=votes.OVER+votes.UNDER;
+        if(tot && votes.OVER!==votes.UNDER){
+          verdict=votes.OVER>votes.UNDER?'OVER':'UNDER';
+          verdictText=`${verdict}${s.dk_line?' '+s.dk_line:''}`;
+          verdictColor=dirColor(verdict);
+          verdictBg=dirBg(verdict);
+        }
       }
-      if(s.line_rec) badges.push(`<span style="background:${dirBg(s.line_rec)};color:${dirColor(s.line_rec)};padding:4px 10px;border-radius:6px;font-size:.82rem;font-weight:800">LINE ${s.line_rec} ${s.line_rec_hits} (${s.line_rec_pct}%)</span>`);
-      if(s.streak_rec) badges.push(`<span style="background:${dirBg(s.streak_rec)};color:${dirColor(s.streak_rec)};padding:4px 10px;border-radius:6px;font-size:.82rem;font-weight:800">🔥 ${s.streak_n} STRAIGHT ${s.streak_rec}</span>`);
-      if(s.alt_rec) badges.push(`<span style="background:${dirBg(s.alt_rec)};color:${dirColor(s.alt_rec)};padding:4px 10px;border-radius:6px;font-size:.82rem;font-weight:800">⭐ MPA ${s.alt_rec}</span>`);
-      const verdictPill=verdict?`<span style="background:${dirBg(verdict)};color:${dirColor(verdict)};border:1px solid ${dirColor(verdict)}66;padding:5px 12px;border-radius:7px;font-size:.92rem;font-weight:900;white-space:nowrap">${verdict}${s.dk_line?' '+s.dk_line:''}</span>`:'';
-      // Data line: shows last-10 hit count vs threshold AND vs sportsbook line so user sees both pieces of evidence.
-      const dataBits=[];
-      if(s.threshold) dataBits.push(`<span style="color:#FDB827">${s.hits}/${s.games}</span> hit ${s.threshold}+`);
+      const verdictPill = verdict ? `<span style="background:${verdictBg};color:${verdictColor};border:1px solid ${verdictColor}66;padding:5px 12px;border-radius:7px;font-size:.92rem;font-weight:900;white-space:nowrap">${verdictText}</span>` : '';
+      // Suppress any UNDER signal badges when PATTERN is the pick — they'd contradict
+      // the pattern. Only show signals that agree (OVER) as reinforcement.
+      const patternOverride = s.has_consistency;
+      const badges=[];
+      if(s.has_consistency) badges.push(`<span style="background:rgba(253,184,39,.18);color:#FDB827;padding:4px 10px;border-radius:6px;font-size:.82rem;font-weight:800">PATTERN ${s.hits}/${s.games} (${s.pct}%) vs ${p.opp}</span>`);
+      if(s.line_rec && (!patternOverride || s.line_rec==='OVER')) badges.push(`<span style="background:${dirBg(s.line_rec)};color:${dirColor(s.line_rec)};padding:4px 10px;border-radius:6px;font-size:.82rem;font-weight:800">LINE ${s.line_rec} ${s.line_rec_hits} (${s.line_rec_pct}%)</span>`);
+      if(s.streak_rec && (!patternOverride || s.streak_rec==='OVER')) badges.push(`<span style="background:${dirBg(s.streak_rec)};color:${dirColor(s.streak_rec)};padding:4px 10px;border-radius:6px;font-size:.82rem;font-weight:800">🔥 ${s.streak_n} STRAIGHT ${s.streak_rec}</span>`);
+      if(s.alt_rec && (!patternOverride || s.alt_rec==='OVER')) badges.push(`<span style="background:${dirBg(s.alt_rec)};color:${dirColor(s.alt_rec)};padding:4px 10px;border-radius:6px;font-size:.82rem;font-weight:800">⭐ MPA ${s.alt_rec}</span>`);
+      // Data lines: spell out exactly what the user sees on a bet slip
+      const lines=[];
+      if(s.dk_line!=null) lines.push(`<div style="font-size:.86rem;color:#ddd;margin-bottom:3px"><strong style="color:#fff">Line ${s.dk_line}</strong> ${s.stat_label}</div>`);
       if(s.dk_line!=null && s.dk_hits!=null){
         const over=s.dk_hits, under=10-over;
-        dataBits.push(`vs line <strong style="color:#fff">${s.dk_line}</strong>: <span style="color:#4ade80">${over} O</span> · <span style="color:#f87171">${under} U</span>`);
+        lines.push(`<div style="font-size:.8rem;color:#aaa;margin-bottom:3px">vs line last 10 (vs ${p.opp}): <span style="color:#4ade80;font-weight:700">${over} over</span> · <span style="color:#f87171;font-weight:700">${under} under</span></div>`);
       }
-      const dataLine=dataBits.length?`<div style="font-size:.82rem;color:#aaa;margin-bottom:8px;line-height:1.4">${dataBits.join(' &nbsp;·&nbsp; ')}</div>`:'';
+      if(s.threshold) lines.push(`<div style="font-size:.8rem;color:#aaa;margin-bottom:8px">pattern: hit <strong style="color:#FDB827">${s.threshold}+</strong> ${s.stat_label} in <strong style="color:#fff">${s.hits}/${s.games}</strong> vs ${p.opp}</div>`);
       return `<div style="background:#0d0d0d;border:1px solid #1f1f1f;border-radius:10px;padding:12px 14px;margin-top:9px">
         <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:7px">
-          <div style="font-size:.98rem;min-width:0"><span>${s.emoji}</span> <strong style="color:#fff">${s.threshold?s.threshold+'+ ':''}${s.stat_label}</strong>${s.dk_line?` <span style="color:#888;font-size:.85rem">· line ${s.dk_line}</span>`:''}</div>
+          <div style="font-size:.98rem;min-width:0"><span>${s.emoji}</span> <strong style="color:#fff">${s.stat_label}</strong></div>
           ${verdictPill}
         </div>
-        ${dataLine}
+        ${lines.join('')}
         <div style="display:flex;flex-wrap:wrap;gap:6px">${badges.join('')}</div>
       </div>`;
     }).join('');
