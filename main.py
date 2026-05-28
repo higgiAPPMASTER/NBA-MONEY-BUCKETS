@@ -1156,7 +1156,7 @@ function renderTop10Cards(picks){
       if(s.has_consistency) badges.push(`<span style="background:rgba(253,184,39,.18);color:#FDB827;padding:4px 10px;border-radius:6px;font-size:.82rem;font-weight:800">PATTERN ${s.hits}/${s.games} (${s.pct}%) vs ${p.opp} ${(p.location||'').toLowerCase()}</span>`);
       if(s.line_rec && (!patternOverride || s.line_rec==='OVER')) badges.push(`<span style="background:${dirBg(s.line_rec)};color:${dirColor(s.line_rec)};padding:4px 10px;border-radius:6px;font-size:.82rem;font-weight:800">LINE ${s.line_rec} ${s.line_rec_hits} (${s.line_rec_pct}%)</span>`);
       if(s.streak_rec && (!patternOverride || s.streak_rec==='OVER')) badges.push(`<span style="background:${dirBg(s.streak_rec)};color:${dirColor(s.streak_rec)};padding:4px 10px;border-radius:6px;font-size:.82rem;font-weight:800">🔥 ${s.streak_n} STRAIGHT ${s.streak_rec}</span>`);
-      if(s.alt_rec && (!patternOverride || s.alt_rec==='OVER')) badges.push(`<span style="background:${dirBg(s.alt_rec)};color:${dirColor(s.alt_rec)};padding:4px 10px;border-radius:6px;font-size:.82rem;font-weight:800">⭐ MPA ${s.alt_rec}</span>`);
+      if(s.alt_rec && (!patternOverride || s.alt_rec==='OVER')) badges.push(`<span style="background:${dirBg(s.alt_rec)};color:${dirColor(s.alt_rec)};padding:4px 10px;border-radius:6px;font-size:.82rem;font-weight:800">⭐ MPA ${s.alt_rec}${s.alt_evens&&s.alt_odds?` — even: ${s.alt_evens} · odd: ${s.alt_odds}`:''}</span>`);
       // Data lines: spell out exactly what the user sees on a bet slip
       const lines=[];
       if(s.dk_line!=null) lines.push(`<div style="font-size:.86rem;color:#ddd;margin-bottom:3px"><strong style="color:#fff">Line ${s.dk_line}</strong> ${s.stat_label}</div>`);
@@ -1248,7 +1248,7 @@ function renderAllByGame(picks){
         const loc=(p.location||'').toLowerCase();
         if(p.line_rec) badges.push(`<span style="background:${p.line_rec==='UNDER'?'rgba(239,68,68,.15)':'rgba(74,222,128,.15)'};color:${p.line_rec==='UNDER'?'#f87171':'#4ade80'};padding:2px 7px;border-radius:6px;font-size:.65rem;font-weight:700;margin-right:4px">LINE ${p.line_rec} ${p.dk_line} ${p.line_rec_pct}% vs ${p.opp} ${loc}</span>`);
         if(p.streak_rec) badges.push(`<span style="background:rgba(249,115,22,.15);color:#fb923c;padding:2px 7px;border-radius:6px;font-size:.65rem;font-weight:700;margin-right:4px">🔥 ${p.streak_n} in a row ${p.streak_rec} ${p.dk_line} vs ${p.opp} ${loc}</span>`);
-        if(p.alt_rec) badges.push(`<span style="background:rgba(168,85,247,.15);color:#c084fc;padding:2px 7px;border-radius:6px;font-size:.65rem;font-weight:700;margin-right:4px">⭐ MPA SPECIAL ${p.alt_rec} ${p.dk_line} vs ${p.opp} ${loc}</span>`);
+        if(p.alt_rec) badges.push(`<span style="background:rgba(168,85,247,.15);color:#c084fc;padding:2px 7px;border-radius:6px;font-size:.65rem;font-weight:700;margin-right:4px">⭐ MPA SPECIAL ${p.alt_rec} ${p.dk_line} vs ${p.opp} ${loc}${p.alt_evens&&p.alt_odds?` (even: ${p.alt_evens} · odd: ${p.alt_odds})`:''}</span>`);
         const patternLine = p.has_consistency
           ? `${p.threshold}+ ${p.stat_label}  ${p.hits}/${p.games} vs ${p.opp}${p.fd_line ? `  <span class="fd-inline"> ${p.fd_line}</span>` : ''}`
           : `${p.stat_label} vs ${p.opp}${p.dk_line ? `  line ${p.dk_line}` : ''}`;
@@ -1297,7 +1297,7 @@ function renderSignalLists(picks){
   const sl=document.getElementById('streakList');
   if(sl) sl.innerHTML = streaks.length ? streaks.map(p=>row(p,`<span style="background:${dirBg(p.streak_rec)};color:${dirColor(p.streak_rec)};border:1px solid ${dirColor(p.streak_rec)}55;padding:4px 9px;border-radius:6px;font-weight:900;font-size:.72rem;white-space:nowrap">🔥 ${p.streak_n} ${p.streak_rec}</span>`)).join('') : '<div style="padding:18px;text-align:center;color:#555;font-size:.78rem">No streaks today</div>';
   const ml=document.getElementById('mpaList');
-  if(ml) ml.innerHTML = mpas.length ? mpas.map(p=>row(p,`<span style="background:${dirBg(p.alt_rec)};color:${dirColor(p.alt_rec)};border:1px solid ${dirColor(p.alt_rec)}55;padding:4px 9px;border-radius:6px;font-weight:900;font-size:.72rem;white-space:nowrap">⭐ ${p.alt_rec}</span>`)).join('') : '<div style="padding:18px;text-align:center;color:#555;font-size:.78rem">No MPA specials today</div>';
+  if(ml) ml.innerHTML = mpas.length ? mpas.map(p=>row(p,`<span style="background:${dirBg(p.alt_rec)};color:${dirColor(p.alt_rec)};border:1px solid ${dirColor(p.alt_rec)}55;padding:4px 9px;border-radius:6px;font-weight:900;font-size:.72rem;white-space:nowrap">⭐ ${p.alt_rec}${p.alt_evens&&p.alt_odds?` (even: ${p.alt_evens} · odd: ${p.alt_odds})`:''}</span>`)).join('') : '<div style="padding:18px;text-align:center;color:#555;font-size:.78rem">No MPA specials today</div>';
 }
 function togglePlayer(id,hdr){
   const el=document.getElementById(id);
