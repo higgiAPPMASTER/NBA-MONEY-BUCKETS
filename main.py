@@ -1,3 +1,4 @@
+
 # NBA Stats API blocks server IPs. ESPN gives schedule + rosters + player game logs free.
 
 import asyncio, pathlib, time
@@ -47,7 +48,7 @@ HIT_RATE_MIN  = 0.75
 MIN_GAMES     = 2
 MIN_MINUTES   = 10.0
 ESPN_SEASONS  = [2026, 2025, 2024, 2023, 2022, 2021, 2020]
-TOP_N         = 10
+TOP_N         = 12
 
 ODDS_API_BASE   = "https://api.the-odds-api.com/v4"
 ODDS_MARKET_MAP = {
@@ -59,7 +60,7 @@ ODDS_MARKET_MAP = {
 MIN_GAMES     = 3
 MIN_MINUTES   = 10.0
 ESPN_SEASONS  = [2026, 2025, 2024, 2023, 2022, 2021, 2020]   # ESPN uses season END year — 7 seasons for full career H/A history
-TOP_N         = 10
+TOP_N         = 12
 
 # ─── Cache ────────────────────────────────────────────────────────────────────
 _cache: Dict[str, Any] = {}  # kept for compat
@@ -517,8 +518,10 @@ async def run_analysis(selected_date: str = None) -> Dict:
             # prior teams after trades — e.g. Fox's SAC home games vs OKC don't
             # count toward his SAS home record vs OKC).
             all_logs_player = logs_by_player.get(pid, [])
-            opp_logs = [l for l in all_logs_player
-                        if l['opp'] == a and l['location'] == 'Home' and l.get('player_team') == h][:10]
+            # All matchup-specific games (uncapped) for streak detection.
+            opp_logs_all = [l for l in all_logs_player
+                            if l['opp'] == a and l['location'] == 'Home' and l.get('player_team') == h]
+            opp_logs = opp_logs_all[:10]
             for sk, sc in STAT_CONFIG.items():
                 vals = [float(l[sk]) for l in opp_logs]
                 result = find_best_threshold(vals, sc['thresholds'])
@@ -538,7 +541,7 @@ async def run_analysis(selected_date: str = None) -> Dict:
                 recent10 = all_logs_player[:10]
                 recent_vals = [float(l[sk]) for l in recent10]
                 line_rec, line_rec_pct, line_rec_hits = _line_pick(dk_line, recent_vals, recent10, sk)
-                streak_rec, streak_n = _streak_pick(dk_line, recent10, sk)
+                streak_rec, streak_n = _streak_pick(dk_line, opp_logs_all, sk)
                 alt_rec, alt_evens, alt_odds = _alt_pick(dk_line, recent10, sk)
                 # Include pick if EITHER consistency pattern OR streak OR MPA Special
                 if not result and not streak_rec and not alt_rec:
@@ -568,8 +571,9 @@ async def run_analysis(selected_date: str = None) -> Dict:
             if not has_any_line:
                 continue
             all_logs_player = logs_by_player.get(pid, [])
-            opp_logs = [l for l in all_logs_player
-                        if l['opp'] == h and l['location'] == 'Away' and l.get('player_team') == a][:10]
+            opp_logs_all = [l for l in all_logs_player
+                            if l['opp'] == h and l['location'] == 'Away' and l.get('player_team') == a]
+            opp_logs = opp_logs_all[:10]
             for sk, sc in STAT_CONFIG.items():
                 vals = [float(l[sk]) for l in opp_logs]
                 result = find_best_threshold(vals, sc['thresholds'])
@@ -586,7 +590,7 @@ async def run_analysis(selected_date: str = None) -> Dict:
                 recent10 = all_logs_player[:10]
                 recent_vals = [float(l[sk]) for l in recent10]
                 line_rec, line_rec_pct, line_rec_hits = _line_pick(dk_line, recent_vals, recent10, sk)
-                streak_rec, streak_n = _streak_pick(dk_line, recent10, sk)
+                streak_rec, streak_n = _streak_pick(dk_line, opp_logs_all, sk)
                 alt_rec, alt_evens, alt_odds = _alt_pick(dk_line, recent10, sk)
                 if not result and not streak_rec and not alt_rec:
                     continue
@@ -1054,7 +1058,7 @@ function renderTop10Cards(picks){
       <div class="pick-pattern">${p.threshold}+ ${p.stat_label} in ${p.hits} of ${p.games} ${p.location.toLowerCase()} games vs ${p.opp} (incl. playoffs)</div>
       <div class="fd-line-badge" style="background:rgba(245,158,11,.12);border-color:rgba(245,158,11,.35);margin-top:6px;color:#fbbf24"><strong> PATTERN PICK:</strong> OVER ${p.threshold-0.5} ${p.stat_label} <span style="color:#fff">(${p.pct}%)</span></div>
       ${p.line_rec ? `<div class="fd-line-badge" style="background:${p.line_rec==='UNDER'?'rgba(239,68,68,.12)':'rgba(74,222,128,.12)'};border-color:${p.line_rec==='UNDER'?'rgba(239,68,68,.35)':'rgba(74,222,128,.35)'};margin-top:4px;color:${p.line_rec==='UNDER'?'#f87171':'#4ade80'}"><strong> LINE PICK:</strong> ${p.line_rec} ${p.dk_line} ${p.stat_label} <span style="color:#fff">(${p.line_rec_hits} = ${p.line_rec_pct}%)</span></div>` : ""}
-      ${p.streak_rec ? `<div class="fd-line-badge" style="background:rgba(249,115,22,.15);border-color:rgba(249,115,22,.4);margin-top:4px;color:#fb923c"><strong>🔥 STREAK PICK:</strong> ${p.streak_rec} ${p.dk_line} <span style="color:#fff">(${p.streak_n} games in a row)</span></div>` : ""}
+      ${p.streak_rec ? `<div class="fd-line-badge" style="background:rgba(249,115,22,.15);border-color:rgba(249,115,22,.4);margin-top:4px;color:#fb923c"><strong>🔥 STREAK PICK:</strong> Hit line ${p.streak_n} times • ${p.streak_rec} ${p.dk_line}</div>` : ""}
       ${p.alt_rec ? `<div class="fd-line-badge" style="background:rgba(168,85,247,.15);border-color:rgba(168,85,247,.4);margin-top:4px;color:#c084fc"><strong>⭐ MPA SPECIAL PICK:</strong> ${p.alt_rec} ${p.dk_line}</div>` : ""}
       ${p.dk_line ? `<div class="fd-line-badge" style="background:rgba(99,102,241,.12);border-color:rgba(99,102,241,.3);margin-top:4px;font-size:11px;color:#9ca3af">♠️ Book line: <strong style="color:#fff">${p.dk_line}</strong> ${p.dk_over_odds ? "O " + p.dk_over_odds : ""} ${p.dk_under_odds ? "U " + p.dk_under_odds : ""}</div>` : ""}
       <div class="pick-matchup"> Today: ${p.matchup}</div>
@@ -1110,7 +1114,7 @@ function renderAllByGame(picks){
         const badges = [];
         if(p.has_consistency) badges.push(`<span style="background:rgba(245,158,11,.15);color:#fbbf24;padding:2px 7px;border-radius:6px;font-size:.65rem;font-weight:700;margin-right:4px">PATTERN ${p.pct}%</span>`);
         if(p.line_rec) badges.push(`<span style="background:${p.line_rec==='UNDER'?'rgba(239,68,68,.15)':'rgba(74,222,128,.15)'};color:${p.line_rec==='UNDER'?'#f87171':'#4ade80'};padding:2px 7px;border-radius:6px;font-size:.65rem;font-weight:700;margin-right:4px">LINE ${p.line_rec} ${p.line_rec_pct}%</span>`);
-        if(p.streak_rec) badges.push(`<span style="background:rgba(249,115,22,.15);color:#fb923c;padding:2px 7px;border-radius:6px;font-size:.65rem;font-weight:700;margin-right:4px">🔥 STREAK ${p.streak_rec} (${p.streak_n})</span>`);
+        if(p.streak_rec) badges.push(`<span style="background:rgba(249,115,22,.15);color:#fb923c;padding:2px 7px;border-radius:6px;font-size:.65rem;font-weight:700;margin-right:4px">🔥 Hit line ${p.streak_n} times • STREAK ${p.streak_rec}</span>`);
         if(p.alt_rec) badges.push(`<span style="background:rgba(168,85,247,.15);color:#c084fc;padding:2px 7px;border-radius:6px;font-size:.65rem;font-weight:700;margin-right:4px">⭐ MPA ${p.alt_rec}</span>`);
         const patternLine = p.has_consistency
           ? `${p.threshold}+ ${p.stat_label}  ${p.hits}/${p.games} ${p.location.toLowerCase()} vs ${p.opp}${p.fd_line ? `  <span class="fd-inline"> ${p.fd_line}</span>` : ''}`
