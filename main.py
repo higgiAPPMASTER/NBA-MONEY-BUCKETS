@@ -7,7 +7,7 @@ import os
 import hashlib
 import re
 import unicodedata
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Dict, List, Optional, Any
 
 import httpx
@@ -676,7 +676,9 @@ async def run_analysis(selected_date: str = None) -> Dict:
             + _json.dumps(result).replace('</', '<\\/')
             + ';</script></head>'
         )
-        _snapshot_html = MAIN_HTML.replace("__TODAY__", today_str).replace('</head>', _inject, 1)
+        from datetime import datetime as _dt, timedelta as _td
+        _tomorrow_str = (_dt.fromisoformat(today_str) + _td(days=1)).date().isoformat()
+        _snapshot_html = MAIN_HTML.replace("__TODAY__", today_str).replace("__TOMORROW__", _tomorrow_str).replace('</head>', _inject, 1)
         push_picks_to_replit("nba", result, html=_snapshot_html)
     except Exception as _e:
         print(f"[replit_push] nba push failed: {_e}")
@@ -913,7 +915,7 @@ footer{text-align:center;padding:32px 24px;color:#4b5563;font-size:.78rem;border
   <h2 style="font-family:'Playfair Display',serif;font-size:1.5rem;font-weight:700;color:#fff;margin-bottom:20px">Run Today's Picks</h2>
   <div class="date-row">
     <label>Date</label>
-    <input type="date" id="datePicker" value="__TODAY__">
+    <input type="date" id="datePicker" value="__TODAY__" min="__TODAY__" max="__TOMORROW__">
   </div>
   <div style="text-align:center"><button class="btn btn-run" id="runBtn" onclick="runPicks()">Run Picks</button></div>
 </div>
@@ -1290,7 +1292,8 @@ async def verify_token_nba(request: Request):
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
     today_iso = date.today().isoformat()
-    return HTMLResponse(MAIN_HTML.replace("__TODAY__", today_iso))
+    tomorrow_iso = (date.today() + timedelta(days=1)).isoformat()
+    return HTMLResponse(MAIN_HTML.replace("__TODAY__", today_iso).replace("__TOMORROW__", tomorrow_iso))
 
 @app.get("/login")
 async def login_get():
