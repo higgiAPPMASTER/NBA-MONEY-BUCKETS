@@ -530,7 +530,7 @@ async def run_analysis(selected_date: str = None) -> Dict:
             all_logs_player = logs_by_player.get(pid, [])
             # All matchup-specific games (uncapped) for streak detection.
             opp_logs_all = [l for l in all_logs_player
-                            if l['opp'] == a and l['location'] == 'Home' and l.get('player_team') == h]
+                            if l['opp'] == a and l.get('player_team') == h]
             opp_logs = opp_logs_all[:10]
             for sk, sc in STAT_CONFIG.items():
                 vals = [float(l[sk]) for l in opp_logs]
@@ -584,7 +584,7 @@ async def run_analysis(selected_date: str = None) -> Dict:
                 continue
             all_logs_player = logs_by_player.get(pid, [])
             opp_logs_all = [l for l in all_logs_player
-                            if l['opp'] == h and l['location'] == 'Away' and l.get('player_team') == a]
+                            if l['opp'] == h and l.get('player_team') == a]
             opp_logs = opp_logs_all[:10]
             for sk, sc in STAT_CONFIG.items():
                 vals = [float(l[sk]) for l in opp_logs]
@@ -975,7 +975,6 @@ footer{text-align:center;padding:32px 24px;color:#4b5563;font-size:.78rem;border
         <th style="padding:12px 14px;text-align:left;color:#f59e0b;font-size:.7rem;font-weight:700;text-transform:uppercase;letter-spacing:.12em;background:#1a1a1a;white-space:nowrap">Opponent</th>
         <th style="padding:12px 14px;text-align:left;color:#f59e0b;font-size:.7rem;font-weight:700;text-transform:uppercase;letter-spacing:.12em;background:#1a1a1a;white-space:nowrap">Line</th>
         <th style="padding:12px 14px;text-align:left;color:#f59e0b;font-size:.7rem;font-weight:700;text-transform:uppercase;letter-spacing:.12em;background:#1a1a1a;white-space:nowrap">Avg vs Opp</th>
-        <th style="padding:12px 14px;text-align:left;color:#f59e0b;font-size:.7rem;font-weight:700;text-transform:uppercase;letter-spacing:.12em;background:#1a1a1a;white-space:nowrap">Gap</th>
         <th style="padding:12px 14px;text-align:left;color:#f59e0b;font-size:.7rem;font-weight:700;text-transform:uppercase;letter-spacing:.12em;background:#1a1a1a;white-space:nowrap">Games</th>
         <th style="padding:12px 14px;text-align:left;color:#f59e0b;font-size:.7rem;font-weight:700;text-transform:uppercase;letter-spacing:.12em;background:#1a1a1a;white-space:nowrap">History</th>
         <th style="padding:12px 14px;text-align:left;color:#f59e0b;font-size:.7rem;font-weight:700;text-transform:uppercase;letter-spacing:.12em;background:#1a1a1a;white-space:nowrap">Pick</th>
@@ -1077,13 +1076,28 @@ function renderTop10Cards(picks){
       <div class="pick-player">${p.player}</div>
       <div class="pick-team">${p.team_name} <span class="loc-badge">${p.location==='Home'?' Home':' Away'}</span></div>
       <div class="stat-strip">${statTag(p.stat)}</div>
-      <div class="pick-pattern">${p.threshold}+ ${p.stat_label} in ${p.hits} of ${p.games} ${p.location.toLowerCase()} games vs ${p.opp} (incl. playoffs)</div>
-      <div class="fd-line-badge" style="background:rgba(245,158,11,.12);border-color:rgba(245,158,11,.35);margin-top:6px;color:#fbbf24"><strong> PATTERN PICK:</strong> OVER ${p.threshold-0.5} ${p.stat_label} <span style="color:#fff">(${p.pct}%)</span></div>
-      ${p.line_rec ? `<div class="fd-line-badge" style="background:${p.line_rec==='UNDER'?'rgba(239,68,68,.12)':'rgba(74,222,128,.12)'};border-color:${p.line_rec==='UNDER'?'rgba(239,68,68,.35)':'rgba(74,222,128,.35)'};margin-top:4px;color:${p.line_rec==='UNDER'?'#f87171':'#4ade80'}"><strong> LINE PICK:</strong> ${p.line_rec} ${p.dk_line} ${p.stat_label} ${p.location==='Home'?'at home':'on the road'} vs ${p.opp} <span style="color:#fff">(${p.line_rec_hits} = ${p.line_rec_pct}%)</span></div>` : ""}
-      ${p.streak_rec ? `<div class="fd-line-badge" style="background:rgba(249,115,22,.15);border-color:rgba(249,115,22,.4);margin-top:4px;color:#fb923c"><strong>🔥 STREAK PICK:</strong> ${p.streak_n} in a row ${p.streak_rec} ${p.dk_line} ${p.location==='Home'?'at home':'on the road'} vs ${p.opp}</div>` : ""}
-      ${p.alt_rec ? `<div class="fd-line-badge" style="background:rgba(168,85,247,.15);border-color:rgba(168,85,247,.4);margin-top:4px;color:#c084fc"><strong>⭐ MPA SPECIAL PICK:</strong> ${p.alt_rec} ${p.dk_line} ${p.location==='Home'?'at home':'on the road'} vs ${p.opp}</div>` : ""}
-      ${p.dk_line ? `<div class="fd-line-badge" style="background:rgba(99,102,241,.12);border-color:rgba(99,102,241,.3);margin-top:4px;font-size:11px;color:#9ca3af">♠️ Book line: <strong style="color:#fff">${p.dk_line}</strong> ${p.dk_over_odds ? "O " + p.dk_over_odds : ""} ${p.dk_under_odds ? "U " + p.dk_under_odds : ""}</div>` : ""}
-      <div class="pick-matchup"> Today: ${p.matchup}</div>
+      ${(()=>{
+        const dirColor=d=>d==='OVER'?'#4ade80':d==='UNDER'?'#f87171':'#9ca3af';
+        const dirBg=d=>d==='OVER'?'rgba(74,222,128,.12)':d==='UNDER'?'rgba(239,68,68,.12)':'rgba(156,163,175,.1)';
+        const row=(label,labelColor,info,dir)=>`<div style="display:grid;grid-template-columns:90px 1fr auto;align-items:center;gap:8px;padding:5px 8px;border-radius:6px;background:#0d0d0d;margin-top:3px"><span style="color:${labelColor};font-weight:700;font-size:.7rem;letter-spacing:.04em">${label}</span><span style="color:#bbb;font-size:.75rem">${info}</span>${dir?`<span style="color:${dirColor(dir)};background:${dirBg(dir)};padding:2px 8px;border-radius:5px;font-weight:700;font-size:.7rem">${dir}</span>`:''}</div>`;
+        const votes={OVER:0,UNDER:0};
+        if(p.line_rec) votes[p.line_rec]++;
+        if(p.streak_rec) votes[p.streak_rec]++;
+        if(p.alt_rec) votes[p.alt_rec]++;
+        const total=votes.OVER+votes.UNDER;
+        const verdict=total?(votes.OVER>votes.UNDER?'OVER':votes.UNDER>votes.OVER?'UNDER':null):null;
+        const verdictCount=verdict?Math.max(votes.OVER,votes.UNDER):0;
+        let rows='';
+        if(p.has_consistency) rows+=row('PATTERN','#fbbf24',`${p.hits}/${p.games} vs ${p.opp} · ${p.pct}%`,'OVER');
+        if(p.line_rec) rows+=row('LINE','#60a5fa',`${p.line_rec_hits} = ${p.line_rec_pct}% vs ${p.opp}`,p.line_rec);
+        if(p.streak_rec) rows+=row('🔥 STREAK','#fb923c',`${p.streak_n} in a row vs ${p.opp}`,p.streak_rec);
+        if(p.alt_rec) rows+=row('⭐ MPA','#c084fc',`alternation pattern vs ${p.opp}`,p.alt_rec);
+        const header=`<div style="margin-top:6px;padding:6px 8px;background:#1a1a1a;border-radius:6px;font-size:.78rem;color:#ddd"><strong style="color:#fff">${p.threshold||'—'}+ ${p.stat_label}</strong> vs ${p.opp}${p.dk_line?` · line <strong style="color:#fff">${p.dk_line}</strong>`:''}</div>`;
+        const verdictBar=verdict?`<div style="margin-top:6px;padding:7px 10px;border-radius:6px;background:${dirBg(verdict)};border:1px solid ${dirColor(verdict)}55;color:${dirColor(verdict)};font-weight:800;font-size:.85rem;text-align:center">→ VERDICT: ${verdict} ${p.dk_line||''} <span style="color:#aaa;font-weight:600;font-size:.72rem">(${verdictCount} of ${total} agree)</span></div>`:'';
+        const book=p.dk_line?`<div style="margin-top:5px;font-size:.7rem;color:#888;text-align:center">♠️ Book: ${p.dk_line}${p.dk_over_odds?` · O ${p.dk_over_odds}`:''}${p.dk_under_odds?` · U ${p.dk_under_odds}`:''}</div>`:'';
+        return header+rows+verdictBar+book;
+      })()}
+      <div class="pick-matchup" style="margin-top:6px"> Today: ${p.matchup}</div>
       <div class="bar-wrap"><div class="bar-fill ${bc}" style="width:${Math.min(p.pct,100)}%"></div></div>
       <div class="stats-row"><span class="games-chip">${p.hits}/${p.games} games</span><span class="pct ${pc}">${p.pct}%</span></div>
     </div>`;
@@ -1135,18 +1149,18 @@ function renderAllByGame(picks){
         const [pc,bc]=pctClass(p.pct);
         const badges = [];
         if(p.has_consistency) badges.push(`<span style="background:rgba(245,158,11,.15);color:#fbbf24;padding:2px 7px;border-radius:6px;font-size:.65rem;font-weight:700;margin-right:4px">PATTERN ${p.pct}%</span>`);
-        if(p.line_rec) badges.push(`<span style="background:${p.line_rec==='UNDER'?'rgba(239,68,68,.15)':'rgba(74,222,128,.15)'};color:${p.line_rec==='UNDER'?'#f87171':'#4ade80'};padding:2px 7px;border-radius:6px;font-size:.65rem;font-weight:700;margin-right:4px">LINE ${p.line_rec} ${p.dk_line} ${p.line_rec_pct}% ${p.location==='Home'?'home':'away'} vs ${p.opp}</span>`);
-        if(p.streak_rec) badges.push(`<span style="background:rgba(249,115,22,.15);color:#fb923c;padding:2px 7px;border-radius:6px;font-size:.65rem;font-weight:700;margin-right:4px">🔥 ${p.streak_n} in a row ${p.streak_rec} ${p.dk_line} ${p.location==='Home'?'home':'away'} vs ${p.opp}</span>`);
-        if(p.alt_rec) badges.push(`<span style="background:rgba(168,85,247,.15);color:#c084fc;padding:2px 7px;border-radius:6px;font-size:.65rem;font-weight:700;margin-right:4px">⭐ MPA SPECIAL ${p.alt_rec} ${p.dk_line} ${p.location==='Home'?'home':'away'} vs ${p.opp}</span>`);
+        if(p.line_rec) badges.push(`<span style="background:${p.line_rec==='UNDER'?'rgba(239,68,68,.15)':'rgba(74,222,128,.15)'};color:${p.line_rec==='UNDER'?'#f87171':'#4ade80'};padding:2px 7px;border-radius:6px;font-size:.65rem;font-weight:700;margin-right:4px">LINE ${p.line_rec} ${p.dk_line} ${p.line_rec_pct}% vs ${p.opp}</span>`);
+        if(p.streak_rec) badges.push(`<span style="background:rgba(249,115,22,.15);color:#fb923c;padding:2px 7px;border-radius:6px;font-size:.65rem;font-weight:700;margin-right:4px">🔥 ${p.streak_n} in a row ${p.streak_rec} ${p.dk_line} vs ${p.opp}</span>`);
+        if(p.alt_rec) badges.push(`<span style="background:rgba(168,85,247,.15);color:#c084fc;padding:2px 7px;border-radius:6px;font-size:.65rem;font-weight:700;margin-right:4px">⭐ MPA SPECIAL ${p.alt_rec} ${p.dk_line} vs ${p.opp}</span>`);
         const patternLine = p.has_consistency
-          ? `${p.threshold}+ ${p.stat_label}  ${p.hits}/${p.games} ${p.location.toLowerCase()} vs ${p.opp}${p.fd_line ? `  <span class="fd-inline"> ${p.fd_line}</span>` : ''}`
+          ? `${p.threshold}+ ${p.stat_label}  ${p.hits}/${p.games} vs ${p.opp}${p.fd_line ? `  <span class="fd-inline"> ${p.fd_line}</span>` : ''}`
           : `${p.stat_label} vs ${p.opp}${p.dk_line ? `  line ${p.dk_line}` : ''}`;
         html+=`<div style="display:flex;align-items:center;gap:10px;padding:8px 14px 8px 38px;border-top:1px solid #1a1a1a">
           <div style="flex:1;min-width:0">
             <div style="color:#bbb;font-size:.78rem">${patternLine}</div>
             <div style="margin-top:4px;display:flex;flex-wrap:wrap;gap:3px">${badges.join('')}</div>
           </div>
-          ${p.gap!=null ? `<div style="text-align:right;margin-right:8px"><div style="font-size:.78rem;font-weight:800;color:${p.gap>0?'#4ade80':'#f87171'}">${p.gap>0?'+':''}${p.gap}</div><div style="color:#666;font-size:.6rem">gap</div></div>` : ''}
+          
           ${p.has_consistency ? `<div style="text-align:right"><div class="cr-pct ${pc}" style="font-size:.85rem;font-weight:800">${p.pct}%</div><div style="color:#666;font-size:.65rem">${p.hits}/${p.games}</div></div>` : ''}
         </div>`;
       }
@@ -1246,7 +1260,6 @@ function renderPropsSection(picks, nopick) {
       '<td style="padding:9px 12px;color:#999;font-size:.8rem">'+p.opp_name+'</td>' +
       '<td style="padding:9px 12px;font-family:monospace;font-weight:700">'+p.line+'</td>' +
       '<td style="padding:9px 12px;font-family:monospace;font-weight:700;color:'+clr+';font-size:1rem">'+(p.avg!=null?p.avg:'')+'</td>' +
-      '<td style="padding:9px 12px;font-family:monospace;color:'+clr+';font-weight:700">'+gap+'</td>' +
       '<td style="padding:9px 12px;color:#555">'+p.games+'g</td>' +
       '<td style="padding:9px 12px;font-family:monospace;font-size:.7rem;color:#555;max-width:130px">'+p.history+'</td>' +
       '<td style="padding:9px 12px"><span style="color:'+clr+';font-weight:900;font-size:.95rem">'+(p.pick==='OVER'?'O':p.pick==='UNDER'?'U':(p.pick||''))+'</span></td>' +
