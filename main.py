@@ -269,7 +269,7 @@ async def get_odds_lines(today_str):
             for ev in events:
                 r2 = await c.get(
                     f"{ODDS_API_BASE}/sports/{active_key}/events/{ev['id']}/odds",
-                    params={'apiKey': api_key, 'regions': 'us',
+                    params={'apiKey': api_key, 'regions': 'us,us2',
                             'markets': markets, 'oddsFormat': 'american'})
                 if r2.status_code != 200:
                     print(f'[OddsAPI] props {r2.status_code} for {ev.get("home_team","?")} game: {r2.text[:150]}')
@@ -549,7 +549,7 @@ async def run_analysis(selected_date: str = None) -> Dict:
                 # vs the opponent. recent10/recent_vals kept for any other use.
                 recent10 = all_logs_player[:10]
                 recent_vals = [float(l[sk]) for l in recent10]
-                line_rec, line_rec_pct, line_rec_hits = _line_pick(dk_line, [float(l[sk]) for l in opp_logs_all], opp_logs_all, sk)
+                line_rec, line_rec_pct, line_rec_hits = _line_pick(dk_line, [float(l[sk]) for l in opp_logs_all[:10]], opp_logs_all[:10], sk)
                 streak_rec, streak_n = _streak_pick(dk_line, opp_logs_all, sk)
                 alt_rec, alt_evens, alt_odds = _alt_pick(dk_line, opp_logs_all, sk)
                 # Conflict resolution: streak (matchup-specific) beats MPA Special (rhythm) when they disagree
@@ -601,7 +601,7 @@ async def run_analysis(selected_date: str = None) -> Dict:
                 dk_hits = sum(1 for l in last10 if float(l[sk]) > dk_line) if dk_line and last10 else None
                 recent10 = all_logs_player[:10]
                 recent_vals = [float(l[sk]) for l in recent10]
-                line_rec, line_rec_pct, line_rec_hits = _line_pick(dk_line, [float(l[sk]) for l in opp_logs_all], opp_logs_all, sk)
+                line_rec, line_rec_pct, line_rec_hits = _line_pick(dk_line, [float(l[sk]) for l in opp_logs_all[:10]], opp_logs_all[:10], sk)
                 streak_rec, streak_n = _streak_pick(dk_line, opp_logs_all, sk)
                 alt_rec, alt_evens, alt_odds = _alt_pick(dk_line, opp_logs_all, sk)
                 # Conflict resolution: streak (matchup-specific) beats MPA Special (rhythm) when they disagree
