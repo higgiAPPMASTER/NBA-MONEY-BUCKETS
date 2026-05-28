@@ -948,6 +948,22 @@ footer{text-align:center;padding:32px 24px;color:#4b5563;font-size:.78rem;border
 </div>
 <div id="content"></div>
 <div id="allPicksWrap" style="display:none">
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:18px" id="signalDropdowns">
+    <div style="background:#0e0e0e;border:1px solid #262626;border-radius:12px;overflow:hidden">
+      <div onclick="toggleSig('streakList',this)" style="display:flex;align-items:center;justify-content:space-between;padding:12px 16px;cursor:pointer;background:linear-gradient(135deg,rgba(249,115,22,.12),rgba(249,115,22,.02));border-bottom:1px solid #262626">
+        <div style="display:flex;align-items:center;gap:10px"><span style="font-size:1.1rem">🔥</span><span style="font-weight:900;color:#fb923c;letter-spacing:.05em">ALL STREAKS</span><span class="count-pill" id="streakCount">0</span></div>
+        <span class="sig-chev" style="color:#666;transition:transform .2s">▼</span>
+      </div>
+      <div id="streakList" style="display:none;max-height:360px;overflow-y:auto"></div>
+    </div>
+    <div style="background:#0e0e0e;border:1px solid #262626;border-radius:12px;overflow:hidden">
+      <div onclick="toggleSig('mpaList',this)" style="display:flex;align-items:center;justify-content:space-between;padding:12px 16px;cursor:pointer;background:linear-gradient(135deg,rgba(168,85,247,.12),rgba(168,85,247,.02));border-bottom:1px solid #262626">
+        <div style="display:flex;align-items:center;gap:10px"><span style="font-size:1.1rem">⭐</span><span style="font-weight:900;color:#c084fc;letter-spacing:.05em">ALL MPA SPECIALS</span><span class="count-pill" id="mpaCount">0</span></div>
+        <span class="sig-chev" style="color:#666;transition:transform .2s">▼</span>
+      </div>
+      <div id="mpaList" style="display:none;max-height:360px;overflow-y:auto"></div>
+    </div>
+  </div>
   <div class="total-banner">
     <div class="tb-left">
       <div class="tb-ico">📋</div>
@@ -1205,6 +1221,33 @@ function renderAllByGame(picks){
   el.innerHTML=html;
 }
 
+function toggleSig(id,hdr){
+  const el=document.getElementById(id);
+  if(!el)return;
+  const ch=hdr.querySelector('.sig-chev');
+  const hidden=el.style.display==='none';
+  el.style.display=hidden?'block':'none';
+  if(ch)ch.style.transform=hidden?'rotate(180deg)':'';
+}
+function renderSignalLists(picks){
+  const streaks=(picks||[]).filter(p=>p.streak_rec).slice().sort((a,b)=>(b.streak_n||0)-(a.streak_n||0));
+  const mpas=(picks||[]).filter(p=>p.alt_rec);
+  const sc=document.getElementById('streakCount'); if(sc) sc.textContent=streaks.length;
+  const mc=document.getElementById('mpaCount'); if(mc) mc.textContent=mpas.length;
+  const dirColor=d=>d==='OVER'?'#4ade80':d==='UNDER'?'#f87171':'#9ca3af';
+  const dirBg=d=>d==='OVER'?'rgba(74,222,128,.14)':d==='UNDER'?'rgba(239,68,68,.14)':'rgba(156,163,175,.1)';
+  const row=(p,sigHTML)=>`<div style="display:grid;grid-template-columns:1fr auto;gap:10px;align-items:center;padding:9px 14px;border-bottom:1px solid #1a1a1a">
+    <div style="min-width:0">
+      <div style="font-weight:700;color:#fff;font-size:.82rem">${p.emoji} ${p.player} <span style="color:#777;font-size:.7rem">${p.team} vs ${p.opp}</span></div>
+      <div style="color:#999;font-size:.7rem;margin-top:2px">${p.stat_label}${p.dk_line?` · line ${p.dk_line}`:''}</div>
+    </div>
+    ${sigHTML}
+  </div>`;
+  const sl=document.getElementById('streakList');
+  if(sl) sl.innerHTML = streaks.length ? streaks.map(p=>row(p,`<span style="background:${dirBg(p.streak_rec)};color:${dirColor(p.streak_rec)};border:1px solid ${dirColor(p.streak_rec)}55;padding:4px 9px;border-radius:6px;font-weight:900;font-size:.72rem;white-space:nowrap">🔥 ${p.streak_n} ${p.streak_rec}</span>`)).join('') : '<div style="padding:18px;text-align:center;color:#555;font-size:.78rem">No streaks today</div>';
+  const ml=document.getElementById('mpaList');
+  if(ml) ml.innerHTML = mpas.length ? mpas.map(p=>row(p,`<span style="background:${dirBg(p.alt_rec)};color:${dirColor(p.alt_rec)};border:1px solid ${dirColor(p.alt_rec)}55;padding:4px 9px;border-radius:6px;font-weight:900;font-size:.72rem;white-space:nowrap">⭐ ${p.alt_rec}</span>`)).join('') : '<div style="padding:18px;text-align:center;color:#555;font-size:.78rem">No MPA specials today</div>';
+}
 function togglePlayer(id,hdr){
   const el=document.getElementById(id);
   if(!el)return;
@@ -1264,6 +1307,7 @@ async function runPicks(){
     document.getElementById('content').appendChild(lb);
     document.getElementById('totalCount').textContent=allPicksData.length;
     document.getElementById('allPicksWrap').style.display='block';
+    renderSignalLists(allPicksData);
     renderAllByGame(allPicksData);
     renderPropsSection(data.props_picks, data.props_nopick);
   }catch(e){
@@ -1333,6 +1377,7 @@ document.addEventListener('DOMContentLoaded', function(){
       if (tc) tc.textContent = allPicksData.length;
       var ap = document.getElementById('allPicksWrap');
       if (ap) ap.style.display = 'block';
+      renderSignalLists(allPicksData);
       renderAllByGame(allPicksData);
     }
     renderPropsSection(data.props_picks, data.props_nopick);
