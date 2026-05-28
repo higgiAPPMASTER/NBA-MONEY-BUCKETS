@@ -45,7 +45,7 @@ STAT_CONFIG = {
     'PRA':  {'label': 'Pts+Reb+Ast','emoji': '🃏', 'idx': None, 'thresholds': list(range(60, 9, -1))},
 }
 
-HIT_RATE_MIN  = 0.75
+HIT_RATE_MIN  = 0.70
 MIN_GAMES     = 2
 MIN_MINUTES   = 10.0
 ESPN_SEASONS  = [2026, 2025, 2024, 2023, 2022, 2021, 2020]
@@ -456,15 +456,13 @@ async def run_analysis(selected_date: str = None) -> Dict:
     log.append("Games: " + " | ".join(f"{g['away']} @ {g['home']}" for g in games))
     log.append(f"{len(odds_props)} sportsbook prop lines loaded")
 
-    # Build lookups — both first-seen so compute (odds_lookup) and display
-    # (dk_lookup) reference the SAME line per player+stat. With multiple books
-    # (us + us2) posting different lines, last-write-wins caused mismatches
-    # where the card showed line X but the pick was computed against line Y.
+    # Build lookups — odds_lookup is last-seen (compute uses bet365/us2 line
+    # when available) which is the behavior the picks have been calibrated
+    # against. dk_lookup below is first-seen for display.
     odds_lookup: Dict[tuple, Dict] = {}
     for prop in odds_props:
         key = (_nn(prop['player']), prop['stat'])
-        if key not in odds_lookup:
-            odds_lookup[key] = {'line': prop['line'], 'odds': str(prop.get('odds', ''))}
+        odds_lookup[key] = {'line': prop['line'], 'odds': str(prop.get('odds', ''))}
 
     # dk_lookup uses Odds API lines as the sole sportsbook source
     dk_lookup: Dict[tuple, Dict] = {}
@@ -514,7 +512,7 @@ async def run_analysis(selected_date: str = None) -> Dict:
     log.append(f"{total_entries:,} historical game entries loaded")
 
     # Pattern analysis — original algorithm (find best threshold >=75%)
-    log.append("Scanning matchup patterns (75%+ threshold)...")
+    log.append("Scanning matchup patterns (70%+ threshold)...")
     picks = []
 
     for game in games:
@@ -805,7 +803,7 @@ input::placeholder{color:#374151}
     <button class="btn-in" type="submit">Access Picks →</button>
     {error}
   </form>
-  <p class="tagline">No Lines · Just Patterns · 75% Threshold</p>
+  <p class="tagline">No Lines · Just Patterns · 70% Threshold</p>
 </div>
 </body>
 </html>"""
@@ -955,7 +953,7 @@ footer{text-align:center;padding:32px 24px;color:#4b5563;font-size:.78rem;border
       <div class="tb-ico">📋</div>
       <div>
         <div class="tb-title">All Qualifying Patterns</div>
-        <div class="tb-sub">Every player hitting 75%+ · Grouped by game</div>
+        <div class="tb-sub">Every player hitting 70%+ · Grouped by game</div>
       </div>
     </div>
     <div class="tb-count" id="totalCount">0</div>
@@ -1089,7 +1087,7 @@ function renderTop10Cards(picks){
     const stats=byPlayer[pname];
     const p=stats[0];
     const teamLogo=`https://a.espncdn.com/i/teamlogos/nba/500/${(p.team||'').toLowerCase()}.png`;
-    const headshot=`https://cdn.nba.com/headshots/nba/latest/1040x760/${p.player_id}.png`;
+    const headshot=`https://a.espncdn.com/i/headshots/nba/players/full/${p.player_id}.png`;
     const tip=p.tipoff?new Date(p.tipoff).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',timeZoneName:'short'}):'';
     const statBlocks=stats.map(s=>{
       const votes={OVER:0,UNDER:0};
@@ -1254,7 +1252,7 @@ async function runPicks(){
     activeTopStat='ALL';activeAllStat='ALL';
     const log=data.log||[];
     if(!top10.length){
-      document.getElementById('content').innerHTML=`<div class="msg-card"><span class="ico"></span><h2>No Qualifying Patterns</h2><p>No 75%+ patterns for today matchups.</p></div><div class="log-box">${log.join('<br>')}</div>`;
+      document.getElementById('content').innerHTML=`<div class="msg-card"><span class="ico"></span><h2>No Qualifying Patterns</h2><p>No 70%+ patterns for today matchups.</p></div><div class="log-box">${log.join('<br>')}</div>`;
       renderPropsSection(data.props_picks, data.props_nopick);
       return;
     }
