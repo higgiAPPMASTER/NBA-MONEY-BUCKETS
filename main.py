@@ -1123,11 +1123,11 @@ function renderTop10Cards(picks){
       const tot=votes.OVER+votes.UNDER;
       const verdict=tot?(votes.OVER>votes.UNDER?'OVER':votes.UNDER>votes.OVER?'UNDER':null):null;
       const badges=[];
-      if(s.has_consistency) badges.push(`<span style="background:rgba(253,184,39,.18);color:#FDB827;padding:2px 7px;border-radius:5px;font-size:.65rem;font-weight:800">PATTERN ${s.hits}/${s.games} (${s.pct}%)</span>`);
-      if(s.line_rec) badges.push(`<span style="background:${dirBg(s.line_rec)};color:${dirColor(s.line_rec)};padding:2px 7px;border-radius:5px;font-size:.65rem;font-weight:800">LINE ${s.line_rec} ${s.line_rec_hits}/10 (${s.line_rec_pct}%)</span>`);
-      if(s.streak_rec) badges.push(`<span style="background:${dirBg(s.streak_rec)};color:${dirColor(s.streak_rec)};padding:2px 7px;border-radius:5px;font-size:.65rem;font-weight:800">🔥 ${s.streak_n} STRAIGHT ${s.streak_rec}</span>`);
-      if(s.alt_rec) badges.push(`<span style="background:${dirBg(s.alt_rec)};color:${dirColor(s.alt_rec)};padding:2px 7px;border-radius:5px;font-size:.65rem;font-weight:800">⭐ MPA ${s.alt_rec}</span>`);
-      const verdictPill=verdict?`<span style="background:${dirBg(verdict)};color:${dirColor(verdict)};border:1px solid ${dirColor(verdict)}66;padding:3px 9px;border-radius:6px;font-size:.72rem;font-weight:900;white-space:nowrap">${verdict}${s.dk_line?' '+s.dk_line:''}</span>`:'';
+      if(s.has_consistency) badges.push(`<span style="background:rgba(253,184,39,.18);color:#FDB827;padding:4px 10px;border-radius:6px;font-size:.82rem;font-weight:800">PATTERN ${s.hits}/${s.games} (${s.pct}%)</span>`);
+      if(s.line_rec) badges.push(`<span style="background:${dirBg(s.line_rec)};color:${dirColor(s.line_rec)};padding:4px 10px;border-radius:6px;font-size:.82rem;font-weight:800">LINE ${s.line_rec} ${s.line_rec_hits}/10 (${s.line_rec_pct}%)</span>`);
+      if(s.streak_rec) badges.push(`<span style="background:${dirBg(s.streak_rec)};color:${dirColor(s.streak_rec)};padding:4px 10px;border-radius:6px;font-size:.82rem;font-weight:800">🔥 ${s.streak_n} STRAIGHT ${s.streak_rec}</span>`);
+      if(s.alt_rec) badges.push(`<span style="background:${dirBg(s.alt_rec)};color:${dirColor(s.alt_rec)};padding:4px 10px;border-radius:6px;font-size:.82rem;font-weight:800">⭐ MPA ${s.alt_rec}</span>`);
+      const verdictPill=verdict?`<span style="background:${dirBg(verdict)};color:${dirColor(verdict)};border:1px solid ${dirColor(verdict)}66;padding:5px 12px;border-radius:7px;font-size:.92rem;font-weight:900;white-space:nowrap">${verdict}${s.dk_line?' '+s.dk_line:''}</span>`:'';
       // Data line: shows last-10 hit count vs threshold AND vs sportsbook line so user sees both pieces of evidence.
       const dataBits=[];
       if(s.threshold) dataBits.push(`<span style="color:#FDB827">${s.hits}/${s.games}</span> hit ${s.threshold}+`);
@@ -1135,37 +1135,37 @@ function renderTop10Cards(picks){
         const over=s.dk_hits, under=10-over;
         dataBits.push(`vs line <strong style="color:#fff">${s.dk_line}</strong>: <span style="color:#4ade80">${over} O</span> · <span style="color:#f87171">${under} U</span>`);
       }
-      const dataLine=dataBits.length?`<div style="font-size:.65rem;color:#888;margin-bottom:6px">${dataBits.join(' &nbsp;·&nbsp; ')}</div>`:'';
-      return `<div style="background:#0d0d0d;border:1px solid #1f1f1f;border-radius:8px;padding:9px 11px;margin-top:7px">
-        <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:5px">
-          <div style="font-size:.78rem;min-width:0"><span>${s.emoji}</span> <strong style="color:#fff">${s.threshold?s.threshold+'+ ':''}${s.stat_label}</strong>${s.dk_line?` <span style="color:#777">· line ${s.dk_line}</span>`:''}</div>
+      const dataLine=dataBits.length?`<div style="font-size:.82rem;color:#aaa;margin-bottom:8px;line-height:1.4">${dataBits.join(' &nbsp;·&nbsp; ')}</div>`:'';
+      return `<div style="background:#0d0d0d;border:1px solid #1f1f1f;border-radius:10px;padding:12px 14px;margin-top:9px">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:7px">
+          <div style="font-size:.98rem;min-width:0"><span>${s.emoji}</span> <strong style="color:#fff">${s.threshold?s.threshold+'+ ':''}${s.stat_label}</strong>${s.dk_line?` <span style="color:#888;font-size:.85rem">· line ${s.dk_line}</span>`:''}</div>
           ${verdictPill}
         </div>
         ${dataLine}
-        <div style="display:flex;flex-wrap:wrap;gap:4px">${badges.join('')}</div>
+        <div style="display:flex;flex-wrap:wrap;gap:6px">${badges.join('')}</div>
       </div>`;
     }).join('');
     html+=`
     <div class="pick-card" style="padding:0;overflow:hidden;border-radius:14px;background:linear-gradient(180deg,#161616 0%,#0f0f0f 100%);border:1px solid #262626">
-      <div style="background:linear-gradient(135deg,#1e3a5f 0%,#0a1a2e 100%);padding:11px 14px;display:flex;align-items:center;justify-content:space-between;border-bottom:2px solid #FDB827">
-        <div style="display:flex;align-items:center;gap:9px">
-          <div style="width:28px;height:28px;border-radius:50%;background:#FDB827;color:#000;display:flex;align-items:center;justify-content:center;font-weight:900;font-size:.78rem">${i+1}</div>
-          <div style="font-size:.62rem;letter-spacing:.12em;color:#FDB827;font-weight:800">NBA · ${p.team}</div>
+      <div style="background:linear-gradient(135deg,#1e3a5f 0%,#0a1a2e 100%);padding:12px 16px;display:flex;align-items:center;justify-content:space-between;border-bottom:2px solid #FDB827">
+        <div style="display:flex;align-items:center;gap:10px">
+          <div style="width:34px;height:34px;border-radius:50%;background:#FDB827;color:#000;display:flex;align-items:center;justify-content:center;font-weight:900;font-size:1rem">${i+1}</div>
+          <div style="font-size:.78rem;letter-spacing:.12em;color:#FDB827;font-weight:800">NBA · ${p.team}</div>
         </div>
-        <img src="${teamLogo}" alt="${p.team}" style="height:32px;width:32px;object-fit:contain" onerror="this.style.display='none'"/>
+        <img src="${teamLogo}" alt="${p.team}" style="height:38px;width:38px;object-fit:contain" onerror="this.style.display='none'"/>
       </div>
-      <div style="position:relative;height:140px;background:radial-gradient(ellipse at center top,rgba(253,184,39,.15),transparent 70%),linear-gradient(180deg,#1e3a5f 0%,#0a1a2e 100%);overflow:hidden">
-        <img src="${headshot}" alt="${pname}" style="position:absolute;bottom:-6px;left:50%;transform:translateX(-50%);height:148px;object-fit:contain" onerror="this.style.display='none'"/>
-        ${p.jersey?`<div style="position:absolute;top:8px;left:10px;background:rgba(0,0,0,.6);color:#FDB827;font-weight:900;font-size:.78rem;padding:3px 8px;border-radius:5px;border:1px solid #FDB827">#${p.jersey}</div>`:''}
-        ${p.position?`<div style="position:absolute;top:8px;right:10px;background:rgba(0,0,0,.6);color:#fff;font-weight:800;font-size:.7rem;padding:3px 8px;border-radius:5px;border:1px solid #444">${p.position}</div>`:''}
+      <div style="position:relative;height:160px;background:radial-gradient(ellipse at center top,rgba(253,184,39,.15),transparent 70%),linear-gradient(180deg,#1e3a5f 0%,#0a1a2e 100%);overflow:hidden">
+        <img src="${headshot}" alt="${pname}" style="position:absolute;bottom:-6px;left:50%;transform:translateX(-50%);height:170px;object-fit:contain" onerror="this.style.display='none'"/>
+        ${p.jersey?`<div style="position:absolute;top:10px;left:12px;background:rgba(0,0,0,.6);color:#FDB827;font-weight:900;font-size:.95rem;padding:4px 10px;border-radius:6px;border:1px solid #FDB827">#${p.jersey}</div>`:''}
+        ${p.position?`<div style="position:absolute;top:10px;right:12px;background:rgba(0,0,0,.6);color:#fff;font-weight:800;font-size:.88rem;padding:4px 10px;border-radius:6px;border:1px solid #444">${p.position}</div>`:''}
       </div>
-      <div style="background:#FDB827;color:#000;text-align:center;padding:7px 10px;font-weight:900;font-size:.95rem">${pname}</div>
-      <div style="padding:10px 12px 12px">
-        <div style="display:flex;justify-content:space-between;align-items:center;font-size:.72rem;color:#888;margin-bottom:2px">
+      <div style="background:#FDB827;color:#000;text-align:center;padding:10px 12px;font-weight:900;font-size:1.18rem;letter-spacing:.01em">${pname}</div>
+      <div style="padding:12px 14px 14px">
+        <div style="display:flex;justify-content:space-between;align-items:center;font-size:.9rem;color:#aaa;margin-bottom:4px">
           <span>vs <strong style="color:#fff">${p.opp}</strong></span>
           ${tip?`<span>⏱ ${tip}</span>`:''}
         </div>
-        <div style="font-size:.66rem;color:#555;margin-bottom:2px">${p.matchup}</div>
+        <div style="font-size:.78rem;color:#666;margin-bottom:4px">${p.matchup}</div>
         ${statBlocks}
       </div>
     </div>`;
