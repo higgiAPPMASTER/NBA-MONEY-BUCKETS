@@ -187,6 +187,7 @@ async def get_player_gamelogs_espn(player_id: str, season: int,
         games.append({
             'opp':      opp_abbr,
             'location': location,
+            'date':     ev_info.get('gameDate', ''),
             'PTS':      parse_stat(stats[13]),
             'REB':      parse_stat(stats[7]),
             'AST':      parse_stat(stats[8]),
@@ -397,7 +398,12 @@ async def run_analysis(selected_date: str = None) -> Dict:
         return pid, all_logs
 
     log_results = await asyncio.gather(*[fetch_player_logs(pid) for pid in all_player_ids])
-    logs_by_player = dict(log_results)
+    # Sort every player's games by date DESCENDING (most recent first).
+    # The whole algorithm now uses "last N games in the moment" instead of
+    # vs-specific-opponent history, so playoff + recent regular season games
+    # flow naturally into picks.
+    logs_by_player = {pid: sorted(logs, key=lambda l: l.get('date',''), reverse=True)
+                      for pid, logs in log_results}
     total_entries = sum(len(v) for v in logs_by_player.values())
     log.append(f"{total_entries:,} historical game entries loaded")
 
@@ -418,8 +424,10 @@ async def run_analysis(selected_date: str = None) -> Dict:
             has_any_line = any((_nn(pname), s) in odds_lookup for s in STAT_CONFIG)
             if not has_any_line:
                 continue
-            opp_logs = [l for l in logs_by_player.get(pid, [])
-                        if l['location'] == 'Home' and l['opp'] == a]
+            # HISTORY: last 10 games vs THIS opponent at THIS location (H/A).
+            # Includes playoffs (data is date-sorted newest-first, all seasonTypes pulled).
+            all_logs_player = logs_by_player.get(pid, [])
+            opp_logs = [l for l in all_logs_player if l['opp'] == a and l['location'] == 'Home'][:10]
             for sk, sc in STAT_CONFIG.items():
                 vals = [float(l[sk]) for l in opp_logs]
                 result = find_best_threshold(vals, sc['thresholds'])
@@ -454,8 +462,8 @@ async def run_analysis(selected_date: str = None) -> Dict:
             has_any_line = any((_nn(pname), s) in odds_lookup for s in STAT_CONFIG)
             if not has_any_line:
                 continue
-            opp_logs = [l for l in logs_by_player.get(pid, [])
-                        if l['location'] == 'Away' and l['opp'] == h]
+            all_logs_player = logs_by_player.get(pid, [])
+            opp_logs = [l for l in all_logs_player if l['opp'] == h and l['location'] == 'Away'][:10]
             for sk, sc in STAT_CONFIG.items():
                 vals = [float(l[sk]) for l in opp_logs]
                 result = find_best_threshold(vals, sc['thresholds'])
@@ -502,7 +510,7 @@ async def run_analysis(selected_date: str = None) -> Dict:
                     ob = odds_lookup.get((_nn(pname),sk),{})
                     if not ob or ob.get('line') is None: continue
                     line = float(ob['line'])
-                    opp_logs = [l for l in logs_by_player.get(pid,[]) if l['location']==loc and l['opp']==opp_id]
+                    opp_logs = logs_by_player.get(pid,[])[:15]
                     if not opp_logs:
                         props_nopick.append({'player':pname,'stat':sk,'stat_label':sc['label'],'emoji':sc['emoji'],'side':side,'opp_name':opp_name,'line':line,'avg':None,'games':0,'history':'—','gap':None,'pick':None,'fd_odds':ob.get('odds','')})
                         continue
@@ -828,7 +836,7 @@ footer{text-align:center;padding:32px 24px;color:#4b5563;font-size:.78rem;border
     </table>
   </div>
   <p style="font-size:.72rem;color:#555;margin-top:8px">
-    <strong style="color:#f59e0b">Avg vs Opp</strong> = career H/A avg vs today's opponent &nbsp;|&nbsp;
+    <strong style="color:#f59e0b">Avg vs Opp</strong> = average vs today's opponent at home/away (incl. playoffs) &nbsp;|&nbsp;
     <strong style="color:#f59e0b">Pick</strong> = O (Over) if avg &gt; line, U (Under) if avg &lt; line
   </p>
 </div>
@@ -899,8 +907,7 @@ function renderTop10Cards(picks){
       <div class="pick-player">${p.player}</div>
       <div class="pick-team">${p.team_name} <span class="loc-badge">${p.location==='Home'?' Home':' Away'}</span></div>
       <div class="stat-strip">${statTag(p.stat)}</div>
-      <div class="pick-pattern">${p.threshold}+ ${p.stat_label} in ${p.hits} of ${p.games} ${p.location.toLowerCase()} games vs ${p.opp}</div>
-      ${p.l10_games > 0 ? `<div class="l10vthr-desc">${p.player.split(" ").pop()} hit ${p.threshold}+ ${p.stat_label} ${p.l10_hits} of ${p.l10_games} last 10 games vs ${p.opp}</div>` : ""}
+      <div class="pick-pattern">${p.threshold}+ ${p.stat_label} in ${p.hits} of ${p.games} ${p.location.toLowerCase()} games vs ${p.opp} (incl. playoffs)</div>
       <div class="fd-line-badge" style="background:rgba(245,158,11,.12);border-color:rgba(245,158,11,.35);margin-top:6px;color:#fbbf24"><strong> PATTERN PICK:</strong> OVER ${p.threshold-0.5} ${p.stat_label} <span style="color:#fff">(${p.pct}%)</span></div>
       ${p.line_rec ? `<div class="fd-line-badge" style="background:${p.line_rec==='UNDER'?'rgba(239,68,68,.12)':'rgba(74,222,128,.12)'};border-color:${p.line_rec==='UNDER'?'rgba(239,68,68,.35)':'rgba(74,222,128,.35)'};margin-top:4px;color:${p.line_rec==='UNDER'?'#f87171':'#4ade80'}"><strong> LINE PICK:</strong> ${p.line_rec} ${p.dk_line} ${p.stat_label} <span style="color:#fff">(${p.line_rec_hits} = ${p.line_rec_pct}%)</span></div>` : ""}
       ${p.dk_line ? `<div class="fd-line-badge" style="background:rgba(99,102,241,.12);border-color:rgba(99,102,241,.3);margin-top:4px;font-size:11px;color:#9ca3af">♠️ Book line: <strong style="color:#fff">${p.dk_line}</strong> ${p.dk_over_odds ? "O " + p.dk_over_odds : ""} ${p.dk_under_odds ? "U " + p.dk_under_odds : ""}</div>` : ""}
