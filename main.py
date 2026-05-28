@@ -1185,7 +1185,6 @@ function renderTop10Cards(picks){
       </div>
       <div style="position:relative;height:160px;background:radial-gradient(ellipse at center top,rgba(253,184,39,.15),transparent 70%),linear-gradient(180deg,#1e3a5f 0%,#0a1a2e 100%);overflow:hidden">
         <img src="${headshot}" alt="${pname}" style="position:absolute;bottom:-6px;left:50%;transform:translateX(-50%);height:170px;object-fit:contain" onerror="this.style.display='none'"/>
-        ${p.jersey?`<div style="position:absolute;top:10px;left:12px;background:rgba(0,0,0,.6);color:#FDB827;font-weight:900;font-size:.95rem;padding:4px 10px;border-radius:6px;border:1px solid #FDB827">#${p.jersey}</div>`:''}
         ${p.position?`<div style="position:absolute;top:10px;right:12px;background:rgba(0,0,0,.6);color:#fff;font-weight:800;font-size:.88rem;padding:4px 10px;border-radius:6px;border:1px solid #444">${p.position}</div>`:''}
       </div>
       <div style="background:#FDB827;color:#000;text-align:center;padding:10px 12px;font-weight:900;font-size:1.18rem;letter-spacing:.01em">${pname}</div>
