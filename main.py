@@ -538,12 +538,11 @@ async def run_analysis(selected_date: str = None) -> Dict:
                 dk_over_odds  = dk_ob.get('over_odds', '')
                 dk_under_odds = dk_ob.get('under_odds', '')
                 dk_hits = sum(1 for l in last10 if float(l[sk]) > dk_line) if dk_line and last10 else None
-                # Streak + MPA Special + Line use last 10 OVERALL (rhythm
-                # patterns, not matchup-specific) so EVERY player with a line
-                # is run through these algorithms.
+                # All signals (Line / Streak / MPA Special) are matchup-only
+                # vs the opponent. recent10/recent_vals kept for any other use.
                 recent10 = all_logs_player[:10]
                 recent_vals = [float(l[sk]) for l in recent10]
-                line_rec, line_rec_pct, line_rec_hits = _line_pick(dk_line, recent_vals, recent10, sk)
+                line_rec, line_rec_pct, line_rec_hits = _line_pick(dk_line, [float(l[sk]) for l in opp_logs_all], opp_logs_all, sk)
                 streak_rec, streak_n = _streak_pick(dk_line, opp_logs_all, sk)
                 alt_rec, alt_evens, alt_odds = _alt_pick(dk_line, opp_logs_all, sk)
                 # Conflict resolution: streak (matchup-specific) beats MPA Special (rhythm) when they disagree
@@ -595,7 +594,7 @@ async def run_analysis(selected_date: str = None) -> Dict:
                 dk_hits = sum(1 for l in last10 if float(l[sk]) > dk_line) if dk_line and last10 else None
                 recent10 = all_logs_player[:10]
                 recent_vals = [float(l[sk]) for l in recent10]
-                line_rec, line_rec_pct, line_rec_hits = _line_pick(dk_line, recent_vals, recent10, sk)
+                line_rec, line_rec_pct, line_rec_hits = _line_pick(dk_line, [float(l[sk]) for l in opp_logs_all], opp_logs_all, sk)
                 streak_rec, streak_n = _streak_pick(dk_line, opp_logs_all, sk)
                 alt_rec, alt_evens, alt_odds = _alt_pick(dk_line, opp_logs_all, sk)
                 # Conflict resolution: streak (matchup-specific) beats MPA Special (rhythm) when they disagree
@@ -1071,7 +1070,7 @@ function renderTop10Cards(picks){
       <div class="stat-strip">${statTag(p.stat)}</div>
       <div class="pick-pattern">${p.threshold}+ ${p.stat_label} in ${p.hits} of ${p.games} ${p.location.toLowerCase()} games vs ${p.opp} (incl. playoffs)</div>
       <div class="fd-line-badge" style="background:rgba(245,158,11,.12);border-color:rgba(245,158,11,.35);margin-top:6px;color:#fbbf24"><strong> PATTERN PICK:</strong> OVER ${p.threshold-0.5} ${p.stat_label} <span style="color:#fff">(${p.pct}%)</span></div>
-      ${p.line_rec ? `<div class="fd-line-badge" style="background:${p.line_rec==='UNDER'?'rgba(239,68,68,.12)':'rgba(74,222,128,.12)'};border-color:${p.line_rec==='UNDER'?'rgba(239,68,68,.35)':'rgba(74,222,128,.35)'};margin-top:4px;color:${p.line_rec==='UNDER'?'#f87171':'#4ade80'}"><strong> LINE PICK:</strong> ${p.line_rec} ${p.dk_line} ${p.stat_label} <span style="color:#fff">(${p.line_rec_hits} = ${p.line_rec_pct}%)</span></div>` : ""}
+      ${p.line_rec ? `<div class="fd-line-badge" style="background:${p.line_rec==='UNDER'?'rgba(239,68,68,.12)':'rgba(74,222,128,.12)'};border-color:${p.line_rec==='UNDER'?'rgba(239,68,68,.35)':'rgba(74,222,128,.35)'};margin-top:4px;color:${p.line_rec==='UNDER'?'#f87171':'#4ade80'}"><strong> LINE PICK:</strong> ${p.line_rec} ${p.dk_line} ${p.stat_label} vs ${p.opp} <span style="color:#fff">(${p.line_rec_hits} = ${p.line_rec_pct}%)</span></div>` : ""}
       ${p.streak_rec ? `<div class="fd-line-badge" style="background:rgba(249,115,22,.15);border-color:rgba(249,115,22,.4);margin-top:4px;color:#fb923c"><strong>🔥 STREAK PICK:</strong> ${p.streak_n} in a row ${p.streak_rec} ${p.dk_line} vs ${p.opp}</div>` : ""}
       ${p.alt_rec ? `<div class="fd-line-badge" style="background:rgba(168,85,247,.15);border-color:rgba(168,85,247,.4);margin-top:4px;color:#c084fc"><strong>⭐ MPA SPECIAL PICK:</strong> ${p.alt_rec} ${p.dk_line} vs ${p.opp}</div>` : ""}
       ${p.dk_line ? `<div class="fd-line-badge" style="background:rgba(99,102,241,.12);border-color:rgba(99,102,241,.3);margin-top:4px;font-size:11px;color:#9ca3af">♠️ Book line: <strong style="color:#fff">${p.dk_line}</strong> ${p.dk_over_odds ? "O " + p.dk_over_odds : ""} ${p.dk_under_odds ? "U " + p.dk_under_odds : ""}</div>` : ""}
@@ -1127,7 +1126,7 @@ function renderAllByGame(picks){
         const [pc,bc]=pctClass(p.pct);
         const badges = [];
         if(p.has_consistency) badges.push(`<span style="background:rgba(245,158,11,.15);color:#fbbf24;padding:2px 7px;border-radius:6px;font-size:.65rem;font-weight:700;margin-right:4px">PATTERN ${p.pct}%</span>`);
-        if(p.line_rec) badges.push(`<span style="background:${p.line_rec==='UNDER'?'rgba(239,68,68,.15)':'rgba(74,222,128,.15)'};color:${p.line_rec==='UNDER'?'#f87171':'#4ade80'};padding:2px 7px;border-radius:6px;font-size:.65rem;font-weight:700;margin-right:4px">LINE ${p.line_rec} ${p.line_rec_pct}%</span>`);
+        if(p.line_rec) badges.push(`<span style="background:${p.line_rec==='UNDER'?'rgba(239,68,68,.15)':'rgba(74,222,128,.15)'};color:${p.line_rec==='UNDER'?'#f87171':'#4ade80'};padding:2px 7px;border-radius:6px;font-size:.65rem;font-weight:700;margin-right:4px">LINE ${p.line_rec} ${p.dk_line} ${p.line_rec_pct}% vs ${p.opp}</span>`);
         if(p.streak_rec) badges.push(`<span style="background:rgba(249,115,22,.15);color:#fb923c;padding:2px 7px;border-radius:6px;font-size:.65rem;font-weight:700;margin-right:4px">🔥 ${p.streak_n} in a row ${p.streak_rec} ${p.dk_line} vs ${p.opp}</span>`);
         if(p.alt_rec) badges.push(`<span style="background:rgba(168,85,247,.15);color:#c084fc;padding:2px 7px;border-radius:6px;font-size:.65rem;font-weight:700;margin-right:4px">⭐ MPA SPECIAL ${p.alt_rec} ${p.dk_line} vs ${p.opp}</span>`);
         const patternLine = p.has_consistency
