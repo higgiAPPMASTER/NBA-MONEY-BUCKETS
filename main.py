@@ -523,39 +523,43 @@ async def run_analysis(selected_date: str = None) -> Dict:
             for sk, sc in STAT_CONFIG.items():
                 vals = [float(l[sk]) for l in opp_logs]
                 result = find_best_threshold(vals, sc['thresholds'])
-                if result:
-                    last10    = opp_logs[:10]
-                    l10h      = sum(1 for l in last10 if float(l[sk]) >= result['threshold'])
-                    # Odds API line for this player+stat
-                    sb        = odds_lookup.get((_nn(pname), sk), {})
-                    fd_line   = sb.get('line')
-                    fd_odds   = sb.get('odds', '')
-                    # Last 10 vs team over sportsbook line
-                    l10_sb_hits = sum(1 for l in last10 if float(l[sk]) > fd_line) if fd_line and last10 else None
-                    dk_ob = dk_lookup.get((_nn(pname), sk), {})
-                    dk_line = dk_ob.get('line')
-                    dk_over_odds  = dk_ob.get('over_odds', '')
-                    dk_under_odds = dk_ob.get('under_odds', '')
-                    dk_hits = sum(1 for l in last10 if float(l[sk]) > dk_line) if dk_line and last10 else None
-                    # LINE PICK uses last 10 OVERALL (not opp-specific) so EVERY
-                    # player with a sportsbook line gets a hit-rate vs line shown.
-                    recent10 = all_logs_player[:10]
-                    recent_vals = [float(l[sk]) for l in recent10]
-                    line_rec, line_rec_pct, line_rec_hits = _line_pick(dk_line, recent_vals, recent10, sk)
-                    streak_rec, streak_n = _streak_pick(dk_line, recent10, sk)
-                    alt_rec, alt_evens, alt_odds = _alt_pick(dk_line, recent10, sk)
-                    picks.append({**result, 'player': pname, 'player_id': pid, 'team': h,
-                                  'team_name': h_name, 'stat': sk,
-                                  'stat_label': sc['label'], 'emoji': sc['emoji'],
-                                  'location': 'Home', 'opp': a, 'opp_name': a_name,
-                                  'matchup': f"{a_name} @ {h_name}",
-                                  'l10_hits': l10h, 'l10_games': len(last10),
-                                  'fd_line': fd_line, 'fd_odds': fd_odds,
-                                  'l10_sb_hits': l10_sb_hits,
-                                  'dk_line': dk_line, 'dk_over_odds': dk_over_odds, 'dk_under_odds': dk_under_odds, 'dk_hits': dk_hits,
-                                  'line_rec': line_rec, 'line_rec_pct': line_rec_pct, 'line_rec_hits': line_rec_hits,
-                                  'streak_rec': streak_rec, 'streak_n': streak_n,
-                                  'alt_rec': alt_rec, 'alt_evens': alt_evens, 'alt_odds': alt_odds})
+                last10 = opp_logs[:10]
+                sb        = odds_lookup.get((_nn(pname), sk), {})
+                fd_line   = sb.get('line')
+                fd_odds   = sb.get('odds', '')
+                l10_sb_hits = sum(1 for l in last10 if float(l[sk]) > fd_line) if fd_line and last10 else None
+                dk_ob = dk_lookup.get((_nn(pname), sk), {})
+                dk_line = dk_ob.get('line')
+                dk_over_odds  = dk_ob.get('over_odds', '')
+                dk_under_odds = dk_ob.get('under_odds', '')
+                dk_hits = sum(1 for l in last10 if float(l[sk]) > dk_line) if dk_line and last10 else None
+                # Streak + MPA Special + Line use last 10 OVERALL (rhythm
+                # patterns, not matchup-specific) so EVERY player with a line
+                # is run through these algorithms.
+                recent10 = all_logs_player[:10]
+                recent_vals = [float(l[sk]) for l in recent10]
+                line_rec, line_rec_pct, line_rec_hits = _line_pick(dk_line, recent_vals, recent10, sk)
+                streak_rec, streak_n = _streak_pick(dk_line, recent10, sk)
+                alt_rec, alt_evens, alt_odds = _alt_pick(dk_line, recent10, sk)
+                # Include pick if EITHER consistency pattern OR streak OR MPA Special
+                if not result and not streak_rec and not alt_rec:
+                    continue
+                base = result or {'threshold': 0, 'hits': 0, 'games': len(last10),
+                                  'hit_rate': 0.0, 'pct': 0.0}
+                l10h = sum(1 for l in last10 if float(l[sk]) >= base['threshold']) if base['threshold'] else 0
+                picks.append({**base, 'player': pname, 'player_id': pid, 'team': h,
+                              'team_name': h_name, 'stat': sk,
+                              'stat_label': sc['label'], 'emoji': sc['emoji'],
+                              'location': 'Home', 'opp': a, 'opp_name': a_name,
+                              'matchup': f"{a_name} @ {h_name}",
+                              'l10_hits': l10h, 'l10_games': len(last10),
+                              'fd_line': fd_line, 'fd_odds': fd_odds,
+                              'l10_sb_hits': l10_sb_hits,
+                              'dk_line': dk_line, 'dk_over_odds': dk_over_odds, 'dk_under_odds': dk_under_odds, 'dk_hits': dk_hits,
+                              'line_rec': line_rec, 'line_rec_pct': line_rec_pct, 'line_rec_hits': line_rec_hits,
+                              'streak_rec': streak_rec, 'streak_n': streak_n,
+                              'alt_rec': alt_rec, 'alt_evens': alt_evens, 'alt_odds': alt_odds,
+                              'has_consistency': result is not None})
 
         for player in rosters.get(game['away_id'], []):
             pid, pname = player['id'], player['name']
@@ -568,37 +572,43 @@ async def run_analysis(selected_date: str = None) -> Dict:
             for sk, sc in STAT_CONFIG.items():
                 vals = [float(l[sk]) for l in opp_logs]
                 result = find_best_threshold(vals, sc['thresholds'])
-                if result:
-                    last10    = opp_logs[:10]
-                    l10h      = sum(1 for l in last10 if float(l[sk]) >= result['threshold'])
-                    sb        = odds_lookup.get((_nn(pname), sk), {})
-                    fd_line   = sb.get('line')
-                    fd_odds   = sb.get('odds', '')
-                    l10_sb_hits = sum(1 for l in last10 if float(l[sk]) > fd_line) if fd_line and last10 else None
-                    dk_ob = dk_lookup.get((_nn(pname), sk), {})
-                    dk_line = dk_ob.get('line')
-                    dk_over_odds  = dk_ob.get('over_odds', '')
-                    dk_under_odds = dk_ob.get('under_odds', '')
-                    dk_hits = sum(1 for l in last10 if float(l[sk]) > dk_line) if dk_line and last10 else None
-                    recent10 = all_logs_player[:10]
-                    recent_vals = [float(l[sk]) for l in recent10]
-                    line_rec, line_rec_pct, line_rec_hits = _line_pick(dk_line, recent_vals, recent10, sk)
-                    streak_rec, streak_n = _streak_pick(dk_line, recent10, sk)
-                    alt_rec, alt_evens, alt_odds = _alt_pick(dk_line, recent10, sk)
-                    picks.append({**result, 'player': pname, 'player_id': pid, 'team': a,
-                                  'team_name': a_name, 'stat': sk,
-                                  'stat_label': sc['label'], 'emoji': sc['emoji'],
-                                  'location': 'Away', 'opp': h, 'opp_name': h_name,
-                                  'matchup': f"{a_name} @ {h_name}",
-                                  'l10_hits': l10h, 'l10_games': len(last10),
-                                  'fd_line': fd_line, 'fd_odds': fd_odds,
-                                  'l10_sb_hits': l10_sb_hits,
-                                  'dk_line': dk_line, 'dk_over_odds': dk_over_odds, 'dk_under_odds': dk_under_odds, 'dk_hits': dk_hits,
-                                  'line_rec': line_rec, 'line_rec_pct': line_rec_pct, 'line_rec_hits': line_rec_hits,
-                                  'streak_rec': streak_rec, 'streak_n': streak_n,
-                                  'alt_rec': alt_rec, 'alt_evens': alt_evens, 'alt_odds': alt_odds})
+                last10 = opp_logs[:10]
+                sb        = odds_lookup.get((_nn(pname), sk), {})
+                fd_line   = sb.get('line')
+                fd_odds   = sb.get('odds', '')
+                l10_sb_hits = sum(1 for l in last10 if float(l[sk]) > fd_line) if fd_line and last10 else None
+                dk_ob = dk_lookup.get((_nn(pname), sk), {})
+                dk_line = dk_ob.get('line')
+                dk_over_odds  = dk_ob.get('over_odds', '')
+                dk_under_odds = dk_ob.get('under_odds', '')
+                dk_hits = sum(1 for l in last10 if float(l[sk]) > dk_line) if dk_line and last10 else None
+                recent10 = all_logs_player[:10]
+                recent_vals = [float(l[sk]) for l in recent10]
+                line_rec, line_rec_pct, line_rec_hits = _line_pick(dk_line, recent_vals, recent10, sk)
+                streak_rec, streak_n = _streak_pick(dk_line, recent10, sk)
+                alt_rec, alt_evens, alt_odds = _alt_pick(dk_line, recent10, sk)
+                if not result and not streak_rec and not alt_rec:
+                    continue
+                base = result or {'threshold': 0, 'hits': 0, 'games': len(last10),
+                                  'hit_rate': 0.0, 'pct': 0.0}
+                l10h = sum(1 for l in last10 if float(l[sk]) >= base['threshold']) if base['threshold'] else 0
+                picks.append({**base, 'player': pname, 'player_id': pid, 'team': a,
+                              'team_name': a_name, 'stat': sk,
+                              'stat_label': sc['label'], 'emoji': sc['emoji'],
+                              'location': 'Away', 'opp': h, 'opp_name': h_name,
+                              'matchup': f"{a_name} @ {h_name}",
+                              'l10_hits': l10h, 'l10_games': len(last10),
+                              'fd_line': fd_line, 'fd_odds': fd_odds,
+                              'l10_sb_hits': l10_sb_hits,
+                              'dk_line': dk_line, 'dk_over_odds': dk_over_odds, 'dk_under_odds': dk_under_odds, 'dk_hits': dk_hits,
+                              'line_rec': line_rec, 'line_rec_pct': line_rec_pct, 'line_rec_hits': line_rec_hits,
+                              'streak_rec': streak_rec, 'streak_n': streak_n,
+                              'alt_rec': alt_rec, 'alt_evens': alt_evens, 'alt_odds': alt_odds,
+                              'has_consistency': result is not None})
 
-    picks.sort(key=lambda x: (x['hit_rate'], x['threshold']), reverse=True)
+    # Sort: consistency picks first (by hit rate), then non-consistency
+    # streak/MPA picks. None-safe.
+    picks.sort(key=lambda x: (x.get('has_consistency', False), x.get('hit_rate') or 0, x.get('threshold') or 0), reverse=True)
     top_picks = picks[:TOP_N]
     log.append(f"{len(picks)} qualifying patterns -> top {TOP_N} shown")
     if odds_props:
@@ -920,6 +930,8 @@ footer{text-align:center;padding:32px 24px;color:#4b5563;font-size:.78rem;border
       <button class="filter-btn" onclick="filterAll('REB')">📊 Reb</button>
       <button class="filter-btn" onclick="filterAll('AST')">🎯 Ast</button>
       <button class="filter-btn" onclick="filterAll('FG3M')">🔥 3PM</button>
+      <button class="filter-btn" id="oversBtn" onclick="toggleSide('OVER')" style="margin-left:8px">⬆ Overs only</button>
+      <button class="filter-btn" id="undersBtn" onclick="toggleSide('UNDER')">⬇ Unders only</button>
     </div>
   </div>
   <div id="allPicksSection"></div>
@@ -968,7 +980,7 @@ footer{text-align:center;padding:32px 24px;color:#4b5563;font-size:.78rem;border
   var tok=localStorage.getItem(KEY);
   // gate removed — hub handles auth
 })();
-let top10=[], allPicksData=[], activeTopStat='ALL', activeAllStat='ALL';
+let top10=[], allPicksData=[], activeTopStat='ALL', activeAllStat='ALL', sideFilter=null;
 
 function pctClass(p){return p>=90?['pct-green','bar-green']:p>=80?['pct-yellow','bar-yellow']:['pct-orange','bar-orange']}
 function statTag(s){
@@ -997,7 +1009,21 @@ function filterAll(stat){
       stat==='ALL'?t==='All':stat==='PTS'?t.includes('Pt'):
       stat==='REB'?t.includes('Reb'):stat==='AST'?t.includes('Ast'):t.includes('3PM'));
   });
-  const filtered=stat==='ALL'?allPicksData:allPicksData.filter(p=>p.stat===stat);
+  applyAllFilters();
+}
+
+function toggleSide(side){
+  sideFilter = (sideFilter===side) ? null : side;
+  document.getElementById('oversBtn').classList.toggle('active',sideFilter==='OVER');
+  document.getElementById('undersBtn').classList.toggle('active',sideFilter==='UNDER');
+  applyAllFilters();
+}
+
+function applyAllFilters(){
+  let filtered = activeAllStat==='ALL' ? allPicksData : allPicksData.filter(p=>p.stat===activeAllStat);
+  if(sideFilter){
+    filtered = filtered.filter(p => p.line_rec===sideFilter || p.streak_rec===sideFilter || p.alt_rec===sideFilter);
+  }
   document.getElementById('totalCount').textContent=filtered.length;
   renderAllByGame(filtered);
 }
@@ -1047,27 +1073,63 @@ function renderAllByGame(picks){
         <div class="gg-meta"><span class="count-pill">${gp.length} pattern${gp.length!==1?'s':''}</span><span class="gg-chevron"></span></div>
       </div>
       <div class="compact-picks" id="${gameId}">`;
+    // Sub-group by player so each player has one expandable row
+    const byPlayer = {}; const playerOrder = [];
     for(const p of gp){
-      const [pc,bc]=pctClass(p.pct);
-      html+=`<div class="compact-row">
-        <span class="cr-emoji">${p.emoji}</span>
-        <div class="cr-info">
-          <div class="cr-player">${p.player} <span style="color:#1e3a5f;font-size:.65rem">${p.team}${p.location==='Home'?'':''}</span></div>
-          <div class="cr-pattern">${p.threshold}+ ${p.stat_label}  ${p.hits}/${p.games} ${p.location.toLowerCase()} vs ${p.opp}${p.fd_line ? `  <span class="fd-inline"> ${p.fd_line}</span>` : ''}</div>
-          ${(p.fd_line !== null && p.fd_line !== undefined && p.l10vthr_hits !== null && p.l10vthr_hits !== undefined) ? `<div class="l10vthr-desc" style="font-size:.76rem;margin-top:2px">${Math.ceil(p.fd_line)}+ ${p.stat_label}: ${p.l10vthr_hits}/${p.l10vthr_games} vs ${p.opp}</div>` : ''}
+      if(!byPlayer[p.player]){byPlayer[p.player]=[];playerOrder.push(p.player);}
+      byPlayer[p.player].push(p);
+    }
+    for(const pname of playerOrder){
+      const rows = byPlayer[pname];
+      const first = rows[0];
+      const pid = gameId+'_'+pname.replace(/[^a-z0-9]/gi,'_');
+      // Best % across this player's picks for summary chip
+      const bestPct = Math.max(...rows.map(r=>r.pct||0));
+      const stats = rows.map(r=>r.stat_label).join(' · ');
+      html+=`<div class="player-group" style="border-bottom:1px solid #1f1f1f">
+        <div onclick="togglePlayer('${pid}',this)" style="display:flex;align-items:center;gap:10px;padding:10px 14px;cursor:pointer;background:#141414">
+          <span style="font-size:1.1rem">${first.emoji}</span>
+          <div style="flex:1;min-width:0">
+            <div style="font-weight:700;color:#fff;font-size:.88rem">${pname} <span style="color:#1e3a5f;font-size:.65rem">${first.team}${first.location==='Home'?' HOME':' AWAY'}</span></div>
+            <div style="color:#777;font-size:.7rem;margin-top:2px">${rows.length} pick${rows.length!==1?'s':''} · ${stats}</div>
+          </div>
+          ${bestPct>0?`<span style="color:#fbbf24;font-weight:700;font-size:.78rem">${bestPct}%</span>`:''}
+          <span class="pg-chevron" style="color:#666;font-size:.8rem;transition:transform .2s">▼</span>
         </div>
-        <div class="cr-right">
-          <div class="cr-bar-wrap"><div class="cr-bar-fill ${bc}" style="width:${Math.min(p.pct,100)}%"></div></div>
-          <div class="cr-pct ${pc}">${p.pct}%</div>
-          <div class="cr-sample">${p.hits}/${p.games}</div>
-        </div>
-      </div>`;
+        <div id="${pid}" style="display:none;flex-direction:column;background:#0e0e0e">`;
+      for(const p of rows){
+        const [pc,bc]=pctClass(p.pct);
+        const badges = [];
+        if(p.has_consistency) badges.push(`<span style="background:rgba(245,158,11,.15);color:#fbbf24;padding:2px 7px;border-radius:6px;font-size:.65rem;font-weight:700;margin-right:4px">PATTERN ${p.pct}%</span>`);
+        if(p.line_rec) badges.push(`<span style="background:${p.line_rec==='UNDER'?'rgba(239,68,68,.15)':'rgba(74,222,128,.15)'};color:${p.line_rec==='UNDER'?'#f87171':'#4ade80'};padding:2px 7px;border-radius:6px;font-size:.65rem;font-weight:700;margin-right:4px">LINE ${p.line_rec} ${p.line_rec_pct}%</span>`);
+        if(p.streak_rec) badges.push(`<span style="background:rgba(249,115,22,.15);color:#fb923c;padding:2px 7px;border-radius:6px;font-size:.65rem;font-weight:700;margin-right:4px">🔥 STREAK ${p.streak_rec} (${p.streak_n})</span>`);
+        if(p.alt_rec) badges.push(`<span style="background:rgba(168,85,247,.15);color:#c084fc;padding:2px 7px;border-radius:6px;font-size:.65rem;font-weight:700;margin-right:4px">⭐ MPA ${p.alt_rec}</span>`);
+        const patternLine = p.has_consistency
+          ? `${p.threshold}+ ${p.stat_label}  ${p.hits}/${p.games} ${p.location.toLowerCase()} vs ${p.opp}${p.fd_line ? `  <span class="fd-inline"> ${p.fd_line}</span>` : ''}`
+          : `${p.stat_label} vs ${p.opp}${p.dk_line ? `  line ${p.dk_line}` : ''}`;
+        html+=`<div style="display:flex;align-items:center;gap:10px;padding:8px 14px 8px 38px;border-top:1px solid #1a1a1a">
+          <div style="flex:1;min-width:0">
+            <div style="color:#bbb;font-size:.78rem">${patternLine}</div>
+            <div style="margin-top:4px;display:flex;flex-wrap:wrap;gap:3px">${badges.join('')}</div>
+          </div>
+          ${p.has_consistency ? `<div style="text-align:right"><div class="cr-pct ${pc}" style="font-size:.85rem;font-weight:800">${p.pct}%</div><div style="color:#666;font-size:.65rem">${p.hits}/${p.games}</div></div>` : ''}
+        </div>`;
+      }
+      html+='</div></div>';
     }
     html+='</div></div>';
   }
   el.innerHTML=html;
 }
 
+function togglePlayer(id,hdr){
+  const el=document.getElementById(id);
+  if(!el)return;
+  const ch=hdr.querySelector('.pg-chevron');
+  const hidden=el.style.display==='none';
+  el.style.display=hidden?'flex':'none';
+  if(ch)ch.style.transform=hidden?'rotate(180deg)':'';
+}
 function toggleGroup(id,hdr){
   const el=document.getElementById(id);
   const ch=hdr.querySelector('.gg-chevron');
