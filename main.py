@@ -160,10 +160,10 @@ async def get_player_gamelogs_espn(player_id: str, season: int,
     # Build eventId → stats map from seasonTypes → categories → events
     stats_map: Dict[str, List] = {}
     for st in gl.get('seasonTypes', []):
-        # Skip preseason / summer league — those games shouldn't count toward
-        # regular-season pattern stats. Keep "Regular Season" + "Postseason".
+        # WHITELIST: only count Regular Season + Postseason. Excludes preseason,
+        # summer league, NBA Cup / In-Season Tournament, exhibitions, etc.
         st_name = (st.get('displayName') or st.get('name') or '').lower()
-        if 'pre' in st_name or 'summer' in st_name:
+        if not ('regular' in st_name or 'post' in st_name or 'playoff' in st_name):
             continue
         for cat in st.get('categories', []):
             if cat is None:
