@@ -533,9 +533,11 @@ async def run_analysis(selected_date: str = None) -> Dict:
             # prior teams after trades — e.g. Fox's SAC home games vs OKC don't
             # count toward his SAS home record vs OKC).
             all_logs_player = logs_by_player.get(pid, [])
-            # All matchup-specific games (uncapped) for streak detection.
+            # Last 10 games vs THIS opponent at THIS location (HOME). Player on
+            # current team. H/A split because home vs away splits matter a lot.
             opp_logs_all = [l for l in all_logs_player
-                            if l['opp'] == a and l.get('player_team') == h]
+                            if l['opp'] == a and l.get('player_team') == h
+                            and l.get('location') == 'Home']
             opp_logs = opp_logs_all[:10]
             for sk, sc in STAT_CONFIG.items():
                 vals = [float(l[sk]) for l in opp_logs]
@@ -591,8 +593,10 @@ async def run_analysis(selected_date: str = None) -> Dict:
             if not has_any_line:
                 continue
             all_logs_player = logs_by_player.get(pid, [])
+            # Last 10 games vs THIS opponent at THIS location (AWAY).
             opp_logs_all = [l for l in all_logs_player
-                            if l['opp'] == h and l.get('player_team') == a]
+                            if l['opp'] == h and l.get('player_team') == a
+                            and l.get('location') == 'Away']
             opp_logs = opp_logs_all[:10]
             for sk, sc in STAT_CONFIG.items():
                 vals = [float(l[sk]) for l in opp_logs]
@@ -1145,7 +1149,7 @@ function renderTop10Cards(picks){
       // the pattern. Only show signals that agree (OVER) as reinforcement.
       const patternOverride = s.has_consistency;
       const badges=[];
-      if(s.has_consistency) badges.push(`<span style="background:rgba(253,184,39,.18);color:#FDB827;padding:4px 10px;border-radius:6px;font-size:.82rem;font-weight:800">PATTERN ${s.hits}/${s.games} (${s.pct}%) vs ${p.opp}</span>`);
+      if(s.has_consistency) badges.push(`<span style="background:rgba(253,184,39,.18);color:#FDB827;padding:4px 10px;border-radius:6px;font-size:.82rem;font-weight:800">PATTERN ${s.hits}/${s.games} (${s.pct}%) vs ${p.opp} ${(p.location||'').toLowerCase()}</span>`);
       if(s.line_rec && (!patternOverride || s.line_rec==='OVER')) badges.push(`<span style="background:${dirBg(s.line_rec)};color:${dirColor(s.line_rec)};padding:4px 10px;border-radius:6px;font-size:.82rem;font-weight:800">LINE ${s.line_rec} ${s.line_rec_hits} (${s.line_rec_pct}%)</span>`);
       if(s.streak_rec && (!patternOverride || s.streak_rec==='OVER')) badges.push(`<span style="background:${dirBg(s.streak_rec)};color:${dirColor(s.streak_rec)};padding:4px 10px;border-radius:6px;font-size:.82rem;font-weight:800">🔥 ${s.streak_n} STRAIGHT ${s.streak_rec}</span>`);
       if(s.alt_rec && (!patternOverride || s.alt_rec==='OVER')) badges.push(`<span style="background:${dirBg(s.alt_rec)};color:${dirColor(s.alt_rec)};padding:4px 10px;border-radius:6px;font-size:.82rem;font-weight:800">⭐ MPA ${s.alt_rec}</span>`);
@@ -1154,9 +1158,9 @@ function renderTop10Cards(picks){
       if(s.dk_line!=null) lines.push(`<div style="font-size:.86rem;color:#ddd;margin-bottom:3px"><strong style="color:#fff">Line ${s.dk_line}</strong> ${s.stat_label}</div>`);
       if(s.dk_line!=null && s.dk_hits!=null){
         const over=s.dk_hits, under=10-over;
-        lines.push(`<div style="font-size:.8rem;color:#aaa;margin-bottom:3px">vs line last 10 (vs ${p.opp}): <span style="color:#4ade80;font-weight:700">${over} over</span> · <span style="color:#f87171;font-weight:700">${under} under</span></div>`);
+        lines.push(`<div style="font-size:.8rem;color:#aaa;margin-bottom:3px">vs line last ${s.l10_games||10} (vs ${p.opp} ${(p.location||'').toLowerCase()}): <span style="color:#4ade80;font-weight:700">${over} over</span> · <span style="color:#f87171;font-weight:700">${under} under</span></div>`);
       }
-      if(s.threshold) lines.push(`<div style="font-size:.8rem;color:#aaa;margin-bottom:8px">pattern: hit <strong style="color:#FDB827">${s.threshold}+</strong> ${s.stat_label} in <strong style="color:#fff">${s.hits}/${s.games}</strong> vs ${p.opp}</div>`);
+      if(s.threshold) lines.push(`<div style="font-size:.8rem;color:#aaa;margin-bottom:8px">pattern: hit <strong style="color:#FDB827">${s.threshold}+</strong> ${s.stat_label} in <strong style="color:#fff">${s.hits}/${s.games}</strong> vs ${p.opp} ${(p.location||'').toLowerCase()}</div>`);
       return `<div style="background:#0d0d0d;border:1px solid #1f1f1f;border-radius:10px;padding:12px 14px;margin-top:9px">
         <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:7px">
           <div style="font-size:.98rem;min-width:0"><span>${s.emoji}</span> <strong style="color:#fff">${s.stat_label}</strong></div>
@@ -1238,9 +1242,10 @@ function renderAllByGame(picks){
         const [pc,bc]=pctClass(p.pct);
         const badges = [];
         if(p.has_consistency) badges.push(`<span style="background:rgba(245,158,11,.15);color:#fbbf24;padding:2px 7px;border-radius:6px;font-size:.65rem;font-weight:700;margin-right:4px">PATTERN ${p.pct}%</span>`);
-        if(p.line_rec) badges.push(`<span style="background:${p.line_rec==='UNDER'?'rgba(239,68,68,.15)':'rgba(74,222,128,.15)'};color:${p.line_rec==='UNDER'?'#f87171':'#4ade80'};padding:2px 7px;border-radius:6px;font-size:.65rem;font-weight:700;margin-right:4px">LINE ${p.line_rec} ${p.dk_line} ${p.line_rec_pct}% vs ${p.opp}</span>`);
-        if(p.streak_rec) badges.push(`<span style="background:rgba(249,115,22,.15);color:#fb923c;padding:2px 7px;border-radius:6px;font-size:.65rem;font-weight:700;margin-right:4px">🔥 ${p.streak_n} in a row ${p.streak_rec} ${p.dk_line} vs ${p.opp}</span>`);
-        if(p.alt_rec) badges.push(`<span style="background:rgba(168,85,247,.15);color:#c084fc;padding:2px 7px;border-radius:6px;font-size:.65rem;font-weight:700;margin-right:4px">⭐ MPA SPECIAL ${p.alt_rec} ${p.dk_line} vs ${p.opp}</span>`);
+        const loc=(p.location||'').toLowerCase();
+        if(p.line_rec) badges.push(`<span style="background:${p.line_rec==='UNDER'?'rgba(239,68,68,.15)':'rgba(74,222,128,.15)'};color:${p.line_rec==='UNDER'?'#f87171':'#4ade80'};padding:2px 7px;border-radius:6px;font-size:.65rem;font-weight:700;margin-right:4px">LINE ${p.line_rec} ${p.dk_line} ${p.line_rec_pct}% vs ${p.opp} ${loc}</span>`);
+        if(p.streak_rec) badges.push(`<span style="background:rgba(249,115,22,.15);color:#fb923c;padding:2px 7px;border-radius:6px;font-size:.65rem;font-weight:700;margin-right:4px">🔥 ${p.streak_n} in a row ${p.streak_rec} ${p.dk_line} vs ${p.opp} ${loc}</span>`);
+        if(p.alt_rec) badges.push(`<span style="background:rgba(168,85,247,.15);color:#c084fc;padding:2px 7px;border-radius:6px;font-size:.65rem;font-weight:700;margin-right:4px">⭐ MPA SPECIAL ${p.alt_rec} ${p.dk_line} vs ${p.opp} ${loc}</span>`);
         const patternLine = p.has_consistency
           ? `${p.threshold}+ ${p.stat_label}  ${p.hits}/${p.games} vs ${p.opp}${p.fd_line ? `  <span class="fd-inline"> ${p.fd_line}</span>` : ''}`
           : `${p.stat_label} vs ${p.opp}${p.dk_line ? `  line ${p.dk_line}` : ''}`;
