@@ -1115,15 +1115,26 @@ function renderTop10Cards(picks){
     const headshot=`https://a.espncdn.com/i/headshots/nba/players/full/${p.player_id}.png`;
     const tip=p.tipoff?new Date(p.tipoff).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',timeZoneName:'short'}):'';
     const statBlocks=stats.map(s=>{
+      // PATTERN only votes OVER on the sportsbook line if the pattern threshold
+      // actually clears the line. If pattern is "1+ threes" but line is 1.5,
+      // hitting the pattern does NOT clear the line, so it provides no OVER signal.
+      const patternClearsLine = s.has_consistency && (s.dk_line==null || (s.threshold && s.threshold > s.dk_line));
       const votes={OVER:0,UNDER:0};
-      if(s.has_consistency) votes.OVER++;
+      if(patternClearsLine) votes.OVER++;
       if(s.line_rec) votes[s.line_rec]++;
       if(s.streak_rec) votes[s.streak_rec]++;
       if(s.alt_rec) votes[s.alt_rec]++;
       const tot=votes.OVER+votes.UNDER;
       const verdict=tot?(votes.OVER>votes.UNDER?'OVER':votes.UNDER>votes.OVER?'UNDER':null):null;
+      // Flag pattern-below-line as a warning so user sees the mismatch
+      const patternMismatch = s.has_consistency && s.dk_line!=null && s.threshold && s.threshold <= s.dk_line;
       const badges=[];
-      if(s.has_consistency) badges.push(`<span style="background:rgba(253,184,39,.18);color:#FDB827;padding:4px 10px;border-radius:6px;font-size:.82rem;font-weight:800">PATTERN ${s.hits}/${s.games} (${s.pct}%)</span>`);
+      if(s.has_consistency){
+        const pBg = patternMismatch ? 'rgba(120,120,120,.18)' : 'rgba(253,184,39,.18)';
+        const pFg = patternMismatch ? '#888' : '#FDB827';
+        const pSuffix = patternMismatch ? ' <span style="color:#f87171;font-weight:700">⚠ below line</span>' : '';
+        badges.push(`<span style="background:${pBg};color:${pFg};padding:4px 10px;border-radius:6px;font-size:.82rem;font-weight:800">PATTERN ${s.hits}/${s.games} (${s.pct}%)${pSuffix}</span>`);
+      }
       if(s.line_rec) badges.push(`<span style="background:${dirBg(s.line_rec)};color:${dirColor(s.line_rec)};padding:4px 10px;border-radius:6px;font-size:.82rem;font-weight:800">LINE ${s.line_rec} ${s.line_rec_hits}/10 (${s.line_rec_pct}%)</span>`);
       if(s.streak_rec) badges.push(`<span style="background:${dirBg(s.streak_rec)};color:${dirColor(s.streak_rec)};padding:4px 10px;border-radius:6px;font-size:.82rem;font-weight:800">🔥 ${s.streak_n} STRAIGHT ${s.streak_rec}</span>`);
       if(s.alt_rec) badges.push(`<span style="background:${dirBg(s.alt_rec)};color:${dirColor(s.alt_rec)};padding:4px 10px;border-radius:6px;font-size:.82rem;font-weight:800">⭐ MPA ${s.alt_rec}</span>`);
