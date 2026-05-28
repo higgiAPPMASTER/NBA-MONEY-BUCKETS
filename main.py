@@ -183,15 +183,18 @@ async def get_player_gamelogs_espn(player_id: str, season: int,
         opp_info = ev_info.get('opponent', {})
         opp_abbr = opp_info.get('abbreviation', '') if isinstance(opp_info, dict) else ''
         location = 'Away' if ev_info.get('atVs', '') == '@' else 'Home'
+        team_info = ev_info.get('team', {})
+        player_team_abbr = team_info.get('abbreviation', '') if isinstance(team_info, dict) else ''
 
         games.append({
-            'opp':      opp_abbr,
-            'location': location,
-            'date':     ev_info.get('gameDate', ''),
-            'PTS':      parse_stat(stats[13]),
-            'REB':      parse_stat(stats[7]),
-            'AST':      parse_stat(stats[8]),
-            'FG3M':     parse_stat(stats[3]),
+            'opp':         opp_abbr,
+            'location':    location,
+            'date':        ev_info.get('gameDate', ''),
+            'player_team': player_team_abbr,
+            'PTS':         parse_stat(stats[13]),
+            'REB':         parse_stat(stats[7]),
+            'AST':         parse_stat(stats[8]),
+            'FG3M':        parse_stat(stats[3]),
         })
     return games
 
@@ -375,6 +378,14 @@ async def run_analysis(selected_date: str = None) -> Dict:
         if key not in dk_lookup:
             dk_lookup[key] = {'line': prop['line'], 'over_odds': '', 'under_odds': ''}
 
+    # Map team_id -> abbreviation so we can match a player's per-game team
+    # (ESPN exposes 'team.abbreviation' per gamelog event). Used to filter out
+    # games the player played for a PREVIOUS team after a trade.
+    tid_to_abbr: Dict[str, str] = {}
+    for g in games:
+        tid_to_abbr[g['home_id']] = g['home']
+        tid_to_abbr[g['away_id']] = g['away']
+
     # Rosters
     team_ids = list({g['home_id'] for g in games} | {g['away_id'] for g in games})
     roster_results = await asyncio.gather(
@@ -424,10 +435,13 @@ async def run_analysis(selected_date: str = None) -> Dict:
             has_any_line = any((_nn(pname), s) in odds_lookup for s in STAT_CONFIG)
             if not has_any_line:
                 continue
-            # HISTORY: last 10 games vs THIS opponent at THIS location (H/A).
-            # Includes playoffs (data is date-sorted newest-first, all seasonTypes pulled).
+            # HISTORY: last 10 games vs THIS opponent at THIS location (H/A)
+            # ONLY while playing for the current team (filters out games from
+            # prior teams after trades — e.g. Fox's SAC home games vs OKC don't
+            # count toward his SAS home record vs OKC).
             all_logs_player = logs_by_player.get(pid, [])
-            opp_logs = [l for l in all_logs_player if l['opp'] == a and l['location'] == 'Home'][:10]
+            opp_logs = [l for l in all_logs_player
+                        if l['opp'] == a and l['location'] == 'Home' and l.get('player_team') == h][:10]
             for sk, sc in STAT_CONFIG.items():
                 vals = [float(l[sk]) for l in opp_logs]
                 result = find_best_threshold(vals, sc['thresholds'])
@@ -463,7 +477,8 @@ async def run_analysis(selected_date: str = None) -> Dict:
             if not has_any_line:
                 continue
             all_logs_player = logs_by_player.get(pid, [])
-            opp_logs = [l for l in all_logs_player if l['opp'] == h and l['location'] == 'Away'][:10]
+            opp_logs = [l for l in all_logs_player
+                        if l['opp'] == h and l['location'] == 'Away' and l.get('player_team') == a][:10]
             for sk, sc in STAT_CONFIG.items():
                 vals = [float(l[sk]) for l in opp_logs]
                 result = find_best_threshold(vals, sc['thresholds'])
@@ -510,7 +525,10 @@ async def run_analysis(selected_date: str = None) -> Dict:
                     ob = odds_lookup.get((_nn(pname),sk),{})
                     if not ob or ob.get('line') is None: continue
                     line = float(ob['line'])
-                    opp_logs = logs_by_player.get(pid,[])[:15]
+                    # Same trade-aware filter: only games with current team vs today's opp at this location
+                    cur_team = tid_to_abbr.get(tid, '')
+                    opp_logs = [l for l in logs_by_player.get(pid, [])
+                                if l['opp'] == opp_id and l['location'] == loc and l.get('player_team') == cur_team][:10]
                     if not opp_logs:
                         props_nopick.append({'player':pname,'stat':sk,'stat_label':sc['label'],'emoji':sc['emoji'],'side':side,'opp_name':opp_name,'line':line,'avg':None,'games':0,'history':'—','gap':None,'pick':None,'fd_odds':ob.get('odds','')})
                         continue
