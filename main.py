@@ -509,10 +509,11 @@ async def run_analysis(selected_date: str = None) -> Dict:
                     dk_over_odds  = dk_ob.get('over_odds', '')
                     dk_under_odds = dk_ob.get('under_odds', '')
                     dk_hits = sum(1 for l in last10 if float(l[sk]) > dk_line) if dk_line and last10 else None
-                    line_rec, line_rec_pct, line_rec_hits = _line_pick(dk_line, vals, last10, sk)
-                    # STREAK + ALT use last 10 OVERALL games (rhythm patterns,
-                    # not matchup-specific). all_logs_player is date-sorted.
+                    # LINE PICK uses last 10 OVERALL (not opp-specific) so EVERY
+                    # player with a sportsbook line gets a hit-rate vs line shown.
                     recent10 = all_logs_player[:10]
+                    recent_vals = [float(l[sk]) for l in recent10]
+                    line_rec, line_rec_pct, line_rec_hits = _line_pick(dk_line, recent_vals, recent10, sk)
                     streak_rec, streak_n = _streak_pick(dk_line, recent10, sk)
                     alt_rec, alt_evens, alt_odds = _alt_pick(dk_line, recent10, sk)
                     picks.append({**result, 'player': pname, 'player_id': pid, 'team': h,
@@ -551,8 +552,9 @@ async def run_analysis(selected_date: str = None) -> Dict:
                     dk_over_odds  = dk_ob.get('over_odds', '')
                     dk_under_odds = dk_ob.get('under_odds', '')
                     dk_hits = sum(1 for l in last10 if float(l[sk]) > dk_line) if dk_line and last10 else None
-                    line_rec, line_rec_pct, line_rec_hits = _line_pick(dk_line, vals, last10, sk)
                     recent10 = all_logs_player[:10]
+                    recent_vals = [float(l[sk]) for l in recent10]
+                    line_rec, line_rec_pct, line_rec_hits = _line_pick(dk_line, recent_vals, recent10, sk)
                     streak_rec, streak_n = _streak_pick(dk_line, recent10, sk)
                     alt_rec, alt_evens, alt_odds = _alt_pick(dk_line, recent10, sk)
                     picks.append({**result, 'player': pname, 'player_id': pid, 'team': a,
