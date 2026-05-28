@@ -309,6 +309,56 @@ def parse_min(val):
     try: return float(s)
     except: return 0.0
 
+def _streak_pick(line, recent10, sk):
+    """🔥 STREAK PICK: trailing consecutive games over the line.
+    Returns ('OVER', n) if 3+ in a row over, ('UNDER', n) if 3+ in a row under, else (None, 0).
+    recent10 is sorted newest-first."""
+    if not line or not recent10:
+        return None, 0
+    over_streak = under_streak = 0
+    for g in recent10:
+        v = float(g[sk])
+        if v > line:
+            if under_streak: break
+            over_streak += 1
+        elif v < line:
+            if over_streak: break
+            under_streak += 1
+        else:
+            break
+    if over_streak >= 3:
+        return 'OVER', over_streak
+    if under_streak >= 3:
+        return 'UNDER', under_streak
+    return None, 0
+
+
+def _alt_pick(line, recent10, sk):
+    """🔄 ALTERNATING PICK: on/off pattern. recent10 newest-first.
+    If even-indexed games (0,2,4,6,8 = most recent + every other before)
+    hit overs ≥4/5 and odd-indexed hit ≤1/5 (or vice versa), pattern is strong.
+    Tonight is the NEXT game so its parity is OPPOSITE of index 0.
+    Returns (rec, evens_hit_text, odds_hit_text) or (None, None, None)."""
+    if not line or len(recent10) < 6:
+        return None, None, None
+    evens = recent10[0::2][:5]  # idx 0,2,4,6,8
+    odds  = recent10[1::2][:5]  # idx 1,3,5,7,9
+    e_hits = sum(1 for g in evens if float(g[sk]) > line)
+    o_hits = sum(1 for g in odds  if float(g[sk]) > line)
+    e_n, o_n = len(evens), len(odds)
+    # Strong alternation = one side hits ≥80%, other ≤20%
+    if e_hits >= int(e_n*0.8) and o_hits <= int(o_n*0.2):
+        # Evens are HIGH cycle; tonight = odd cycle = LOW = UNDER
+        return 'UNDER', f"{e_hits}/{e_n}", f"{o_hits}/{o_n}"
+    if o_hits >= int(o_n*0.8) and e_hits <= int(e_n*0.2):
+        # Odds are HIGH cycle; tonight = even cycle = LOW = UNDER... wait
+        # Actually: most recent past game is idx 0 (even). Tonight = NEXT game.
+        # If odds (idx 1,3,5...) are HIGH cycle and evens are LOW,
+        # tonight follows the alternation → opposite of most recent = HIGH = OVER.
+        return 'OVER', f"{e_hits}/{e_n}", f"{o_hits}/{o_n}"
+    return None, None, None
+
+
 def _line_pick(line, all_vals, last10, sk):
     """Recommend OVER/UNDER vs the sportsbook line based on last-10 hit rate.
     Returns (rec, pct, hits_text) or (None, None, None) if no line/data."""
@@ -460,6 +510,11 @@ async def run_analysis(selected_date: str = None) -> Dict:
                     dk_under_odds = dk_ob.get('under_odds', '')
                     dk_hits = sum(1 for l in last10 if float(l[sk]) > dk_line) if dk_line and last10 else None
                     line_rec, line_rec_pct, line_rec_hits = _line_pick(dk_line, vals, last10, sk)
+                    # STREAK + ALT use last 10 OVERALL games (rhythm patterns,
+                    # not matchup-specific). all_logs_player is date-sorted.
+                    recent10 = all_logs_player[:10]
+                    streak_rec, streak_n = _streak_pick(dk_line, recent10, sk)
+                    alt_rec, alt_evens, alt_odds = _alt_pick(dk_line, recent10, sk)
                     picks.append({**result, 'player': pname, 'player_id': pid, 'team': h,
                                   'team_name': h_name, 'stat': sk,
                                   'stat_label': sc['label'], 'emoji': sc['emoji'],
@@ -469,7 +524,9 @@ async def run_analysis(selected_date: str = None) -> Dict:
                                   'fd_line': fd_line, 'fd_odds': fd_odds,
                                   'l10_sb_hits': l10_sb_hits,
                                   'dk_line': dk_line, 'dk_over_odds': dk_over_odds, 'dk_under_odds': dk_under_odds, 'dk_hits': dk_hits,
-                                  'line_rec': line_rec, 'line_rec_pct': line_rec_pct, 'line_rec_hits': line_rec_hits})
+                                  'line_rec': line_rec, 'line_rec_pct': line_rec_pct, 'line_rec_hits': line_rec_hits,
+                                  'streak_rec': streak_rec, 'streak_n': streak_n,
+                                  'alt_rec': alt_rec, 'alt_evens': alt_evens, 'alt_odds': alt_odds})
 
         for player in rosters.get(game['away_id'], []):
             pid, pname = player['id'], player['name']
@@ -495,6 +552,9 @@ async def run_analysis(selected_date: str = None) -> Dict:
                     dk_under_odds = dk_ob.get('under_odds', '')
                     dk_hits = sum(1 for l in last10 if float(l[sk]) > dk_line) if dk_line and last10 else None
                     line_rec, line_rec_pct, line_rec_hits = _line_pick(dk_line, vals, last10, sk)
+                    recent10 = all_logs_player[:10]
+                    streak_rec, streak_n = _streak_pick(dk_line, recent10, sk)
+                    alt_rec, alt_evens, alt_odds = _alt_pick(dk_line, recent10, sk)
                     picks.append({**result, 'player': pname, 'player_id': pid, 'team': a,
                                   'team_name': a_name, 'stat': sk,
                                   'stat_label': sc['label'], 'emoji': sc['emoji'],
@@ -504,7 +564,9 @@ async def run_analysis(selected_date: str = None) -> Dict:
                                   'fd_line': fd_line, 'fd_odds': fd_odds,
                                   'l10_sb_hits': l10_sb_hits,
                                   'dk_line': dk_line, 'dk_over_odds': dk_over_odds, 'dk_under_odds': dk_under_odds, 'dk_hits': dk_hits,
-                                  'line_rec': line_rec, 'line_rec_pct': line_rec_pct, 'line_rec_hits': line_rec_hits})
+                                  'line_rec': line_rec, 'line_rec_pct': line_rec_pct, 'line_rec_hits': line_rec_hits,
+                                  'streak_rec': streak_rec, 'streak_n': streak_n,
+                                  'alt_rec': alt_rec, 'alt_evens': alt_evens, 'alt_odds': alt_odds})
 
     picks.sort(key=lambda x: (x['hit_rate'], x['threshold']), reverse=True)
     top_picks = picks[:TOP_N]
@@ -928,6 +990,8 @@ function renderTop10Cards(picks){
       <div class="pick-pattern">${p.threshold}+ ${p.stat_label} in ${p.hits} of ${p.games} ${p.location.toLowerCase()} games vs ${p.opp} (incl. playoffs)</div>
       <div class="fd-line-badge" style="background:rgba(245,158,11,.12);border-color:rgba(245,158,11,.35);margin-top:6px;color:#fbbf24"><strong> PATTERN PICK:</strong> OVER ${p.threshold-0.5} ${p.stat_label} <span style="color:#fff">(${p.pct}%)</span></div>
       ${p.line_rec ? `<div class="fd-line-badge" style="background:${p.line_rec==='UNDER'?'rgba(239,68,68,.12)':'rgba(74,222,128,.12)'};border-color:${p.line_rec==='UNDER'?'rgba(239,68,68,.35)':'rgba(74,222,128,.35)'};margin-top:4px;color:${p.line_rec==='UNDER'?'#f87171':'#4ade80'}"><strong> LINE PICK:</strong> ${p.line_rec} ${p.dk_line} ${p.stat_label} <span style="color:#fff">(${p.line_rec_hits} = ${p.line_rec_pct}%)</span></div>` : ""}
+      ${p.streak_rec ? `<div class="fd-line-badge" style="background:rgba(249,115,22,.15);border-color:rgba(249,115,22,.4);margin-top:4px;color:#fb923c"><strong>🔥 STREAK PICK:</strong> ${p.streak_rec} ${p.dk_line} <span style="color:#fff">(${p.streak_n} games in a row)</span></div>` : ""}
+      ${p.alt_rec ? `<div class="fd-line-badge" style="background:rgba(168,85,247,.15);border-color:rgba(168,85,247,.4);margin-top:4px;color:#c084fc"><strong>🔄 ALT PICK:</strong> ${p.alt_rec} ${p.dk_line} <span style="color:#fff">(on/off pattern: ${p.alt_evens} vs ${p.alt_odds})</span></div>` : ""}
       ${p.dk_line ? `<div class="fd-line-badge" style="background:rgba(99,102,241,.12);border-color:rgba(99,102,241,.3);margin-top:4px;font-size:11px;color:#9ca3af">♠️ Book line: <strong style="color:#fff">${p.dk_line}</strong> ${p.dk_over_odds ? "O " + p.dk_over_odds : ""} ${p.dk_under_odds ? "U " + p.dk_under_odds : ""}</div>` : ""}
       <div class="pick-matchup"> Today: ${p.matchup}</div>
       <div class="bar-wrap"><div class="bar-fill ${bc}" style="width:${Math.min(p.pct,100)}%"></div></div>
