@@ -369,12 +369,16 @@ def _alt_pick(line, recent10, sk):
     e_hits = sum(1 for g in evens if float(g[sk]) > line)
     o_hits = sum(1 for g in odds  if float(g[sk]) > line)
     e_n, o_n = len(evens), len(odds)
-    # Strong alternation = one side hits ≥70%, other ≤30%
+    if e_n < 3 or o_n < 3:
+        return None, None, None
+    e_pct = e_hits / e_n
+    o_pct = o_hits / o_n
+    # Strong alternation = one side ≥70%, other ≤30%, and a clear gap
     # (catches usage/minute cycles books exploit — heavy night → light night)
-    if e_hits >= int(e_n*0.7 + 0.5) and o_hits <= int(o_n*0.3):
+    if e_pct >= 0.70 and o_pct <= 0.30:
         # Evens are HIGH cycle; tonight = odd cycle = LOW = UNDER
         return 'UNDER', f"{e_hits}/{e_n}", f"{o_hits}/{o_n}"
-    if o_hits >= int(o_n*0.7 + 0.5) and e_hits <= int(e_n*0.3):
+    if o_pct >= 0.70 and e_pct <= 0.30:
         # Odds are HIGH cycle; tonight = even cycle = LOW = UNDER... wait
         # Actually: most recent past game is idx 0 (even). Tonight = NEXT game.
         # If odds (idx 1,3,5...) are HIGH cycle and evens are LOW,
