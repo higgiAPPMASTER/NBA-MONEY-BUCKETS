@@ -447,20 +447,28 @@ async def run_analysis(selected_date: str = None) -> Dict:
     log = []
     log.append(f"Fetching schedule + sportsbook lines for {today_str}...")
 
-    # Fetch games + Odds API lines concurrently
+    # Games first — if there are none today (e.g. a playoff off-day), bail out
+    # immediately and skip the odds fetch + entire pipeline. No slow run, no
+    # failure-looking empty result.
     try:
-        odds_raw = await get_odds_lines(today_str)
-        # The Odds API is the sole sportsbook line source.
-        odds_props = odds_raw
         games = await get_today_games(today_str)
-        log.append(f"OddsAPI: {len(odds_raw)} lines")
     except Exception as e:
         return {'date': today_str, 'picks': [], 'all_picks': [], 'games': [],
                 'log': [f'Error: {e}'], 'total': 0}
 
     if not games:
         return {'date': today_str, 'picks': [], 'all_picks': [], 'games': [],
-                'log': [f'No NBA games found for {today_str}.'], 'total': 0}
+                'no_games': True,
+                'log': [f'No NBA games scheduled for {today_str}.'], 'total': 0}
+
+    # Games exist — now fetch the Odds API lines (sole sportsbook source).
+    try:
+        odds_raw = await get_odds_lines(today_str)
+        odds_props = odds_raw
+        log.append(f"OddsAPI: {len(odds_raw)} lines")
+    except Exception as e:
+        return {'date': today_str, 'picks': [], 'all_picks': [], 'games': [],
+                'log': [f'Error: {e}'], 'total': 0}
 
     log.append("Games: " + " | ".join(f"{g['away']} @ {g['home']}" for g in games))
     log.append(f"{len(odds_props)} sportsbook prop lines loaded")
@@ -1351,6 +1359,12 @@ async function runPicks(){
     if(!r.ok)throw new Error('Server error '+r.status);
     const data=await r.json();
     renderGames(data.games);
+    if(data.no_games){
+      document.getElementById('filterBar').style.display='none';
+      document.getElementById('allPicksWrap').style.display='none';
+      document.getElementById('content').innerHTML=`<div class="msg-card"><span class="ico"></span><h2>No Games Today</h2><p>No NBA games scheduled for ${data.date||selectedDate}. Check back on game day.</p></div>`;
+      return;
+    }
     top10=data.picks||[];
     allPicksData=data.all_picks||[];
     activeTopStat='ALL';activeAllStat='ALL';
