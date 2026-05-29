@@ -30,8 +30,17 @@ def make_token(username: str) -> str:
     return hashlib.sha256(f"{username}:{SECRET}".encode()).hexdigest()
 
 def get_user(request: Request) -> Optional[str]:
-    return 'higgi'
-    return None
+    from jose import jwt as _jose_jwt
+    import os as _os
+    _jwt_secret = _os.environ.get("JWT_SECRET", "")
+    tok = request.query_params.get("_tok","") or request.cookies.get("__mpa_token","") or request.headers.get("Authorization","").replace("Bearer ","").strip()
+    if not tok or len(tok.split(".")) != 3 or not _jwt_secret:
+        return None
+    try:
+        _jose_jwt.decode(tok, _jwt_secret, algorithms=["HS256"])
+        return tok
+    except Exception:
+        return None
 
 # ─── Stat Config ──────────────────────────────────────────────────────────────
 # ESPN gamelog stats array order:
@@ -1044,7 +1053,7 @@ footer{text-align:center;padding:32px 24px;color:#4b5563;font-size:.78rem;border
   var t=p.get('token');
   if(t){localStorage.setItem(KEY,t);window.history.replaceState({},'',window.location.pathname);}
   var tok=localStorage.getItem(KEY);
-  // gate removed — hub handles auth
+  if(!tok){window.location.href='https://www.moneypicksarena.com'; return;}
 })();
 let top10=[], allPicksData=[], activeTopStat='ALL', activeAllStat='ALL', sideFilter=null;
 
@@ -1337,7 +1346,8 @@ async function runPicks(){
     </div>`;
   document.getElementById('allPicksWrap').style.display='none';
   try{
-    const r=await fetch('/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({date:selectedDate})});
+    const _nbaTok=localStorage.getItem('__mpa_token')||'';
+    const r=await fetch('/run?_tok='+encodeURIComponent(_nbaTok),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({date:selectedDate})});
     if(!r.ok)throw new Error('Server error '+r.status);
     const data=await r.json();
     renderGames(data.games);
