@@ -812,7 +812,7 @@ input::placeholder{color:#374151}
 <body>
 <script>
 (function(){
-  var HUB='https://www.moneypicksarena.com';
+  var HUB='https://moneypicksarena.com';
   var KEY='__mpa_token';
   var p=new URLSearchParams(window.location.search);
   var t=p.get('token');
@@ -1055,13 +1055,13 @@ footer{text-align:center;padding:32px 24px;color:#4b5563;font-size:.78rem;border
 <script>
 // Hub Access Gate - client side only, no server round-trip
 (function(){
-  var HUB='https://www.moneypicksarena.com';
+  var HUB='https://moneypicksarena.com';
   var KEY='__mpa_token';
   var p=new URLSearchParams(window.location.search);
   var t=p.get('token');
   if(t){localStorage.setItem(KEY,t);window.history.replaceState({},'',window.location.pathname);}
   var tok=localStorage.getItem(KEY);
-  if(!tok){window.location.href='https://www.moneypicksarena.com'; return;}
+  if(!tok){window.location.href='https://moneypicksarena.com'; return;}
 })();
 let top10=[], allPicksData=[], activeTopStat='ALL', activeAllStat='ALL', sideFilter=null;
 
@@ -1484,7 +1484,7 @@ async def index(request: Request):
 
 @app.get("/login")
 async def login_get():
-    return RedirectResponse("https://www.moneypicksarena.com")
+    return RedirectResponse("https://moneypicksarena.com")
 
 @app.post("/login")
 async def login_post(request: Request):
