@@ -1522,9 +1522,15 @@ function _legScore(c){
 // To convert back, remove the _floorOk gate in _parlayPool below.
 function _floorOk(odds){ if(odds==null||odds==='') return true; var a=parseFloat(odds); if(isNaN(a)||a===0) return true; return a>=-500; }
 function _parlayPool(){
+  // HARD MINUTES FLOOR: players under this mpg never enter the parlay builder — low-minute
+  // guys are unreliable, especially in the playoffs when rotations shrink. Unknown mpg is
+  // kept (rare). This is a hard cut, separate from the soft 20-mpg starter lean in
+  // _legScore. To revert, set _MIN_MPG to 0.
+  var _MIN_MPG=18;
   var byPlayer={};
   (allPicksData||[]).forEach(function(p){
     _legCandidates(p).forEach(function(c){
+      if(c.mpg!=null && c.mpg<_MIN_MPG) return;
       if(!_floorOk(c.odds)) return;
       var cur=byPlayer[c.player];
       if(!cur || _legScore(c)>_legScore(cur)) byPlayer[c.player]=c;
@@ -1546,10 +1552,21 @@ function _renderParlay(randomize){
   if(cands.length<n){ out.innerHTML='<div style="color:#f87171;padding:10px">Only '+cands.length+' qualifying play'+(cands.length!==1?'s':'')+' on the board. Pick a smaller parlay.</div>'; return; }
   var legs;
   if(randomize){
-    legs=_shuffle(cands.slice()).slice(0,n).sort(function(a,b){return _legScore(b)-_legScore(a);});
+    var pool=cands.slice();
+    // FRESH LIST: for parlays of 5 legs or fewer, exclude the players from the parlay
+    // currently shown so back-to-back "Generate New" draws don't repeat players. Parlays
+    // of 6+ are exempt (pool too small to guarantee). Falls back to the full pool if
+    // excluding would leave too few to fill the parlay. To revert, delete this block.
+    if(n<=5 && window._lastParlayPlayers && window._lastParlayPlayers.length){
+      var avoid=window._lastParlayPlayers;
+      var fresh=pool.filter(function(c){return avoid.indexOf(c.player)===-1;});
+      if(fresh.length>=n) pool=fresh;
+    }
+    legs=_shuffle(pool).slice(0,n).sort(function(a,b){return _legScore(b)-_legScore(a);});
   } else {
     legs=cands.slice(0,n);
   }
+  window._lastParlayPlayers=legs.map(function(l){return l.player;});
   var dec=1, priced=0, missing=0;
   legs.forEach(function(l){ if(l.dec){dec*=l.dec;priced++;}else{missing++;} });
   var am = priced? _decToAm(dec) : null;
