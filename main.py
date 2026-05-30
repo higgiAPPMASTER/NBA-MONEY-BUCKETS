@@ -811,14 +811,30 @@ async def run_analysis(selected_date: str = None, force: bool = False) -> Dict:
     CARD_MIN_MPG = 24
     top_picks = []
     _seen_players = set()
+    _below = []  # picks from sub-floor (backup) players, held back for backfill
     for _pk in picks:
         _mpg = _pk.get('mpg')
         if _mpg is not None and _mpg < CARD_MIN_MPG:
+            _below.append(_pk)
             continue
         top_picks.append(_pk)
         _seen_players.add(_pk['player'])
         if len(_seen_players) >= TOP_N:
             break
+    # BACKFILL TO TOP_N: starters / 6th-men (>= CARD_MIN_MPG) always fill the cards first.
+    # If too few clear the floor on a light slate, top the board off with the HIGHEST-minute
+    # players among those under the floor (closest to a 6th man) so we still show a full
+    # top TOP_N instead of only a handful. Deep-bench guys sort last and rarely make it.
+    if len(_seen_players) < TOP_N:
+        _below.sort(key=lambda x: (x.get('mpg') or 0), reverse=True)
+        for _pk in _below:
+            if _pk['player'] in _seen_players:
+                top_picks.append(_pk)            # complete an already-carded player's picks
+            elif len(_seen_players) < TOP_N:
+                top_picks.append(_pk)
+                _seen_players.add(_pk['player'])  # add a new backup only while under TOP_N
+            # else: board already has TOP_N distinct players — skip further NEW players but
+            # keep scanning so trailing picks of carded players aren't dropped (no early break).
     log.append(f"{len(picks)} qualifying patterns -> {len(top_picks)} picks across top {len(_seen_players)} players shown")
     if odds_props:
         with_lines = sum(1 for p in picks if p.get('fd_line'))
