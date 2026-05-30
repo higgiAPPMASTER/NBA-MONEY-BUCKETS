@@ -42,6 +42,24 @@ def get_user(request: Request) -> Optional[str]:
     except Exception:
         return None
 
+_NBA_ADMIN_EMAIL = os.environ.get("ADMIN_EMAIL", "higgi117711@gmail.com").strip().lower()
+
+def _token_email(token: str) -> str:
+    """Return the email (sub) from a valid hub token, else ''."""
+    from jose import jwt as _jose_jwt
+    import os as _os
+    _secret = _os.environ.get("JWT_SECRET", "")
+    if not token or len(token.split(".")) != 3 or not _secret:
+        return ""
+    try:
+        payload = _jose_jwt.decode(token, _secret, algorithms=["HS256"])
+        return str(payload.get("sub", "")).strip().lower()
+    except Exception:
+        return ""
+
+def _is_admin_token(token: str) -> bool:
+    return bool(_NBA_ADMIN_EMAIL) and _token_email(token) == _NBA_ADMIN_EMAIL
+
 # ─── Stat Config ──────────────────────────────────────────────────────────────
 # ESPN gamelog stats array order:
 # [0]=MIN [1]=FG [2]=FG% [3]=3PT [4]=3P% [5]=FT [6]=FT% [7]=REB [8]=AST
@@ -491,15 +509,16 @@ def best_bet_at_line(line, values):
     return {'side': side, 'line': line, 'hits': hits, 'games': n, 'pct': pct, 'conf': conf}
 
 
-async def run_analysis(selected_date: str = None) -> Dict:
+async def run_analysis(selected_date: str = None, force: bool = False) -> Dict:
     today_str = selected_date if selected_date else date.today().isoformat()
-    # File cache check first
-    _fc = _cache_get('nba', today_str)
-    if _fc:
-        _cache.update(_fc)
-        return _fc
-    if _cache.get('date') == today_str and _cache.get('picks') is not None and _cache.get('odds_loaded'):
-        return _cache
+    # File cache check first (skipped on force refresh — admin only)
+    if not force:
+        _fc = _cache_get('nba', today_str)
+        if _fc:
+            _cache.update(_fc)
+            return _fc
+        if _cache.get('date') == today_str and _cache.get('picks') is not None and _cache.get('odds_loaded'):
+            return _cache
 
     log = []
     log.append(f"Fetching schedule + sportsbook lines for {today_str}...")
@@ -931,6 +950,10 @@ input[type=date]::-webkit-calendar-picker-indicator{filter:invert(1);opacity:.7;
 .btn-run{background:#f59e0b;color:#000}
 .btn-run:hover{background:#fbbf24;transform:translateY(-1px);box-shadow:0 4px 20px rgba(245,158,11,.35)}
 .btn-run:disabled{background:#2a2a2a;color:#4b5563;cursor:not-allowed;transform:none;box-shadow:none}
+.admin-only{display:none !important}
+body.is-admin .admin-only{display:inline-block !important}
+.btn-force{background:#dc2626;color:#fff}
+.btn-force:hover{background:#ef4444;transform:translateY(-1px);box-shadow:0 4px 20px rgba(220,38,38,.35)}
 .ball-svg,.ball-shadow,.fd-indicator,.pick-emoji,.cr-emoji,.tb-ico,.msg-card .ico,.btn-out,.btn-refresh{display:none}
 .games-bar{display:none;gap:8px;overflow-x:auto;padding-bottom:4px;margin-bottom:20px}
 .game-chip{background:#161616;border:1px solid #262626;border-radius:10px;padding:9px 18px;white-space:nowrap;font-size:.82rem;flex-shrink:0;transition:border-color .2s}
@@ -1032,7 +1055,7 @@ footer{text-align:center;padding:32px 24px;color:#4b5563;font-size:.78rem;border
     <label>Date</label>
     <input type="date" id="datePicker" value="__TODAY__" min="__TODAY__" max="__TOMORROW__">
   </div>
-  <div style="text-align:center"><button class="btn btn-run" id="runBtn" onclick="runPicks()">Run Picks</button></div>
+  <div style="text-align:center"><button class="btn btn-run" id="runBtn" onclick="runPicks()">Run Picks</button><button class="btn btn-force admin-only" id="forceBtn" onclick="runPicks(true)" style="margin-left:10px" title="Bypass cache and rebuild today's picks from scratch">Force Refresh</button></div>
 </div>
 <div class="games-bar" id="gamesBar"></div>
 <div id="filterBar" style="display:none" class="filter-bar">
@@ -1140,6 +1163,9 @@ footer{text-align:center;padding:32px 24px;color:#4b5563;font-size:.78rem;border
   var tok=localStorage.getItem(KEY);
   if(!tok){window.location.href='https://moneypicksarena.com'; return;}
 })();
+// Auto-enable admin view if this logged-in user is the admin (cosmetic — the
+// server independently re-verifies before honoring any force refresh).
+if(window.IS_ADMIN){document.body.classList.add('is-admin');}else{var _at=localStorage.getItem('__mpa_token')||'';if(_at){fetch('/api/whoami?_tok='+encodeURIComponent(_at)).then(r=>r.json()).then(d=>{if(d&&d.is_admin){window.IS_ADMIN=true;document.body.classList.add('is-admin');}}).catch(function(){});}}
 let top10=[], allPicksData=[], activeTopStat='ALL', activeAllStat='ALL', sideFilter=null;
 
 function pctClass(p){return p>=90?['pct-green','bar-green']:p>=80?['pct-yellow','bar-yellow']:['pct-orange','bar-orange']}
@@ -1202,6 +1228,7 @@ function renderTop10Cards(picks){
     // picks are pre-sorted by has_consistency desc, hit_rate desc, threshold desc).
     const stats=[byPlayer[pname][0]];
     const p=stats[0];
+    const cardKey=ladReg(p);
     const teamLogo=`https://a.espncdn.com/i/teamlogos/nba/500/${(p.team||'').toLowerCase()}.png`;
     const headshot=`https://a.espncdn.com/i/headshots/nba/players/full/${p.player_id}.png`;
     const tip=p.tipoff?new Date(p.tipoff).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',timeZoneName:'short'}):'';
@@ -1257,16 +1284,6 @@ function renderTop10Cards(picks){
           <span style="color:#fff"> ${bb.hits}/${bb.games} (${bb.pct}%)</span>
           <span style="color:${confColor};font-weight:800"> ${bb.conf}</span></div>`);
       }
-      // A — Hit-rate ladder, alt lines around the book line (line ±3)
-      if(s.ladder && s.ladder.length){
-        const anchorLine=(s.dk_line!=null?s.dk_line:s.fd_line);
-        const rungs=s.ladder.map(r=>{
-          const c=r.pct>=70?'#4ade80':r.pct>=50?'#fbbf24':'#f87171';
-          const isLine=(anchorLine!=null&&r.t===anchorLine);
-          return `<span style="color:${c};font-weight:700${isLine?';text-decoration:underline':''}">o${r.t} ${r.hits}/${r.games}</span>`;
-        }).join(`<span style="color:#444"> · </span>`);
-        lines.push(`<div style="font-size:.76rem;color:#aaa;margin:4px 0 8px"><span style="color:#888">alt lines vs ${p.opp} ${(p.location||'').toLowerCase()}:</span> ${rungs}</div>`);
-      }
       return `<div style="background:#0d0d0d;border:1px solid #1f1f1f;border-radius:10px;padding:12px 14px;margin-top:9px">
         <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:7px">
           <div style="font-size:.98rem;min-width:0"><span>${s.emoji}</span> <strong style="color:#fff">${s.stat_label}</strong></div>
@@ -1286,7 +1303,8 @@ function renderTop10Cards(picks){
         <img src="${teamLogo}" alt="${p.team}" style="height:38px;width:38px;object-fit:contain" onerror="this.style.display='none'"/>
       </div>
       <div style="position:relative;height:160px;background:radial-gradient(ellipse at center top,rgba(253,184,39,.15),transparent 70%),linear-gradient(180deg,#1e3a5f 0%,#0a1a2e 100%);overflow:hidden">
-        <img src="${headshot}" alt="${pname}" style="position:absolute;bottom:-6px;left:50%;transform:translateX(-50%);height:170px;object-fit:contain" onerror="this.style.display='none'"/>
+        <img onclick="openLadder('${cardKey}')" src="${headshot}" alt="${pname}" style="position:absolute;bottom:-6px;left:50%;transform:translateX(-50%);height:170px;object-fit:contain;cursor:pointer" onerror="this.style.display='none'"/>
+        <div onclick="openLadder('${cardKey}')" style="position:absolute;bottom:6px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,.62);color:#FDB827;font-size:.62rem;font-weight:800;padding:3px 9px;border-radius:6px;border:1px solid #FDB82766;cursor:pointer;white-space:nowrap">📊 TAP FOR GAME LOG</div>
         ${p.position?`<div style="position:absolute;top:10px;right:12px;background:rgba(0,0,0,.6);color:#fff;font-weight:800;font-size:.88rem;padding:4px 10px;border-radius:6px;border:1px solid #444">${p.position}</div>`:''}
       </div>
       <div style="background:#FDB827;color:#000;text-align:center;padding:10px 12px;font-weight:900;font-size:1.18rem;letter-spacing:.01em">${pname}</div>
@@ -1345,8 +1363,7 @@ function renderAllByGame(picks){
         <div id="${pid}" style="display:none;flex-direction:column;background:#0e0e0e">`;
       for(const p of rows){
         const [pc,bc]=pctClass(p.pct);
-        const ladKey='lad_'+((p.player_id||'')+'_'+p.stat+'_'+p.location+'_'+p.opp).replace(/[^a-z0-9]/gi,'_');
-        window.__LAD__=window.__LAD__||{}; window.__LAD__[ladKey]=p;
+        const ladKey=ladReg(p);
         const badges = [];
         if(p.has_consistency) badges.push(`<span style="background:rgba(245,158,11,.15);color:#fbbf24;padding:2px 7px;border-radius:6px;font-size:.65rem;font-weight:700;margin-right:4px">PATTERN ${p.pct}%</span>`);
         const loc=(p.location||'').toLowerCase();
@@ -1391,13 +1408,13 @@ function renderSignalLists(picks){
   const mc=document.getElementById('mpaCount'); if(mc) mc.textContent=mpas.length;
   const dirColor=d=>d==='OVER'?'#4ade80':d==='UNDER'?'#f87171':'#9ca3af';
   const dirBg=d=>d==='OVER'?'rgba(74,222,128,.14)':d==='UNDER'?'rgba(239,68,68,.14)':'rgba(156,163,175,.1)';
-  const row=(p,sigHTML)=>`<div style="display:grid;grid-template-columns:1fr auto;gap:10px;align-items:center;padding:9px 14px;border-bottom:1px solid #1a1a1a">
+  const row=(p,sigHTML)=>{const k=ladReg(p);return `<div onclick="openLadder('${k}')" style="display:grid;grid-template-columns:1fr auto;gap:10px;align-items:center;padding:9px 14px;border-bottom:1px solid #1a1a1a;cursor:pointer">
     <div style="min-width:0">
       <div style="font-weight:700;color:#fff;font-size:.82rem">${p.emoji} ${p.player} <span style="color:#777;font-size:.7rem">${p.team} vs ${p.opp}</span></div>
-      <div style="color:#999;font-size:.7rem;margin-top:2px">${p.stat_label}${p.dk_line?` · line ${p.dk_line}`:''}</div>
+      <div style="color:#999;font-size:.7rem;margin-top:2px">${p.stat_label}${p.dk_line?` · line ${p.dk_line}`:''} <span style="color:#FDB827;font-size:.6rem;font-weight:800">📊 TAP</span></div>
     </div>
     ${sigHTML}
-  </div>`;
+  </div>`;};
   const sl=document.getElementById('streakList');
   if(sl) sl.innerHTML = streaks.length ? streaks.map(p=>row(p,`<span style="background:${dirBg(p.streak_rec)};color:${dirColor(p.streak_rec)};border:1px solid ${dirColor(p.streak_rec)}55;padding:4px 9px;border-radius:6px;font-weight:900;font-size:.72rem;white-space:nowrap">🔥 ${p.streak_n} ${p.streak_rec}</span>`)).join('') : '<div style="padding:18px;text-align:center;color:#555;font-size:.78rem">No streaks today</div>';
   const ml=document.getElementById('mpaList');
@@ -1415,6 +1432,8 @@ function closeLadder(ev){
   if(ev && ev.target && ev.target.id!=='ladderOverlay' && ev.type==='click') return;
   const o=document.getElementById('ladderOverlay'); if(o) o.remove();
 }
+function ladKeyOf(p){return 'lad_'+((p.player_id||'')+'_'+p.stat+'_'+p.location+'_'+p.opp).replace(/[^a-z0-9]/gi,'_');}
+function ladReg(p){const k=ladKeyOf(p);window.__LAD__=window.__LAD__||{};window.__LAD__[k]=p;return k;}
 function openLadder(key){
   const p=(window.__LAD__||{})[key]; if(!p) return;
   const esc=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -1489,7 +1508,8 @@ function renderGames(games){
 }
 
 
-async function runPicks(){
+async function runPicks(force=false){
+  if(force && !window.IS_ADMIN) return;
   const selectedDate=document.getElementById('datePicker').value;
   document.getElementById('content').innerHTML=`
     <div class="msg-card">
@@ -1502,7 +1522,7 @@ async function runPicks(){
   document.getElementById('allPicksWrap').style.display='none';
   try{
     const _nbaTok=localStorage.getItem('__mpa_token')||'';
-    const r=await fetch('/run?_tok='+encodeURIComponent(_nbaTok),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({date:selectedDate})});
+    const r=await fetch('/run?_tok='+encodeURIComponent(_nbaTok),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({date:selectedDate,force:!!force})});
     if(!r.ok)throw new Error('Server error '+r.status);
     const data=await r.json();
     renderGames(data.games);
@@ -1623,11 +1643,22 @@ async def verify_token_nba(request: Request):
     from fastapi.responses import JSONResponse
     return JSONResponse({"ok": True})
 
+@app.get("/api/whoami")
+async def whoami_nba(request: Request, token: str = ""):
+    tok = token or request.query_params.get("_tok","") or request.cookies.get("__mpa_token","") or request.headers.get("Authorization","").replace("Bearer ","").strip()
+    return {"is_admin": _is_admin_token(tok)}
+
 @app.get("/", response_class=HTMLResponse)
-async def index(request: Request):
+async def index(request: Request, admin: str = "", token: str = ""):
     today_iso = date.today().isoformat()
     tomorrow_iso = (date.today() + timedelta(days=1)).isoformat()
-    return HTMLResponse(MAIN_HTML.replace("__TODAY__", today_iso).replace("__TOMORROW__", tomorrow_iso))
+    # Admin turns on via EITHER ?admin=INTERNAL_API_TOKEN OR a hub login token
+    # whose email matches the admin (so it just works when the owner logs in).
+    is_admin = (bool(admin) and admin == os.environ.get("INTERNAL_API_TOKEN", "__none__")) or _is_admin_token(token)
+    js_flag = "true" if is_admin else "false"
+    html = (MAIN_HTML.replace("__TODAY__", today_iso).replace("__TOMORROW__", tomorrow_iso)
+            .replace("</head>", f"<script>window.IS_ADMIN = {js_flag};</script></head>", 1))
+    return HTMLResponse(html)
 
 @app.get("/login")
 async def login_get():
@@ -1668,9 +1699,16 @@ async def run(request: Request):
     try:
         body = await request.json()
         selected_date = body.get('date', date.today().isoformat())
+        force = bool(body.get('force', False))
     except Exception:
         selected_date = date.today().isoformat()
-    result = await run_analysis(selected_date)
+        force = False
+    # Force (cache bypass) is admin-only — independently re-verify the hub token.
+    if force:
+        _tok = request.query_params.get("_tok","") or request.cookies.get("__mpa_token","") or request.headers.get("Authorization","").replace("Bearer ","").strip()
+        if not _is_admin_token(_tok):
+            force = False
+    result = await run_analysis(selected_date, force=force)
     return result
 
 @app.get("/clear-cache")
