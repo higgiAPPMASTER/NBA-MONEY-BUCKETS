@@ -249,6 +249,7 @@ async def get_player_gamelogs_espn(player_id: str, season: int,
             'location':    location,
             'date':        ev_info.get('gameDate', ''),
             'player_team': player_team_abbr,
+            'MIN':         parse_min(stats[0]),
             'PTS':         parse_stat(stats[13]),
             'REB':         parse_stat(stats[7]),
             'AST':         parse_stat(stats[8]),
@@ -728,7 +729,8 @@ async def run_analysis(selected_date: str = None, force: bool = False) -> Dict:
                               'alt_rec': alt_rec, 'alt_evens': alt_evens, 'alt_odds': alt_odds,
                               'has_consistency': result is not None,
                               'recent_avg': round(sum(recent_vals)/len(recent_vals), 1) if recent_vals else None,
-                              'gap': round((sum(recent_vals)/len(recent_vals)) - dk_line, 1) if recent_vals and dk_line else None})
+                              'gap': round((sum(recent_vals)/len(recent_vals)) - dk_line, 1) if recent_vals and dk_line else None,
+                              'mpg': round(sum(float(l.get('MIN',0) or 0) for l in recent10)/len(recent10), 1) if recent10 else None})
 
         for player in rosters.get(game['away_id'], []):
             pid, pname = player['id'], player['name']
@@ -788,7 +790,8 @@ async def run_analysis(selected_date: str = None, force: bool = False) -> Dict:
                               'alt_rec': alt_rec, 'alt_evens': alt_evens, 'alt_odds': alt_odds,
                               'has_consistency': result is not None,
                               'recent_avg': round(sum(recent_vals)/len(recent_vals), 1) if recent_vals else None,
-                              'gap': round((sum(recent_vals)/len(recent_vals)) - dk_line, 1) if recent_vals and dk_line else None})
+                              'gap': round((sum(recent_vals)/len(recent_vals)) - dk_line, 1) if recent_vals and dk_line else None,
+                              'mpg': round(sum(float(l.get('MIN',0) or 0) for l in recent10)/len(recent10), 1) if recent10 else None})
 
     # Sort: consistency picks first (by hit rate), then non-consistency
     # streak/MPA picks. None-safe.
@@ -1502,12 +1505,17 @@ function _legCandidates(p){
   if(p.line_rec && !(pat && p.line_rec!=='OVER')){ c.push({type:'LINE',dir:p.line_rec,conf:(p.line_rec_pct||0),reason:'📈 LINE '+p.line_rec+' '+(p.line_rec_hits||'')+' ('+(p.line_rec_pct||0)+'%) vs '+p.opp}); }
   if(p.streak_rec && !(pat && p.streak_rec!=='OVER')){ var n=p.streak_n||0; c.push({type:'STREAK',dir:p.streak_rec,conf:Math.min(99,85+n),reason:'🔥 '+n+'-game '+p.streak_rec+' streak vs '+p.opp}); }
   if(p.alt_rec && !(pat && p.alt_rec!=='OVER')){ c.push({type:'MPA',dir:p.alt_rec,conf:Math.round(_mpaRate(p)),reason:'⭐ MPA '+p.alt_rec+((p.alt_evens&&p.alt_odds)?(' (even '+p.alt_evens+' · odd '+p.alt_odds+')'):'')}); }
-  c.forEach(function(x){ x.p=p; x.player=p.player; x.team=p.team; x.opp=p.opp; x.stat=p.stat_label||p.stat; x.emoji=p.emoji||''; x.line=line; x.odds=oddsFor(x.dir); x.dec=_amToDec(x.odds); x.hasOdds=!!x.dec; });
+  c.forEach(function(x){ x.p=p; x.player=p.player; x.team=p.team; x.opp=p.opp; x.stat=p.stat_label||p.stat; x.emoji=p.emoji||''; x.line=line; x.odds=oddsFor(x.dir); x.dec=_amToDec(x.odds); x.hasOdds=!!x.dec; x.mpg=(p.mpg!=null?p.mpg:null); });
   return c;
 }
 function _legScore(c){
   // Priced legs first, then signal strength, then bigger payout odds as a tiebreaker.
-  return (c.hasOdds?1:0)*1e9 + (c.conf||0)*1e4 + (c.dec?Math.min(c.dec,11)*100:0);
+  // SOFT STARTER LEAN: players at 20+ mpg get an ~11.5 confidence-point bonus so
+  // starters float to the top, but a role-player whose signal is 12+ points higher
+  // still wins (conf values are integers, so 11.5 makes the boundary deterministic).
+  // To convert back, delete the starterBonus term below.
+  var starterBonus = (c.mpg!=null && c.mpg>=20) ? 11.5*1e4 : 0;
+  return (c.hasOdds?1:0)*1e9 + (c.conf||0)*1e4 + starterBonus + (c.dec?Math.min(c.dec,11)*100:0);
 }
 function _parlayPool(){
   var byPlayer={};
@@ -1547,7 +1555,7 @@ function _renderParlay(randomize){
   var rows=legs.map(function(l,i){var fo=_fmtOdds(l.odds);return '<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:10px 12px;border-bottom:1px solid #1a1a1a">'
     +'<div style="min-width:0">'
     +'<div style="font-weight:800;color:#fff;font-size:.85rem">'+(i+1)+'. '+(l.emoji||'')+' '+l.player+' <span style="color:#777;font-size:.7rem">'+l.team+' vs '+l.opp+'</span> <span style="background:'+(tagBg[l.type]||'#222')+';color:'+(tagFg[l.type]||'#aaa')+';padding:1px 6px;border-radius:4px;font-size:.6rem;font-weight:800">'+l.type+'</span></div>'
-    +'<div style="color:#999;font-size:.72rem;margin-top:2px">'+l.stat+(l.line!=null?(' · line '+l.line):'')+' · '+l.reason+'</div>'
+    +'<div style="color:#999;font-size:.72rem;margin-top:2px">'+l.stat+(l.line!=null?(' · line '+l.line):'')+(l.mpg!=null?(' · '+l.mpg+' mpg'):'')+' · '+l.reason+'</div>'
     +'</div>'
     +'<div style="text-align:right;white-space:nowrap">'
     +'<div style="color:'+dirColor(l.dir)+';font-weight:900;font-size:.8rem">'+l.dir+'</div>'
