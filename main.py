@@ -326,17 +326,33 @@ async def get_odds_lines(today_str):
                         stat = ODDS_MARKET_MAP.get(mkt.get('key', ''))
                         if not stat:
                             continue
+                        # Collect BOTH Over and Under prices per player for this market.
+                        by_player = {}
                         for oc in mkt.get('outcomes', []):
-                            if oc.get('name') != 'Over':
+                            nm = oc.get('name')
+                            if nm not in ('Over', 'Under'):
                                 continue
                             player = oc.get('description', '').strip()
                             line   = float(oc.get('point') or 0)
-                            key    = f"{player}|{stat}"
-                            if player and line > 0 and key not in seen:
+                            if not player or line <= 0:
+                                continue
+                            d = by_player.setdefault(player, {'line': line})
+                            d['line'] = line
+                            if nm == 'Over':
+                                d['over_odds'] = str(oc.get('price', ''))
+                            else:
+                                d['under_odds'] = str(oc.get('price', ''))
+                        for player, d in by_player.items():
+                            if 'over_odds' not in d:   # require an Over line to register (mirrors prior behavior)
+                                continue
+                            key = f"{player}|{stat}"
+                            if key not in seen:
                                 seen.add(key)
                                 props.append({
-                                    'player': player, 'stat': stat, 'line': line,
-                                    'odds': str(oc.get('price', '')),
+                                    'player': player, 'stat': stat, 'line': d['line'],
+                                    'odds': d.get('over_odds', ''),
+                                    'over_odds': d.get('over_odds', ''),
+                                    'under_odds': d.get('under_odds', ''),
                                     'home': data.get('home_team', ''),
                                     'away': data.get('away_team', ''),
                                 })
@@ -562,7 +578,7 @@ async def run_analysis(selected_date: str = None, force: bool = False) -> Dict:
     for prop in odds_raw:
         key = (_nn(prop['player']), prop['stat'])
         if key not in dk_lookup:
-            dk_lookup[key] = {'line': prop['line'], 'over_odds': '', 'under_odds': ''}
+            dk_lookup[key] = {'line': prop['line'], 'over_odds': str(prop.get('over_odds', '')), 'under_odds': str(prop.get('under_odds', ''))}
 
     # Map team_id -> abbreviation so we can match a player's per-game team
     # (ESPN exposes 'team.abbreviation' per gamelog event). Used to filter out
@@ -952,6 +968,9 @@ input[type=date]::-webkit-calendar-picker-indicator{filter:invert(1);opacity:.7;
 .btn-run:disabled{background:#2a2a2a;color:#4b5563;cursor:not-allowed;transform:none;box-shadow:none}
 .admin-only{display:none !important}
 body.is-admin .admin-only{display:inline-block !important}
+#parlayCard{display:none}
+body.is-admin #parlayCard{display:block}
+#parlayLegs{background:#1a1a1a;color:#fff;border:1px solid #333;border-radius:8px;padding:8px 12px;font-size:.9rem;font-weight:700}
 .btn-force{background:#dc2626;color:#fff}
 .btn-force:hover{background:#ef4444;transform:translateY(-1px);box-shadow:0 4px 20px rgba(220,38,38,.35)}
 .ball-svg,.ball-shadow,.fd-indicator,.pick-emoji,.cr-emoji,.tb-ico,.msg-card .ico,.btn-out,.btn-refresh{display:none}
@@ -1056,6 +1075,18 @@ footer{text-align:center;padding:32px 24px;color:#4b5563;font-size:.78rem;border
     <input type="date" id="datePicker" value="__TODAY__" min="__TODAY__" max="__TOMORROW__">
   </div>
   <div style="text-align:center"><button class="btn btn-run admin-only" id="runBtn" onclick="runPicks()">Run Picks</button><button class="btn btn-force admin-only" id="forceBtn" onclick="runPicks(true)" style="margin-left:10px" title="Bypass cache and rebuild today's picks from scratch">Force Refresh</button></div>
+</div>
+<div class="card" id="parlayCard" style="text-align:center;max-width:600px;margin:0 auto 20px">
+  <h2 style="font-family:'Playfair Display',serif;font-size:1.4rem;font-weight:700;color:#fff;margin-bottom:6px">🎰 Auto Parlay Builder <span style="font-size:.7rem;color:#777;font-family:sans-serif">admin only</span></h2>
+  <div style="font-size:.74rem;color:#888;margin-bottom:16px">Best parlay from today's 100% streaks + MPA specials — strongest hits first</div>
+  <div style="display:flex;gap:10px;justify-content:center;align-items:center;flex-wrap:wrap">
+    <label style="color:#999;font-weight:700">Legs</label>
+    <select id="parlayLegs">
+      <option>2</option><option>3</option><option>4</option><option>5</option><option>6</option><option>7</option><option>8</option><option>9</option><option>10</option>
+    </select>
+    <button class="btn" onclick="buildParlay()">Build Best Parlay</button>
+  </div>
+  <div id="parlayResult" style="margin-top:16px;text-align:left"></div>
 </div>
 <div class="games-bar" id="gamesBar"></div>
 <div id="filterBar" style="display:none" class="filter-bar">
@@ -1419,6 +1450,66 @@ function renderSignalLists(picks){
   if(sl) sl.innerHTML = streaks.length ? streaks.map(p=>row(p,`<span style="background:${dirBg(p.streak_rec)};color:${dirColor(p.streak_rec)};border:1px solid ${dirColor(p.streak_rec)}55;padding:4px 9px;border-radius:6px;font-weight:900;font-size:.72rem;white-space:nowrap">🔥 ${p.streak_n} ${p.streak_rec}</span>`)).join('') : '<div style="padding:18px;text-align:center;color:#555;font-size:.78rem">No streaks today</div>';
   const ml=document.getElementById('mpaList');
   if(ml) ml.innerHTML = mpas.length ? mpas.map(p=>row(p,`<span style="background:${dirBg(p.alt_rec)};color:${dirColor(p.alt_rec)};border:1px solid ${dirColor(p.alt_rec)}55;padding:4px 9px;border-radius:6px;font-weight:900;font-size:.72rem;white-space:nowrap">⭐ ${p.alt_rec}${p.alt_evens&&p.alt_odds?` (even: ${p.alt_evens} · odd: ${p.alt_odds})`:''}</span>`)).join('') : '<div style="padding:18px;text-align:center;color:#555;font-size:.78rem">No MPA specials today</div>';
+}
+// ===== Admin Auto Parlay Builder =====
+function _amToDec(a){var s=String(a==null?'':a).replace('+','').trim();var n=parseFloat(s);if(!n||isNaN(n))return null;return n>0?1+n/100:1+100/Math.abs(n);}
+function _decToAm(d){if(!d||d<=1)return null;return d>=2?'+'+Math.round((d-1)*100):'-'+Math.round(100/(d-1));}
+function _mpaRate(p){function parse(s){if(!s)return[0,0];var m=String(s).split('/');return[parseFloat(m[0])||0,parseFloat(m[1])||0];}var e=parse(p.alt_evens),o=parse(p.alt_odds);var h=e[0]+o[0],t=e[1]+o[1];return t?h/t*100:0;}
+function _fmtOdds(o){if(o==null||o==='')return null;var s=String(o).trim();return (s.charAt(0)==='-'||s.charAt(0)==='+')?s:'+'+s;}
+function _legFrom(p,patternKeys){
+  var useStreak = p.streak_rec && !(p.streak_rec==='UNDER' && patternKeys.has(p.player+'|'+p.stat));
+  var dir = useStreak ? p.streak_rec : (p.alt_rec||null);
+  if(!dir) return null;
+  var line = (p.dk_line!=null?p.dk_line:p.fd_line);
+  var odds = dir==='OVER' ? (p.dk_over_odds||p.fd_odds||'') : (p.dk_under_odds||'');
+  var conf, reason, isStreak;
+  if(useStreak){
+    var n=p.streak_n||0;
+    isStreak=1;
+    conf=Math.min(99,80+n*2);
+    reason='🔥 '+n+'-game '+p.streak_rec+' streak vs '+p.opp;
+  } else {
+    isStreak=0;
+    conf=Math.round(_mpaRate(p));
+    reason='⭐ MPA '+p.alt_rec+((p.alt_evens&&p.alt_odds)?(' (even '+p.alt_evens+' · odd '+p.alt_odds+')'):'');
+  }
+  return {p:p,player:p.player,team:p.team,opp:p.opp,stat:p.stat_label||p.stat,emoji:p.emoji||'',dir:dir,line:line,odds:odds,conf:conf,isStreak:isStreak,reason:reason};
+}
+function buildParlay(){
+  var sel=document.getElementById('parlayLegs');
+  var n=parseInt(sel?sel.value:'3',10)||3;
+  var out=document.getElementById('parlayResult');
+  if(!allPicksData||!allPicksData.length){ if(out)out.innerHTML='<div style="color:#888;padding:10px">Run today\'s picks first, then build a parlay.</div>'; return; }
+  var patternKeys=new Set((allPicksData||[]).filter(function(p){return p.has_consistency;}).map(function(p){return p.player+'|'+p.stat;}));
+  var byPlayer={};
+  (allPicksData||[]).forEach(function(p){
+    var leg=_legFrom(p,patternKeys);
+    if(!leg) return;
+    var cur=byPlayer[leg.player];
+    if(!cur || leg.conf>cur.conf || (leg.conf===cur.conf && leg.isStreak>cur.isStreak)) byPlayer[leg.player]=leg;
+  });
+  var cands=Object.keys(byPlayer).map(function(k){return byPlayer[k];}).sort(function(a,b){return (b.conf-a.conf)||(b.isStreak-a.isStreak)||((b.p.pct||0)-(a.p.pct||0));});
+  if(cands.length<n){ if(out)out.innerHTML='<div style="color:#f87171;padding:10px">Only '+cands.length+' qualifying leg'+(cands.length!==1?'s':'')+' on the board (streaks + MPA specials). Pick a smaller parlay.</div>'; return; }
+  var legs=cands.slice(0,n);
+  var dec=1, priced=0, missing=0;
+  legs.forEach(function(l){var d=_amToDec(l.odds); if(d){dec*=d;priced++;}else{missing++;}});
+  var am = priced? _decToAm(dec) : null;
+  var payout = priced? (100*dec) : null;
+  var dirColor=function(d){return d==='OVER'?'#4ade80':d==='UNDER'?'#f87171':'#9ca3af';};
+  var rows=legs.map(function(l,i){var fo=_fmtOdds(l.odds);return '<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:10px 12px;border-bottom:1px solid #1a1a1a">'
+    +'<div style="min-width:0">'
+    +'<div style="font-weight:800;color:#fff;font-size:.85rem">'+(i+1)+'. '+(l.emoji||'')+' '+l.player+' <span style="color:#777;font-size:.7rem">'+l.team+' vs '+l.opp+'</span></div>'
+    +'<div style="color:#999;font-size:.72rem;margin-top:2px">'+l.stat+(l.line!=null?(' · line '+l.line):'')+' · '+l.reason+'</div>'
+    +'</div>'
+    +'<div style="text-align:right;white-space:nowrap">'
+    +'<div style="color:'+dirColor(l.dir)+';font-weight:900;font-size:.8rem">'+l.dir+'</div>'
+    +'<div style="color:#FDB827;font-size:.72rem;font-weight:800">'+(fo||'odds N/A')+'</div>'
+    +'</div></div>';}).join('');
+  var summary='<div style="display:flex;justify-content:space-between;align-items:center;padding:12px;background:linear-gradient(135deg,rgba(253,184,39,.12),rgba(253,184,39,.02));border-top:1px solid #262626">'
+    +'<div style="font-weight:900;color:#FDB827">'+n+'-LEG PARLAY</div>'
+    +'<div style="text-align:right">'+(am?('<div style="font-weight:900;color:#4ade80;font-size:1.05rem">'+am+'</div><div style="color:#999;font-size:.7rem">$100 → $'+payout.toFixed(2)+(missing?(' · '+priced+'/'+n+' legs priced'):'')+'</div>'):('<div style="color:#888;font-size:.78rem">No book odds available for these legs</div>'))+'</div>'
+    +'</div>';
+  if(out) out.innerHTML='<div style="background:#0e0e0e;border:1px solid #262626;border-radius:12px;overflow:hidden">'+rows+summary+'</div>';
 }
 function togglePlayer(id,hdr){
   const el=document.getElementById(id);
