@@ -703,8 +703,11 @@ async def run_analysis(selected_date: str = None, force: bool = False) -> Dict:
                 # Conflict resolution: streak (matchup-specific) beats MPA Special (rhythm) when they disagree
                 if streak_rec and alt_rec and streak_rec != alt_rec:
                     alt_rec = None
-                # Include pick if EITHER consistency pattern OR streak OR MPA Special
-                if not result and not streak_rec and not alt_rec:
+                # Include pick if consistency pattern OR streak OR MPA Special OR a 70%+ LINE
+                # recommendation. LINE-only picks were previously dropped here; keeping them
+                # opens the parlay pool up to all 70%+ starter plays (user request). They have
+                # has_consistency False / hit_rate 0 so they sort below carded picks.
+                if not result and not streak_rec and not alt_rec and not line_rec:
                     continue
                 base = result or {'threshold': 0, 'hits': 0, 'games': len(last10),
                                   'hit_rate': 0.0, 'pct': 0.0}
@@ -765,7 +768,8 @@ async def run_analysis(selected_date: str = None, force: bool = False) -> Dict:
                 # Conflict resolution: streak (matchup-specific) beats MPA Special (rhythm) when they disagree
                 if streak_rec and alt_rec and streak_rec != alt_rec:
                     alt_rec = None
-                if not result and not streak_rec and not alt_rec:
+                # LINE-only 70%+ picks kept too (see home-side note) — opens the parlay pool.
+                if not result and not streak_rec and not alt_rec and not line_rec:
                     continue
                 base = result or {'threshold': 0, 'hits': 0, 'games': len(last10),
                                   'hit_rate': 0.0, 'pct': 0.0}
@@ -1527,16 +1531,22 @@ function _parlayPool(){
   // kept (rare). This is a hard cut, separate from the soft 20-mpg starter lean in
   // _legScore. To revert, set _MIN_MPG to 0.
   var _MIN_MPG=18;
-  var byPlayer={};
+  // ONE PLAY PER PLAYER+STAT: a player can contribute several plays (Points, Rebounds,
+  // Assists ...), keeping the best signal for each stat — this widens the pool toward the
+  // full count of strong signals. The parlay builder still never uses the same player twice
+  // in one ticket (enforced in _renderParlay). To collapse back to one play per player,
+  // key on c.player alone.
+  var byKey={};
   (allPicksData||[]).forEach(function(p){
     _legCandidates(p).forEach(function(c){
       if(c.mpg!=null && c.mpg<_MIN_MPG) return;
       if(!_floorOk(c.odds)) return;
-      var cur=byPlayer[c.player];
-      if(!cur || _legScore(c)>_legScore(cur)) byPlayer[c.player]=c;
+      var key=c.player+'|'+c.stat;
+      var cur=byKey[key];
+      if(!cur || _legScore(c)>_legScore(cur)) byKey[key]=c;
     });
   });
-  return Object.keys(byPlayer).map(function(k){return byPlayer[k];}).sort(function(a,b){return _legScore(b)-_legScore(a);});
+  return Object.keys(byKey).map(function(k){return byKey[k];}).sort(function(a,b){return _legScore(b)-_legScore(a);});
 }
 function _shuffle(a){ for(var i=a.length-1;i>0;i--){var j=Math.floor(Math.random()*(i+1));var t=a[i];a[i]=a[j];a[j]=t;} return a; }
 function closeParlay(){ var o=document.getElementById('parlayResult'); if(o) o.innerHTML=''; }
@@ -1549,22 +1559,39 @@ function _renderParlay(randomize){
   if(!out) return;
   if(!allPicksData||!allPicksData.length){ out.innerHTML='<div style="color:#888;padding:10px">Run today&#39;s picks first, then build a parlay.</div>'; return; }
   var cands=_parlayPool();
-  if(cands.length<n){ out.innerHTML='<div style="color:#f87171;padding:10px">Only '+cands.length+' qualifying play'+(cands.length!==1?'s':'')+' on the board. Pick a smaller parlay.</div>'; return; }
+  // Capacity is DISTINCT PLAYERS — a parlay never uses the same player twice, even though the
+  // pool now holds multiple stat-plays per player.
+  var seenP={}; cands.forEach(function(c){ seenP[c.player]=1; });
+  var availP=Object.keys(seenP).length;
+  if(availP<n){ out.innerHTML='<div style="color:#f87171;padding:10px">Only '+availP+' qualifying player'+(availP!==1?'s':'')+' on the board. Pick a smaller parlay.</div>'; return; }
+  // Greedy pick of n legs with DISTINCT players. Pass 1 honors the avoid set (the players in
+  // the parlay currently shown, so "Generate New" gives a fresh list for ANY size now, 6-leg
+  // included); pass 2 fills any shortfall ignoring the avoid set but still keeping players
+  // unique. To drop the fresh-list behavior, pass null as avoidSet below.
+  function _pickLegs(ordered, avoidSet){
+    var used={}, picked=[], i, c;
+    for(i=0;i<ordered.length && picked.length<n;i++){
+      c=ordered[i];
+      if(used[c.player]) continue;
+      if(avoidSet && avoidSet[c.player]) continue;
+      used[c.player]=1; picked.push(c);
+    }
+    for(i=0;i<ordered.length && picked.length<n;i++){
+      c=ordered[i];
+      if(used[c.player]) continue;
+      used[c.player]=1; picked.push(c);
+    }
+    return picked;
+  }
   var legs;
   if(randomize){
-    var pool=cands.slice();
-    // FRESH LIST: for parlays of 5 legs or fewer, exclude the players from the parlay
-    // currently shown so back-to-back "Generate New" draws don't repeat players. Parlays
-    // of 6+ are exempt (pool too small to guarantee). Falls back to the full pool if
-    // excluding would leave too few to fill the parlay. To revert, delete this block.
-    if(n<=5 && window._lastParlayPlayers && window._lastParlayPlayers.length){
-      var avoid=window._lastParlayPlayers;
-      var fresh=pool.filter(function(c){return avoid.indexOf(c.player)===-1;});
-      if(fresh.length>=n) pool=fresh;
+    var avoidSet=null;
+    if(window._lastParlayPlayers && window._lastParlayPlayers.length){
+      avoidSet={}; window._lastParlayPlayers.forEach(function(pl){ avoidSet[pl]=1; });
     }
-    legs=_shuffle(pool).slice(0,n).sort(function(a,b){return _legScore(b)-_legScore(a);});
+    legs=_pickLegs(_shuffle(cands.slice()), avoidSet).sort(function(a,b){return _legScore(b)-_legScore(a);});
   } else {
-    legs=cands.slice(0,n);
+    legs=_pickLegs(cands.slice(), null);
   }
   window._lastParlayPlayers=legs.map(function(l){return l.player;});
   var dec=1, priced=0, missing=0;
