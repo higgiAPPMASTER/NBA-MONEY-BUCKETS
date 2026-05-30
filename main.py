@@ -434,6 +434,47 @@ def find_best_threshold(values, thresholds):
             return {'threshold':t,'hits':hits,'games':n,'hit_rate':rate,'pct':round(rate*100,1)}
     return None
 
+
+def build_ladder(values, max_rungs=14):
+    """A — Full hit-rate ladder: for each integer threshold from the lowest to
+    the highest value the player posted vs this opponent/location, how often he
+    cleared it. Lets the user see 3+, 4+, 5+, 6+... not just the single 70% floor.
+    History is last-10 vs this opponent at this location (regular season + playoffs).
+    Always keeps the LOW (most-reliable) rungs; only the far high end is trimmed
+    for very wide stats (points/PRA) so the card stays readable."""
+    n = len(values)
+    if not n:
+        return []
+    mx = int(max(values))
+    lo = max(1, int(min(values)))
+    hi = min(mx, lo + max_rungs - 1)
+    out = []
+    for t in range(lo, hi + 1):
+        hits = sum(1 for v in values if v >= t)
+        out.append({'t': t, 'hits': hits, 'games': n, 'pct': round(hits / n * 100)})
+    return out
+
+
+def best_bet_at_line(line, values):
+    """B — Best bet at the sportsbook's ACTUAL line: over the same opponent/location
+    history, the dominant side (over/under) vs that line plus its hit rate and a
+    confidence label (STRONG >=70%, LEAN >=60%, else PASS)."""
+    if line is None or not values:
+        return None
+    n = len(values)
+    over = sum(1 for v in values if v > line)
+    under = n - over
+    if over == under:                      # even split = no edge, do not pick a side
+        return {'side': 'PASS', 'line': line, 'hits': over, 'games': n, 'pct': 50, 'conf': 'PASS'}
+    if over > under:
+        side, hits = 'OVER', over
+    else:
+        side, hits = 'UNDER', under
+    pct = round(hits / n * 100)
+    conf = 'STRONG' if pct >= 70 else ('LEAN' if pct >= 60 else 'PASS')
+    return {'side': side, 'line': line, 'hits': hits, 'games': n, 'pct': pct, 'conf': conf}
+
+
 async def run_analysis(selected_date: str = None) -> Dict:
     today_str = selected_date if selected_date else date.today().isoformat()
     # File cache check first
@@ -592,6 +633,8 @@ async def run_analysis(selected_date: str = None) -> Dict:
                               'team_name': h_name, 'stat': sk,
                               'stat_label': sc['label'], 'emoji': sc['emoji'],
                               'location': 'Home', 'opp': a, 'opp_name': a_name,
+                              'ladder': build_ladder(vals),
+                              'best_bet': best_bet_at_line(dk_line if dk_line is not None else fd_line, vals),
                               'matchup': f"{a_name} @ {h_name}",
                               'l10_hits': l10h, 'l10_games': len(last10),
                               'fd_line': fd_line, 'fd_odds': fd_odds,
@@ -648,6 +691,8 @@ async def run_analysis(selected_date: str = None) -> Dict:
                               'team_name': a_name, 'stat': sk,
                               'stat_label': sc['label'], 'emoji': sc['emoji'],
                               'location': 'Away', 'opp': h, 'opp_name': h_name,
+                              'ladder': build_ladder(vals),
+                              'best_bet': best_bet_at_line(dk_line if dk_line is not None else fd_line, vals),
                               'matchup': f"{a_name} @ {h_name}",
                               'l10_hits': l10h, 'l10_games': len(last10),
                               'fd_line': fd_line, 'fd_odds': fd_odds,
@@ -1182,6 +1227,25 @@ function renderTop10Cards(picks){
         lines.push(`<div style="font-size:.8rem;color:#aaa;margin-bottom:3px">vs line last ${s.l10_games||10} (vs ${p.opp} ${(p.location||'').toLowerCase()}): <span style="color:#4ade80;font-weight:700">${over} over</span> · <span style="color:#f87171;font-weight:700">${under} under</span></div>`);
       }
       if(s.threshold) lines.push(`<div style="font-size:.8rem;color:#aaa;margin-bottom:8px">pattern: hit <strong style="color:#FDB827">${s.threshold}+</strong> ${s.stat_label} in <strong style="color:#fff">${s.hits}/${s.games}</strong> vs ${p.opp} ${(p.location||'').toLowerCase()}</div>`);
+      // B — Best bet at the sportsbook's actual line
+      if(s.best_bet){
+        const bb=s.best_bet, isPass=bb.side==='PASS';
+        const bc=isPass?'#9ca3af':dirColor(bb.side);
+        const confColor=bb.conf==='STRONG'?'#4ade80':bb.conf==='LEAN'?'#fbbf24':'#9ca3af';
+        const label=isPass?`NO EDGE ${bb.line}`:`${bb.side} ${bb.line}`;
+        lines.push(`<div style="font-size:.82rem;margin:7px 0 5px;padding:6px 9px;background:rgba(255,255,255,.03);border-left:3px solid ${bc};border-radius:5px">
+          <span style="color:#888">BEST BET </span><strong style="color:${bc}">${label}</strong>
+          <span style="color:#fff"> ${bb.hits}/${bb.games} (${bb.pct}%)</span>
+          <span style="color:${confColor};font-weight:800"> ${bb.conf}</span></div>`);
+      }
+      // A — Full hit-rate ladder vs opponent (3+, 4+, 5+...)
+      if(s.ladder && s.ladder.length){
+        const rungs=s.ladder.map(r=>{
+          const c=r.pct>=70?'#4ade80':r.pct>=50?'#fbbf24':'#f87171';
+          return `<span style="color:${c};font-weight:700">${r.t}+ ${r.hits}/${r.games}</span>`;
+        }).join(`<span style="color:#444"> · </span>`);
+        lines.push(`<div style="font-size:.76rem;color:#aaa;margin:4px 0 8px"><span style="color:#888">ladder vs ${p.opp} ${(p.location||'').toLowerCase()}:</span> ${rungs}</div>`);
+      }
       return `<div style="background:#0d0d0d;border:1px solid #1f1f1f;border-radius:10px;padding:12px 14px;margin-top:9px">
         <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:7px">
           <div style="font-size:.98rem;min-width:0"><span>${s.emoji}</span> <strong style="color:#fff">${s.stat_label}</strong></div>
