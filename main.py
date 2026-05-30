@@ -914,7 +914,9 @@ input::placeholder{color:#374151}
   var KEY='__mpa_token';
   var p=new URLSearchParams(window.location.search);
   var t=p.get('token');
-  if(t){localStorage.setItem(KEY,t);window.history.replaceState({},'',window.location.pathname);}
+  var a=p.get('admin'); if(a){try{localStorage.setItem('__mpa_admin',a);}catch(e){}}
+  if(t){localStorage.setItem(KEY,t);}
+  if(t||a){window.history.replaceState({},'',window.location.pathname);}
   // no redirect
 })();
 </script>
@@ -1190,13 +1192,15 @@ footer{text-align:center;padding:32px 24px;color:#4b5563;font-size:.78rem;border
   var KEY='__mpa_token';
   var p=new URLSearchParams(window.location.search);
   var t=p.get('token');
-  if(t){localStorage.setItem(KEY,t);window.history.replaceState({},'',window.location.pathname);}
+  var a=p.get('admin'); if(a){try{localStorage.setItem('__mpa_admin',a);}catch(e){}}
+  if(t){localStorage.setItem(KEY,t);}
+  if(t||a){window.history.replaceState({},'',window.location.pathname);}
   var tok=localStorage.getItem(KEY);
   if(!tok){window.location.href='https://moneypicksarena.com'; return;}
 })();
 // Auto-enable admin view if this logged-in user is the admin (cosmetic — the
 // server independently re-verifies before honoring any force refresh).
-if(window.IS_ADMIN){document.body.classList.add('is-admin');}else{var _at=localStorage.getItem('__mpa_token')||'';if(_at){fetch('/api/whoami?_tok='+encodeURIComponent(_at)).then(r=>r.json()).then(d=>{if(d&&d.is_admin){window.IS_ADMIN=true;document.body.classList.add('is-admin');}}).catch(function(){});}}
+if(window.IS_ADMIN){document.body.classList.add('is-admin');}else{var _at=localStorage.getItem('__mpa_token')||'';var _ak=localStorage.getItem('__mpa_admin')||'';if(_at||_ak){fetch('/api/whoami?_tok='+encodeURIComponent(_at)+'&admin='+encodeURIComponent(_ak)).then(r=>r.json()).then(d=>{if(d&&d.is_admin){window.IS_ADMIN=true;document.body.classList.add('is-admin');}}).catch(function(){});}}
 let top10=[], allPicksData=[], activeTopStat='ALL', activeAllStat='ALL', sideFilter=null;
 
 function pctClass(p){return p>=90?['pct-green','bar-green']:p>=80?['pct-yellow','bar-yellow']:['pct-orange','bar-orange']}
@@ -1613,7 +1617,8 @@ async function runPicks(force=false){
   document.getElementById('allPicksWrap').style.display='none';
   try{
     const _nbaTok=localStorage.getItem('__mpa_token')||'';
-    const r=await fetch('/run?_tok='+encodeURIComponent(_nbaTok),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({date:selectedDate,force:!!force})});
+    const _adm=localStorage.getItem('__mpa_admin')||'';
+    const r=await fetch('/run?_tok='+encodeURIComponent(_nbaTok)+'&admin='+encodeURIComponent(_adm),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({date:selectedDate,force:!!force})});
     if(!r.ok)throw new Error('Server error '+r.status);
     const data=await r.json();
     renderGames(data.games);
@@ -1735,9 +1740,10 @@ async def verify_token_nba(request: Request):
     return JSONResponse({"ok": True})
 
 @app.get("/api/whoami")
-async def whoami_nba(request: Request, token: str = ""):
+async def whoami_nba(request: Request, token: str = "", admin: str = ""):
     tok = token or request.query_params.get("_tok","") or request.cookies.get("__mpa_token","") or request.headers.get("Authorization","").replace("Bearer ","").strip()
-    return {"is_admin": _is_admin_token(tok)}
+    ok = _is_admin_token(tok) or (bool(admin) and admin == os.environ.get("INTERNAL_API_TOKEN", "__none__"))
+    return {"is_admin": ok}
 
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request, admin: str = "", token: str = ""):
@@ -1797,7 +1803,8 @@ async def run(request: Request):
     # Force (cache bypass) is admin-only — independently re-verify the hub token.
     if force:
         _tok = request.query_params.get("_tok","") or request.cookies.get("__mpa_token","") or request.headers.get("Authorization","").replace("Bearer ","").strip()
-        if not _is_admin_token(_tok):
+        _adm = request.query_params.get("admin","")
+        if not (_is_admin_token(_tok) or (bool(_adm) and _adm == os.environ.get("INTERNAL_API_TOKEN", "__none__"))):
             force = False
     result = await run_analysis(selected_date, force=force)
     return result
