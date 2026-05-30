@@ -495,6 +495,25 @@ def find_best_threshold(values, thresholds):
     return None
 
 
+def pattern_at_line(values, line):
+    """PATTERN consistency measured at the ACTUAL sportsbook line (OVER side).
+    Returns the matchup/location over-rate, qualifying only when the player
+    cleared the real betting line in >= HIT_RATE_MIN of those games. The
+    'threshold' is the integer bar implied by the line (over 2.5 -> 3+), so the
+    badge ("PATTERN 3/4 vs OPP") and the bet ("over 2.5") describe the same thing."""
+    if line is None or not values:
+        return None
+    n = len(values)
+    if n < MIN_GAMES:
+        return None
+    hits = sum(1 for v in values if v > line)
+    rate = hits / n
+    if rate < HIT_RATE_MIN:
+        return None
+    return {'threshold': int(line) + 1, 'hits': hits, 'games': n,
+            'hit_rate': rate, 'pct': round(rate * 100, 1)}
+
+
 def build_ladder(values, line, span=3):
     """A — Hit-rate ladder anchored to the sportsbook line. Sportsbooks only
     offer alt lines NEAR the posted number, so showing the full integer range
@@ -661,7 +680,6 @@ async def run_analysis(selected_date: str = None, force: bool = False) -> Dict:
             opp_logs = opp_logs_all[:10]
             for sk, sc in STAT_CONFIG.items():
                 vals = [float(l[sk]) for l in opp_logs]
-                result = find_best_threshold(vals, sc['thresholds'])
                 last10 = opp_logs[:10]
                 sb        = odds_lookup.get((_nn(pname), sk), {})
                 fd_line   = sb.get('line')
@@ -672,6 +690,8 @@ async def run_analysis(selected_date: str = None, force: bool = False) -> Dict:
                 dk_over_odds  = dk_ob.get('over_odds', '')
                 dk_under_odds = dk_ob.get('under_odds', '')
                 dk_hits = sum(1 for l in last10 if float(l[sk]) > dk_line) if dk_line and last10 else None
+                # PATTERN: consistency measured at the ACTUAL betting line (over).
+                result = pattern_at_line(vals, dk_line if dk_line is not None else fd_line)
                 # PATTERN / LINE / STREAK: matchup + location specific.
                 # MPA Special: player rhythm across all recent games (not opponent-filtered).
                 recent10 = all_logs_player[:10]
@@ -723,7 +743,6 @@ async def run_analysis(selected_date: str = None, force: bool = False) -> Dict:
             opp_logs = opp_logs_all[:10]
             for sk, sc in STAT_CONFIG.items():
                 vals = [float(l[sk]) for l in opp_logs]
-                result = find_best_threshold(vals, sc['thresholds'])
                 last10 = opp_logs[:10]
                 sb        = odds_lookup.get((_nn(pname), sk), {})
                 fd_line   = sb.get('line')
@@ -734,6 +753,8 @@ async def run_analysis(selected_date: str = None, force: bool = False) -> Dict:
                 dk_over_odds  = dk_ob.get('over_odds', '')
                 dk_under_odds = dk_ob.get('under_odds', '')
                 dk_hits = sum(1 for l in last10 if float(l[sk]) > dk_line) if dk_line and last10 else None
+                # PATTERN: consistency measured at the ACTUAL betting line (over).
+                result = pattern_at_line(vals, dk_line if dk_line is not None else fd_line)
                 recent10 = all_logs_player[:10]
                 recent_vals = [float(l[sk]) for l in recent10]
                 line_rec, line_rec_pct, line_rec_hits = _line_pick(dk_line, [float(l[sk]) for l in opp_logs_all[:10]], opp_logs_all[:10], sk)
@@ -1418,7 +1439,7 @@ function renderAllByGame(picks){
         if(p.streak_rec) badges.push(`<span style="background:rgba(249,115,22,.15);color:#fb923c;padding:2px 7px;border-radius:6px;font-size:.65rem;font-weight:700;margin-right:4px">🔥 ${p.streak_n} in a row ${p.streak_rec} ${p.dk_line} vs ${p.opp} ${loc}</span>`);
         if(p.alt_rec) badges.push(`<span style="background:rgba(168,85,247,.15);color:#c084fc;padding:2px 7px;border-radius:6px;font-size:.65rem;font-weight:700;margin-right:4px">⭐ MPA SPECIAL ${p.alt_rec} ${p.dk_line} vs ${p.opp} ${loc}${p.alt_evens&&p.alt_odds?` (even: ${p.alt_evens} · odd: ${p.alt_odds})`:''}</span>`);
         const patternLine = p.has_consistency
-          ? `${p.threshold}+ ${p.stat_label}  ${p.hits}/${p.games} vs ${p.opp}${p.fd_line ? `  <span class="fd-inline"> ${p.fd_line}</span>` : ''}`
+          ? (() => { const pl = (p.dk_line!=null?p.dk_line:p.fd_line); return `${p.threshold}+ ${p.stat_label}  ${p.hits}/${p.games} vs ${p.opp}${pl!=null ? `  <span class="fd-inline"> ${pl}</span>` : ''}`; })()
           : `${p.stat_label} vs ${p.opp}${p.dk_line ? `  line ${p.dk_line}` : ''}`;
         html+=`<div onclick="openLadder('${ladKey}')" style="display:flex;align-items:center;gap:10px;padding:8px 14px 8px 38px;border-top:1px solid #1a1a1a;cursor:pointer">
           <div style="flex:1;min-width:0">
