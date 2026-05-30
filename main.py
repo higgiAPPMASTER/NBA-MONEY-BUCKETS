@@ -1091,13 +1091,14 @@ footer{text-align:center;padding:32px 24px;color:#4b5563;font-size:.78rem;border
 </div>
 <div class="card" id="parlayCard" style="text-align:center;max-width:600px;margin:0 auto 20px">
   <h2 style="font-family:'Playfair Display',serif;font-size:1.4rem;font-weight:700;color:#fff;margin-bottom:6px">🎰 Auto Parlay Builder <span style="font-size:.7rem;color:#777;font-family:sans-serif">admin only</span></h2>
-  <div style="font-size:.74rem;color:#888;margin-bottom:16px">Best parlay from today's 100% streaks + MPA specials — strongest hits first</div>
+  <div style="font-size:.74rem;color:#888;margin-bottom:16px">Pulls from any strong play today — Pattern, Line, Streak, MPA — best available odds priced in</div>
   <div style="display:flex;gap:10px;justify-content:center;align-items:center;flex-wrap:wrap">
     <label style="color:#999;font-weight:700">Legs</label>
     <select id="parlayLegs">
       <option>2</option><option>3</option><option>4</option><option>5</option><option>6</option><option>7</option><option>8</option><option>9</option><option>10</option>
     </select>
     <button class="btn" onclick="buildParlay()">Build Best Parlay</button>
+    <button class="btn" onclick="generateParlay()" style="background:#1f2937;color:#fff">🎲 Generate New</button>
   </div>
   <div id="parlayResult" style="margin-top:16px;text-align:left"></div>
 </div>
@@ -1471,60 +1472,74 @@ function _amToDec(a){var s=String(a==null?'':a).replace('+','').trim();var n=par
 function _decToAm(d){if(!d||d<=1)return null;return d>=2?'+'+Math.round((d-1)*100):'-'+Math.round(100/(d-1));}
 function _mpaRate(p){function parse(s){if(!s)return[0,0];var m=String(s).split('/');return[parseFloat(m[0])||0,parseFloat(m[1])||0];}var e=parse(p.alt_evens),o=parse(p.alt_odds);var h=e[0]+o[0],t=e[1]+o[1];return t?h/t*100:0;}
 function _fmtOdds(o){if(o==null||o==='')return null;var s=String(o).trim();return (s.charAt(0)==='-'||s.charAt(0)==='+')?s:'+'+s;}
-function _legFrom(p,patternKeys){
-  var useStreak = p.streak_rec && !(p.streak_rec==='UNDER' && patternKeys.has(p.player+'|'+p.stat));
-  var dir = useStreak ? p.streak_rec : (p.alt_rec||null);
-  if(!dir) return null;
+function _legCandidates(p){
+  var pat = !!p.has_consistency; // PATTERN is always OVER-direction
   var line = (p.dk_line!=null?p.dk_line:p.fd_line);
-  var odds = dir==='OVER' ? (p.dk_over_odds||p.fd_odds||'') : (p.dk_under_odds||'');
-  var conf, reason, isStreak;
-  if(useStreak){
-    var n=p.streak_n||0;
-    isStreak=1;
-    conf=Math.min(99,80+n*2);
-    reason='🔥 '+n+'-game '+p.streak_rec+' streak vs '+p.opp;
-  } else {
-    isStreak=0;
-    conf=Math.round(_mpaRate(p));
-    reason='⭐ MPA '+p.alt_rec+((p.alt_evens&&p.alt_odds)?(' (even '+p.alt_evens+' · odd '+p.alt_odds+')'):'');
-  }
-  return {p:p,player:p.player,team:p.team,opp:p.opp,stat:p.stat_label||p.stat,emoji:p.emoji||'',dir:dir,line:line,odds:odds,conf:conf,isStreak:isStreak,reason:reason};
+  function oddsFor(dir){ return dir==='OVER' ? (p.dk_over_odds||p.fd_odds||'') : (p.dk_under_odds||''); }
+  var c=[];
+  if(pat){ c.push({type:'PATTERN',dir:'OVER',conf:(p.pct||0),reason:'📊 PATTERN '+(p.hits||0)+'/'+(p.games||0)+' ('+(p.pct||0)+'%) vs '+p.opp}); }
+  if(p.line_rec && !(pat && p.line_rec!=='OVER')){ c.push({type:'LINE',dir:p.line_rec,conf:(p.line_rec_pct||0),reason:'📈 LINE '+p.line_rec+' '+(p.line_rec_hits||'')+' ('+(p.line_rec_pct||0)+'%) vs '+p.opp}); }
+  if(p.streak_rec && !(pat && p.streak_rec!=='OVER')){ var n=p.streak_n||0; c.push({type:'STREAK',dir:p.streak_rec,conf:Math.min(99,85+n),reason:'🔥 '+n+'-game '+p.streak_rec+' streak vs '+p.opp}); }
+  if(p.alt_rec && !(pat && p.alt_rec!=='OVER')){ c.push({type:'MPA',dir:p.alt_rec,conf:Math.round(_mpaRate(p)),reason:'⭐ MPA '+p.alt_rec+((p.alt_evens&&p.alt_odds)?(' (even '+p.alt_evens+' · odd '+p.alt_odds+')'):'')}); }
+  c.forEach(function(x){ x.p=p; x.player=p.player; x.team=p.team; x.opp=p.opp; x.stat=p.stat_label||p.stat; x.emoji=p.emoji||''; x.line=line; x.odds=oddsFor(x.dir); x.dec=_amToDec(x.odds); x.hasOdds=!!x.dec; });
+  return c;
 }
-function buildParlay(){
+function _legScore(c){
+  // Priced legs first, then signal strength, then bigger payout odds as a tiebreaker.
+  return (c.hasOdds?1:0)*1e9 + (c.conf||0)*1e4 + (c.dec?Math.min(c.dec,11)*100:0);
+}
+function _parlayPool(){
+  var byPlayer={};
+  (allPicksData||[]).forEach(function(p){
+    _legCandidates(p).forEach(function(c){
+      var cur=byPlayer[c.player];
+      if(!cur || _legScore(c)>_legScore(cur)) byPlayer[c.player]=c;
+    });
+  });
+  return Object.keys(byPlayer).map(function(k){return byPlayer[k];}).sort(function(a,b){return _legScore(b)-_legScore(a);});
+}
+function _shuffle(a){ for(var i=a.length-1;i>0;i--){var j=Math.floor(Math.random()*(i+1));var t=a[i];a[i]=a[j];a[j]=t;} return a; }
+function closeParlay(){ var o=document.getElementById('parlayResult'); if(o) o.innerHTML=''; }
+function buildParlay(){ _renderParlay(false); }
+function generateParlay(){ _renderParlay(true); }
+function _renderParlay(randomize){
   var sel=document.getElementById('parlayLegs');
   var n=parseInt(sel?sel.value:'3',10)||3;
   var out=document.getElementById('parlayResult');
-  if(!allPicksData||!allPicksData.length){ if(out)out.innerHTML='<div style="color:#888;padding:10px">Run today&#39;s picks first, then build a parlay.</div>'; return; }
-  var patternKeys=new Set((allPicksData||[]).filter(function(p){return p.has_consistency;}).map(function(p){return p.player+'|'+p.stat;}));
-  var byPlayer={};
-  (allPicksData||[]).forEach(function(p){
-    var leg=_legFrom(p,patternKeys);
-    if(!leg) return;
-    var cur=byPlayer[leg.player];
-    if(!cur || leg.conf>cur.conf || (leg.conf===cur.conf && leg.isStreak>cur.isStreak)) byPlayer[leg.player]=leg;
-  });
-  var cands=Object.keys(byPlayer).map(function(k){return byPlayer[k];}).sort(function(a,b){return (b.conf-a.conf)||(b.isStreak-a.isStreak)||((b.p.pct||0)-(a.p.pct||0));});
-  if(cands.length<n){ if(out)out.innerHTML='<div style="color:#f87171;padding:10px">Only '+cands.length+' qualifying leg'+(cands.length!==1?'s':'')+' on the board (streaks + MPA specials). Pick a smaller parlay.</div>'; return; }
-  var legs=cands.slice(0,n);
+  if(!out) return;
+  if(!allPicksData||!allPicksData.length){ out.innerHTML='<div style="color:#888;padding:10px">Run today&#39;s picks first, then build a parlay.</div>'; return; }
+  var cands=_parlayPool();
+  if(cands.length<n){ out.innerHTML='<div style="color:#f87171;padding:10px">Only '+cands.length+' qualifying play'+(cands.length!==1?'s':'')+' on the board. Pick a smaller parlay.</div>'; return; }
+  var legs;
+  if(randomize){
+    legs=_shuffle(cands.slice()).slice(0,n).sort(function(a,b){return _legScore(b)-_legScore(a);});
+  } else {
+    legs=cands.slice(0,n);
+  }
   var dec=1, priced=0, missing=0;
-  legs.forEach(function(l){var d=_amToDec(l.odds); if(d){dec*=d;priced++;}else{missing++;}});
+  legs.forEach(function(l){ if(l.dec){dec*=l.dec;priced++;}else{missing++;} });
   var am = priced? _decToAm(dec) : null;
   var payout = priced? (100*dec) : null;
   var dirColor=function(d){return d==='OVER'?'#4ade80':d==='UNDER'?'#f87171':'#9ca3af';};
+  var tagBg={PATTERN:'rgba(253,184,39,.16)',LINE:'rgba(74,222,128,.14)',STREAK:'rgba(249,115,22,.16)',MPA:'rgba(168,85,247,.16)'};
+  var tagFg={PATTERN:'#FDB827',LINE:'#4ade80',STREAK:'#fb923c',MPA:'#c084fc'};
   var rows=legs.map(function(l,i){var fo=_fmtOdds(l.odds);return '<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:10px 12px;border-bottom:1px solid #1a1a1a">'
     +'<div style="min-width:0">'
-    +'<div style="font-weight:800;color:#fff;font-size:.85rem">'+(i+1)+'. '+(l.emoji||'')+' '+l.player+' <span style="color:#777;font-size:.7rem">'+l.team+' vs '+l.opp+'</span></div>'
+    +'<div style="font-weight:800;color:#fff;font-size:.85rem">'+(i+1)+'. '+(l.emoji||'')+' '+l.player+' <span style="color:#777;font-size:.7rem">'+l.team+' vs '+l.opp+'</span> <span style="background:'+(tagBg[l.type]||'#222')+';color:'+(tagFg[l.type]||'#aaa')+';padding:1px 6px;border-radius:4px;font-size:.6rem;font-weight:800">'+l.type+'</span></div>'
     +'<div style="color:#999;font-size:.72rem;margin-top:2px">'+l.stat+(l.line!=null?(' · line '+l.line):'')+' · '+l.reason+'</div>'
     +'</div>'
     +'<div style="text-align:right;white-space:nowrap">'
     +'<div style="color:'+dirColor(l.dir)+';font-weight:900;font-size:.8rem">'+l.dir+'</div>'
     +'<div style="color:#FDB827;font-size:.72rem;font-weight:800">'+(fo||'odds N/A')+'</div>'
     +'</div></div>';}).join('');
+  var header='<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 12px;border-bottom:1px solid #262626;background:#121212">'
+    +'<span style="font-weight:800;color:#ccc;font-size:.74rem">'+(randomize?'RANDOM MIX':'TOP PLAYS')+'</span>'
+    +'<span onclick="closeParlay()" title="Close" style="cursor:pointer;color:#888;font-weight:900;font-size:1.15rem;line-height:1;padding:0 6px">×</span></div>';
   var summary='<div style="display:flex;justify-content:space-between;align-items:center;padding:12px;background:linear-gradient(135deg,rgba(253,184,39,.12),rgba(253,184,39,.02));border-top:1px solid #262626">'
     +'<div style="font-weight:900;color:#FDB827">'+n+'-LEG PARLAY</div>'
     +'<div style="text-align:right">'+(am?('<div style="font-weight:900;color:#4ade80;font-size:1.05rem">'+am+'</div><div style="color:#999;font-size:.7rem">$100 → $'+payout.toFixed(2)+(missing?(' · '+priced+'/'+n+' legs priced'):'')+'</div>'):('<div style="color:#888;font-size:.78rem">No book odds available for these legs</div>'))+'</div>'
     +'</div>';
-  if(out) out.innerHTML='<div style="background:#0e0e0e;border:1px solid #262626;border-radius:12px;overflow:hidden">'+rows+summary+'</div>';
+  out.innerHTML='<div style="background:#0e0e0e;border:1px solid #262626;border-radius:12px;overflow:hidden">'+header+rows+summary+'</div>';
 }
 function togglePlayer(id,hdr){
   const el=document.getElementById(id);
