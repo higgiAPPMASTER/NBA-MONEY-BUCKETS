@@ -1140,7 +1140,7 @@ footer{text-align:center;padding:32px 24px;color:#4b5563;font-size:.78rem;border
     <label>Date</label>
     <input type="date" id="datePicker" value="__TODAY__" min="__TODAY__" max="__TOMORROW__">
   </div>
-  <div style="text-align:center"><button class="btn btn-run admin-only" id="runBtn" onclick="runPicks()">Run Picks</button><button class="btn btn-force admin-only" id="forceBtn" onclick="runPicks(true)" style="margin-left:10px" title="Bypass cache and rebuild today's picks from scratch">Force Refresh</button></div>
+  <div style="text-align:center"><button class="btn btn-run" id="getBtn" onclick="getPicks()">🎯 Get Picks</button><button class="btn btn-run admin-only" id="runBtn" onclick="runPicks()" style="margin-left:10px">Run Picks</button><button class="btn btn-force admin-only" id="forceBtn" onclick="runPicks(true)" style="margin-left:10px" title="Bypass cache and rebuild today's picks from scratch">Force Refresh</button></div>
 </div>
 <div class="card" id="parlayCard" style="text-align:center;max-width:600px;margin:0 auto 20px">
   <h2 style="font-family:'Playfair Display',serif;font-size:1.4rem;font-weight:700;color:#fff;margin-bottom:6px">🎰 Auto Parlay Builder <span style="font-size:.7rem;color:#777;font-family:sans-serif">admin only</span></h2>
@@ -1790,6 +1790,51 @@ async function runPicks(force=false){
   }
 }
 
+// Get Picks: load saved picks for the chosen date (read-only, never runs the pipeline).
+async function getPicks(){
+  const selectedDate=document.getElementById('datePicker').value;
+  const btn=document.getElementById('getBtn');
+  const orig=btn.textContent;
+  btn.disabled=true; btn.textContent='Loading...';
+  document.getElementById('content').innerHTML=`<div class="msg-card"><h2 style="color:#FDB827">Loading saved picks...</h2></div>`;
+  document.getElementById('allPicksWrap').style.display='none';
+  try{
+    const _nbaTok=localStorage.getItem('__mpa_token')||'';
+    const r=await fetch('/api/cached?target_date='+encodeURIComponent(selectedDate)+'&_tok='+encodeURIComponent(_nbaTok));
+    if(r.status===404){ document.getElementById('content').innerHTML=`<div class="msg-card"><span class="ico"></span><h2>Picks Not Ready</h2><p>Today's picks aren't ready yet - check back a little later.</p></div>`; return; }
+    if(!r.ok)throw new Error('Server error '+r.status);
+    const data=await r.json();
+    renderGames(data.games);
+    if(data.no_games){
+      document.getElementById('filterBar').style.display='none';
+      document.getElementById('allPicksWrap').style.display='none';
+      document.getElementById('content').innerHTML=`<div class="msg-card"><span class="ico"></span><h2>No Games Today</h2><p>No NBA games scheduled for ${data.date||selectedDate}. Check back on game day.</p></div>`;
+      return;
+    }
+    top10=data.picks||[];
+    allPicksData=data.all_picks||[];
+    activeTopStat='ALL';activeAllStat='ALL';
+    if(top10.length){
+      document.getElementById('filterBar').style.display='flex';
+      renderTop10Cards(top10);
+    } else {
+      document.getElementById('filterBar').style.display='none';
+      document.getElementById('content').innerHTML=`<div class="msg-card"><span class="ico"></span><h2>No Cards Today</h2><p>All 70%+ plays and the parlay builder are below.</p></div>`;
+    }
+    if(top10.length||allPicksData.length){
+      document.getElementById('totalCount').textContent=allPicksData.length;
+      document.getElementById('allPicksWrap').style.display='block';
+      renderSignalLists(allPicksData);
+      renderAllByGame(allPicksData);
+    }
+    renderPropsSection(data.props_picks, data.props_nopick);
+  }catch(e){
+    document.getElementById('content').innerHTML=`<div class="msg-card"><span class="ico"></span><h2 style="color:#ef4444">Something went wrong</h2><p>${e.message}</p></div>`;
+  }finally{
+    btn.disabled=false; btn.textContent=orig;
+  }
+}
+
 function renderPropsSection(picks, nopick) {
   var sec  = document.getElementById('props-section');
   var body = document.getElementById('props-body');
@@ -1948,6 +1993,19 @@ async def run(request: Request):
             force = False
     result = await run_analysis(selected_date, force=force)
     return result
+
+@app.get("/api/cached")
+async def cached_nba(request: Request, target_date: str = None):
+    # Read-only: serve picks already saved on file for this date. Never runs the
+    # pipeline, so any logged-in member can pull saved picks without a fresh run.
+    from fastapi import HTTPException
+    if not get_user(request):
+        raise HTTPException(status_code=401, detail="Subscription required — please log in via moneypicksarena.com")
+    key = target_date or date.today().isoformat()
+    data = _cache_get("nba", key)
+    if data:
+        return data
+    raise HTTPException(status_code=404, detail="No saved picks for this date.")
 
 @app.get("/clear-cache")
 async def clear_cache(request: Request):
