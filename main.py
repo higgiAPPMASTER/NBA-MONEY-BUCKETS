@@ -1055,7 +1055,7 @@ footer{text-align:center;padding:32px 24px;color:#4b5563;font-size:.78rem;border
     <label>Date</label>
     <input type="date" id="datePicker" value="__TODAY__" min="__TODAY__" max="__TOMORROW__">
   </div>
-  <div style="text-align:center"><button class="btn btn-run" id="runBtn" onclick="runPicks()">Run Picks</button><button class="btn btn-force admin-only" id="forceBtn" onclick="runPicks(true)" style="margin-left:10px" title="Bypass cache and rebuild today's picks from scratch">Force Refresh</button></div>
+  <div style="text-align:center"><button class="btn btn-run admin-only" id="runBtn" onclick="runPicks()">Run Picks</button><button class="btn btn-force admin-only" id="forceBtn" onclick="runPicks(true)" style="margin-left:10px" title="Bypass cache and rebuild today's picks from scratch">Force Refresh</button></div>
 </div>
 <div class="games-bar" id="gamesBar"></div>
 <div id="filterBar" style="display:none" class="filter-bar">
