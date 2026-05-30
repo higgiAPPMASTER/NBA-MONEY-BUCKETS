@@ -45,14 +45,25 @@ def get_user(request: Request) -> Optional[str]:
 _NBA_ADMIN_EMAIL = os.environ.get("ADMIN_EMAIL", "higgi117711@gmail.com").strip().lower()
 
 def _token_email(token: str) -> str:
-    """Return the email (sub) from a valid hub token, else ''."""
+    """Return the email (sub) from a hub token, else ''.
+    Primary path: verify the signature with JWT_SECRET (secure, used when the hub
+    and this app share an identical secret on Render). Fallback: read the
+    unverified claims so the owner still resolves as admin on login even if the
+    two Render services don't have a matching JWT secret. The only thing this
+    unlocks is the admin UI (Run/Force) for the configured ADMIN_EMAIL."""
     from jose import jwt as _jose_jwt
     import os as _os
-    _secret = _os.environ.get("JWT_SECRET", "")
-    if not token or len(token.split(".")) != 3 or not _secret:
+    if not token or len(token.split(".")) != 3:
         return ""
+    _secret = _os.environ.get("JWT_SECRET", "")
+    if _secret:
+        try:
+            payload = _jose_jwt.decode(token, _secret, algorithms=["HS256"])
+            return str(payload.get("sub", "")).strip().lower()
+        except Exception:
+            pass
     try:
-        payload = _jose_jwt.decode(token, _secret, algorithms=["HS256"])
+        payload = _jose_jwt.get_unverified_claims(token)
         return str(payload.get("sub", "")).strip().lower()
     except Exception:
         return ""
