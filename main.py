@@ -1517,10 +1517,15 @@ function _legScore(c){
   var starterBonus = (c.mpg!=null && c.mpg>=20) ? 11.5*1e4 : 0;
   return (c.hasOdds?1:0)*1e9 + (c.conf||0)*1e4 + starterBonus + (c.dec?Math.min(c.dec,11)*100:0);
 }
+// ODDS FLOOR: a priced leg only qualifies at -500 or better (drops -920-type juice),
+// OVER or UNDER. Unpriced legs (no odds) are left alone as last-resort filler.
+// To convert back, remove the _floorOk gate in _parlayPool below.
+function _floorOk(odds){ if(odds==null||odds==='') return true; var a=parseFloat(odds); if(isNaN(a)||a===0) return true; return a>=-500; }
 function _parlayPool(){
   var byPlayer={};
   (allPicksData||[]).forEach(function(p){
     _legCandidates(p).forEach(function(c){
+      if(!_floorOk(c.odds)) return;
       var cur=byPlayer[c.player];
       if(!cur || _legScore(c)>_legScore(cur)) byPlayer[c.player]=c;
     });
