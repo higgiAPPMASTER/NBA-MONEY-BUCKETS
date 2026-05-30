@@ -651,6 +651,7 @@ async def run_analysis(selected_date: str = None) -> Dict:
                               'location': 'Home', 'opp': a, 'opp_name': a_name,
                               'ladder': build_ladder(vals, dk_line if dk_line is not None else fd_line),
                               'best_bet': best_bet_at_line(dk_line if dk_line is not None else fd_line, vals),
+                              'glog': [{'d': l['date'], 'v': l[sk]} for l in opp_logs],
                               'matchup': f"{a_name} @ {h_name}",
                               'l10_hits': l10h, 'l10_games': len(last10),
                               'fd_line': fd_line, 'fd_odds': fd_odds,
@@ -709,6 +710,7 @@ async def run_analysis(selected_date: str = None) -> Dict:
                               'location': 'Away', 'opp': h, 'opp_name': h_name,
                               'ladder': build_ladder(vals, dk_line if dk_line is not None else fd_line),
                               'best_bet': best_bet_at_line(dk_line if dk_line is not None else fd_line, vals),
+                              'glog': [{'d': l['date'], 'v': l[sk]} for l in opp_logs],
                               'matchup': f"{a_name} @ {h_name}",
                               'l10_hits': l10h, 'l10_games': len(last10),
                               'fd_line': fd_line, 'fd_odds': fd_odds,
@@ -1343,6 +1345,8 @@ function renderAllByGame(picks){
         <div id="${pid}" style="display:none;flex-direction:column;background:#0e0e0e">`;
       for(const p of rows){
         const [pc,bc]=pctClass(p.pct);
+        const ladKey='lad_'+((p.player_id||'')+'_'+p.stat+'_'+p.location+'_'+p.opp).replace(/[^a-z0-9]/gi,'_');
+        window.__LAD__=window.__LAD__||{}; window.__LAD__[ladKey]=p;
         const badges = [];
         if(p.has_consistency) badges.push(`<span style="background:rgba(245,158,11,.15);color:#fbbf24;padding:2px 7px;border-radius:6px;font-size:.65rem;font-weight:700;margin-right:4px">PATTERN ${p.pct}%</span>`);
         const loc=(p.location||'').toLowerCase();
@@ -1352,9 +1356,9 @@ function renderAllByGame(picks){
         const patternLine = p.has_consistency
           ? `${p.threshold}+ ${p.stat_label}  ${p.hits}/${p.games} vs ${p.opp}${p.fd_line ? `  <span class="fd-inline"> ${p.fd_line}</span>` : ''}`
           : `${p.stat_label} vs ${p.opp}${p.dk_line ? `  line ${p.dk_line}` : ''}`;
-        html+=`<div style="display:flex;align-items:center;gap:10px;padding:8px 14px 8px 38px;border-top:1px solid #1a1a1a">
+        html+=`<div onclick="openLadder('${ladKey}')" style="display:flex;align-items:center;gap:10px;padding:8px 14px 8px 38px;border-top:1px solid #1a1a1a;cursor:pointer">
           <div style="flex:1;min-width:0">
-            <div style="color:#bbb;font-size:.78rem">${patternLine}</div>
+            <div style="color:#bbb;font-size:.78rem">${patternLine} <span style="color:#FDB827;font-size:.62rem;font-weight:800">📊 TAP</span></div>
             <div style="margin-top:4px;display:flex;flex-wrap:wrap;gap:3px">${badges.join('')}</div>
           </div>
           
@@ -1406,6 +1410,66 @@ function togglePlayer(id,hdr){
   const hidden=el.style.display==='none';
   el.style.display=hidden?'flex':'none';
   if(ch)ch.style.transform=hidden?'rotate(180deg)':'';
+}
+function closeLadder(ev){
+  if(ev && ev.target && ev.target.id!=='ladderOverlay' && ev.type==='click') return;
+  const o=document.getElementById('ladderOverlay'); if(o) o.remove();
+}
+function openLadder(key){
+  const p=(window.__LAD__||{})[key]; if(!p) return;
+  const esc=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  const loc=(p.location||'').toLowerCase();
+  const fmtD=s=>{try{const d=new Date(s);return (d.getMonth()+1)+'/'+d.getDate()+'/'+String(d.getFullYear()).slice(2);}catch(e){return s||'';}};
+  const anchor=(p.dk_line!=null?p.dk_line:p.fd_line);
+  // Game log vs this opponent at this location
+  const glog=p.glog||[];
+  let logHTML;
+  if(glog.length){
+    logHTML=glog.map(g=>`<div style="display:flex;justify-content:space-between;padding:6px 10px;border-bottom:1px solid #1a1a1a;font-size:.82rem">
+      <span style="color:#999">${fmtD(g.d)}</span>
+      <span style="color:#fff;font-weight:800">${esc(g.v)}</span></div>`).join('');
+  } else {
+    logHTML='<div style="padding:14px;color:#666;text-align:center;font-size:.8rem">No game log vs '+esc(p.opp)+'</div>';
+  }
+  // Ladder: book line ±3, over/under counts at each
+  const lad=p.ladder||[];
+  let ladHTML;
+  if(lad.length){
+    ladHTML=`<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:0;font-size:.7rem;color:#777;font-weight:800;padding:6px 10px;border-bottom:1px solid #2a2a2a">
+        <span>LINE</span><span style="text-align:center;color:#4ade80">OVER</span><span style="text-align:right;color:#f87171">UNDER</span></div>`
+      + lad.map(r=>{
+        const under=r.games-r.hits;
+        const isAnchor=(anchor!=null&&r.t===anchor);
+        const opct=r.pct, oc=opct>=70?'#4ade80':opct>=50?'#fbbf24':'#f87171';
+        return `<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:0;padding:7px 10px;border-bottom:1px solid #161616;font-size:.84rem;${isAnchor?'background:rgba(253,184,39,.10)':''}">
+          <span style="color:#fff;font-weight:${isAnchor?'900':'700'}">${r.t}${isAnchor?' ◄ BOOK':''}</span>
+          <span style="text-align:center;color:${oc};font-weight:800">${r.hits}/${r.games} <span style="color:#666;font-size:.7rem">(${opct}%)</span></span>
+          <span style="text-align:right;color:#bbb;font-weight:700">${under}/${r.games}</span></div>`;
+      }).join('');
+  } else {
+    ladHTML='<div style="padding:14px;color:#666;text-align:center;font-size:.8rem">No book line posted for this stat</div>';
+  }
+  closeLadder();
+  const ov=document.createElement('div');
+  ov.id='ladderOverlay';
+  ov.setAttribute('onclick','closeLadder(event)');
+  ov.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.78);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px';
+  ov.innerHTML=`<div style="background:#101010;border:1px solid #2a2a2a;border-radius:14px;max-width:420px;width:100%;max-height:86vh;overflow:auto;box-shadow:0 20px 60px rgba(0,0,0,.6)">
+    <div style="background:linear-gradient(135deg,#1e3a5f,#0a1a2e);padding:14px 16px;border-bottom:2px solid #FDB827;display:flex;justify-content:space-between;align-items:flex-start">
+      <div>
+        <div style="color:#fff;font-weight:900;font-size:1.02rem">${esc(p.emoji)} ${esc(p.player)}</div>
+        <div style="color:#FDB827;font-size:.76rem;font-weight:700;margin-top:2px">${esc(p.stat_label)} vs ${esc(p.opp)} ${loc} · last ${glog.length}${anchor!=null?' · line '+anchor:''}</div>
+      </div>
+      <span onclick="closeLadder()" style="color:#888;font-size:1.4rem;line-height:1;cursor:pointer;padding:0 4px">×</span>
+    </div>
+    <div style="padding:12px 14px">
+      <div style="color:#888;font-size:.7rem;font-weight:800;letter-spacing:.08em;margin-bottom:5px">ALT LINE HIT RATES (book ±3)</div>
+      <div style="background:#0a0a0a;border:1px solid #1f1f1f;border-radius:9px;overflow:hidden;margin-bottom:14px">${ladHTML}</div>
+      <div style="color:#888;font-size:.7rem;font-weight:800;letter-spacing:.08em;margin-bottom:5px">GAME LOG vs ${esc(p.opp)} (${loc})</div>
+      <div style="background:#0a0a0a;border:1px solid #1f1f1f;border-radius:9px;overflow:hidden">${logHTML}</div>
+    </div>
+  </div>`;
+  document.body.appendChild(ov);
 }
 function toggleGroup(id,hdr){
   const el=document.getElementById(id);
