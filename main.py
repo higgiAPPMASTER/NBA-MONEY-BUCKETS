@@ -52,6 +52,11 @@ STAT_CONFIG = {
     'AST':  {'label': 'Assists',    'emoji': '🎯', 'idx': 8,  'thresholds': list(range(15, 1, -1))},
     'FG3M': {'label': '3-Pointers', 'emoji': '🔥', 'idx': 3,  'thresholds': list(range(8,  0, -1))},
     'PRA':  {'label': 'Pts+Reb+Ast','emoji': '🃏', 'idx': None, 'thresholds': list(range(60, 9, -1))},
+    'PTS_REB': {'label': 'Pts+Reb', 'emoji': '💪', 'idx': None, 'thresholds': list(range(55, 6, -1))},
+    'PTS_AST': {'label': 'Pts+Ast', 'emoji': '⚡', 'idx': None, 'thresholds': list(range(50, 6, -1))},
+    'REB_AST': {'label': 'Reb+Ast', 'emoji': '🔗', 'idx': None, 'thresholds': list(range(30, 3, -1))},
+    'BLK':  {'label': 'Blocks',     'emoji': '🛡️', 'idx': 9,  'thresholds': list(range(6, 0, -1))},
+    'STL':  {'label': 'Steals',     'emoji': '🧤', 'idx': 10, 'thresholds': list(range(6, 0, -1))},
 }
 
 HIT_RATE_MIN  = 0.70
@@ -67,6 +72,11 @@ ODDS_MARKET_MAP = {
     "player_assists":                    "AST",
     "player_threes":                     "FG3M",
     "player_points_rebounds_assists":    "PRA",
+    "player_points_rebounds":            "PTS_REB",
+    "player_points_assists":             "PTS_AST",
+    "player_rebounds_assists":           "REB_AST",
+    "player_blocks":                     "BLK",
+    "player_steals":                     "STL",
 }
 MIN_GAMES     = 1
 MIN_MINUTES   = 10.0
@@ -215,6 +225,11 @@ async def get_player_gamelogs_espn(player_id: str, season: int,
             'AST':         parse_stat(stats[8]),
             'FG3M':        parse_stat(stats[3]),
             'PRA':         parse_stat(stats[13]) + parse_stat(stats[7]) + parse_stat(stats[8]),
+            'PTS_REB':     parse_stat(stats[13]) + parse_stat(stats[7]),
+            'PTS_AST':     parse_stat(stats[13]) + parse_stat(stats[8]),
+            'REB_AST':     parse_stat(stats[7])  + parse_stat(stats[8]),
+            'BLK':         parse_stat(stats[9]),
+            'STL':         parse_stat(stats[10]),
         })
     return games
 
@@ -435,23 +450,24 @@ def find_best_threshold(values, thresholds):
     return None
 
 
-def build_ladder(values, max_rungs=14):
-    """A — Full hit-rate ladder: for each integer threshold from the lowest to
-    the highest value the player posted vs this opponent/location, how often he
-    cleared it. Lets the user see 3+, 4+, 5+, 6+... not just the single 70% floor.
-    History is last-10 vs this opponent at this location (regular season + playoffs).
-    Always keeps the LOW (most-reliable) rungs; only the far high end is trimmed
-    for very wide stats (points/PRA) so the card stays readable."""
-    n = len(values)
-    if not n:
+def build_ladder(values, line, span=3):
+    """A — Hit-rate ladder anchored to the sportsbook line. Sportsbooks only
+    offer alt lines NEAR the posted number, so showing the full integer range
+    (3,4,5,6...) is useless — you can never bet those. Instead we show `span`
+    rungs below and above the actual book line in 1-point steps at the book's
+    half-point (e.g. line 29.5 -> 26.5, 27.5, 28.5, 29.5, 30.5, 31.5, 32.5).
+    Each rung = how often the player went OVER that alt line (v > rung) over the
+    same opponent/location history. Returns [] when there is no book line."""
+    if not values or line is None:
         return []
-    mx = int(max(values))
-    lo = max(1, int(min(values)))
-    hi = min(mx, lo + max_rungs - 1)
+    n = len(values)
     out = []
-    for t in range(lo, hi + 1):
-        hits = sum(1 for v in values if v >= t)
-        out.append({'t': t, 'hits': hits, 'games': n, 'pct': round(hits / n * 100)})
+    for off in range(-span, span + 1):
+        rung = round(line + off, 1)
+        if rung <= 0:
+            continue
+        hits = sum(1 for v in values if v > rung)
+        out.append({'t': rung, 'hits': hits, 'games': n, 'pct': round(hits / n * 100)})
     return out
 
 
@@ -633,7 +649,7 @@ async def run_analysis(selected_date: str = None) -> Dict:
                               'team_name': h_name, 'stat': sk,
                               'stat_label': sc['label'], 'emoji': sc['emoji'],
                               'location': 'Home', 'opp': a, 'opp_name': a_name,
-                              'ladder': build_ladder(vals),
+                              'ladder': build_ladder(vals, dk_line if dk_line is not None else fd_line),
                               'best_bet': best_bet_at_line(dk_line if dk_line is not None else fd_line, vals),
                               'matchup': f"{a_name} @ {h_name}",
                               'l10_hits': l10h, 'l10_games': len(last10),
@@ -691,7 +707,7 @@ async def run_analysis(selected_date: str = None) -> Dict:
                               'team_name': a_name, 'stat': sk,
                               'stat_label': sc['label'], 'emoji': sc['emoji'],
                               'location': 'Away', 'opp': h, 'opp_name': h_name,
-                              'ladder': build_ladder(vals),
+                              'ladder': build_ladder(vals, dk_line if dk_line is not None else fd_line),
                               'best_bet': best_bet_at_line(dk_line if dk_line is not None else fd_line, vals),
                               'matchup': f"{a_name} @ {h_name}",
                               'l10_hits': l10h, 'l10_games': len(last10),
@@ -942,6 +958,10 @@ input[type=date]::-webkit-calendar-picker-indicator{filter:invert(1);opacity:.7;
 .tag-reb{background:rgba(37,99,235,.15);color:#60a5fa;border:1px solid rgba(37,99,235,.25)}
 .tag-ast{background:rgba(5,150,105,.15);color:#34d399;border:1px solid rgba(5,150,105,.25)}
 .tag-fg3m{background:rgba(220,38,38,.15);color:#f87171;border:1px solid rgba(220,38,38,.25)}
+.tag-pra{background:rgba(168,85,247,.15);color:#c084fc;border:1px solid rgba(168,85,247,.25)}
+.tag-combo{background:rgba(245,158,11,.15);color:#fbbf24;border:1px solid rgba(245,158,11,.25)}
+.tag-blk{background:rgba(20,184,166,.15);color:#2dd4bf;border:1px solid rgba(20,184,166,.25)}
+.tag-stl{background:rgba(236,72,153,.15);color:#f472b6;border:1px solid rgba(236,72,153,.25)}
 .pick-pattern{font-size:.9rem;color:#7dd3fc;font-weight:700;margin-bottom:4px;line-height:1.4}
 .l10vthr-desc{font-size:.88rem;color:#f59e0b;font-weight:700;margin-bottom:5px;line-height:1.4}
 .fd-line-badge{display:inline-block;background:rgba(74,222,128,.08);border:1px solid rgba(74,222,128,.2);color:#4ade80;border-radius:6px;padding:3px 10px;font-size:.78rem;font-weight:700;margin-bottom:6px}
@@ -1014,12 +1034,17 @@ footer{text-align:center;padding:32px 24px;color:#4b5563;font-size:.78rem;border
 </div>
 <div class="games-bar" id="gamesBar"></div>
 <div id="filterBar" style="display:none" class="filter-bar">
-  <button class="filter-btn active" onclick="filterStat('ALL')">All Stats</button>
-  <button class="filter-btn" onclick="filterStat('PTS')">Points</button>
-  <button class="filter-btn" onclick="filterStat('REB')">Rebounds</button>
-  <button class="filter-btn" onclick="filterStat('AST')">Assists</button>
-  <button class="filter-btn" onclick="filterStat('FG3M')">3-Pointers</button>
-  <button class="filter-btn" onclick="filterStat('PRA')">🃏 PRA</button>
+  <button class="filter-btn active" data-stat="ALL" onclick="filterStat('ALL')">All Stats</button>
+  <button class="filter-btn" data-stat="PTS" onclick="filterStat('PTS')">Points</button>
+  <button class="filter-btn" data-stat="REB" onclick="filterStat('REB')">Rebounds</button>
+  <button class="filter-btn" data-stat="AST" onclick="filterStat('AST')">Assists</button>
+  <button class="filter-btn" data-stat="FG3M" onclick="filterStat('FG3M')">3-Pointers</button>
+  <button class="filter-btn" data-stat="PRA" onclick="filterStat('PRA')">🃏 PRA</button>
+  <button class="filter-btn" data-stat="PTS_REB" onclick="filterStat('PTS_REB')">💪 Pts+Reb</button>
+  <button class="filter-btn" data-stat="PTS_AST" onclick="filterStat('PTS_AST')">⚡ Pts+Ast</button>
+  <button class="filter-btn" data-stat="REB_AST" onclick="filterStat('REB_AST')">🔗 Reb+Ast</button>
+  <button class="filter-btn" data-stat="BLK" onclick="filterStat('BLK')">🛡️ Blocks</button>
+  <button class="filter-btn" data-stat="STL" onclick="filterStat('STL')">🧤 Steals</button>
 </div>
 <div id="content"></div>
 <div id="allPicksWrap" style="display:none">
@@ -1053,12 +1078,17 @@ footer{text-align:center;padding:32px 24px;color:#4b5563;font-size:.78rem;border
     <div class="all-section-title">🎯 All Patterns by Game</div>
     <input id="playerSearchInput" type="text" placeholder="Search player…" oninput="applyAllFilters()" style="background:#111;color:#fff;border:1px solid #2a2a2a;border-radius:8px;padding:7px 14px;font-size:.85rem;font-family:'Source Sans Pro',sans-serif;outline:none;width:180px;margin-bottom:6px" />
     <div style="display:flex;gap:8px;flex-wrap:wrap" id="allFilterBar">
-      <button class="filter-btn active" onclick="filterAll('ALL')">All</button>
-      <button class="filter-btn" onclick="filterAll('PTS')">🏀 Pts</button>
-      <button class="filter-btn" onclick="filterAll('REB')">📊 Reb</button>
-      <button class="filter-btn" onclick="filterAll('AST')">🎯 Ast</button>
-      <button class="filter-btn" onclick="filterAll('FG3M')">🔥 3PM</button>
-      <button class="filter-btn" onclick="filterAll('PRA')">🃏 PRA</button>
+      <button class="filter-btn active" data-stat="ALL" onclick="filterAll('ALL')">All</button>
+      <button class="filter-btn" data-stat="PTS" onclick="filterAll('PTS')">🏀 Pts</button>
+      <button class="filter-btn" data-stat="REB" onclick="filterAll('REB')">📊 Reb</button>
+      <button class="filter-btn" data-stat="AST" onclick="filterAll('AST')">🎯 Ast</button>
+      <button class="filter-btn" data-stat="FG3M" onclick="filterAll('FG3M')">🔥 3PM</button>
+      <button class="filter-btn" data-stat="PRA" onclick="filterAll('PRA')">🃏 PRA</button>
+      <button class="filter-btn" data-stat="PTS_REB" onclick="filterAll('PTS_REB')">💪 Pts+Reb</button>
+      <button class="filter-btn" data-stat="PTS_AST" onclick="filterAll('PTS_AST')">⚡ Pts+Ast</button>
+      <button class="filter-btn" data-stat="REB_AST" onclick="filterAll('REB_AST')">🔗 Reb+Ast</button>
+      <button class="filter-btn" data-stat="BLK" onclick="filterAll('BLK')">🛡️ Blk</button>
+      <button class="filter-btn" data-stat="STL" onclick="filterAll('STL')">🧤 Stl</button>
       <button class="filter-btn" id="oversBtn" onclick="toggleSide('OVER')" style="margin-left:8px">⬆ Overs only</button>
       <button class="filter-btn" id="undersBtn" onclick="toggleSide('UNDER')">⬇ Unders only</button>
     </div>
@@ -1094,7 +1124,7 @@ footer{text-align:center;padding:32px 24px;color:#4b5563;font-size:.78rem;border
 
 <footer>
   <div class="ft-logo">Money Picks Arena</div>
-  <div>NBA Money Buckets &middot; Pts &middot; Reb &middot; Ast &middot; 3PM</div>
+  <div>NBA Money Buckets &middot; Pts &middot; Reb &middot; Ast &middot; 3PM &middot; Blk &middot; Stl &middot; Combos</div>
   <div style="margin-top:8px;font-size:.7rem">For entertainment only. Not a betting service. Must be 18+.</div>
 </footer>
 <script>
@@ -1112,7 +1142,7 @@ let top10=[], allPicksData=[], activeTopStat='ALL', activeAllStat='ALL', sideFil
 
 function pctClass(p){return p>=90?['pct-green','bar-green']:p>=80?['pct-yellow','bar-yellow']:['pct-orange','bar-orange']}
 function statTag(s){
-  const m={PTS:['tag-pts','Points'],REB:['tag-reb','Rebounds'],AST:['tag-ast','Assists'],FG3M:['tag-fg3m','3-Pointers'],PRA:['tag-pra','Pts+Reb+Ast']};
+  const m={PTS:['tag-pts','Points'],REB:['tag-reb','Rebounds'],AST:['tag-ast','Assists'],FG3M:['tag-fg3m','3-Pointers'],PRA:['tag-pra','Pts+Reb+Ast'],PTS_REB:['tag-combo','Pts+Reb'],PTS_AST:['tag-combo','Pts+Ast'],REB_AST:['tag-combo','Reb+Ast'],BLK:['tag-blk','Blocks'],STL:['tag-stl','Steals']};
   const [c,l]=m[s]||['',''];
   return `<span class="stat-tag ${c}">${l}</span>`;
 }
@@ -1120,26 +1150,13 @@ function rankClass(i){return i===0?'rank-1':i===1?'rank-2':i===2?'rank-3':'rank-
 
 function filterStat(stat){
   activeTopStat=stat;
-  document.querySelectorAll('#filterBar .filter-btn').forEach(b=>{
-    const t=b.textContent;
-    b.classList.toggle('active',
-      stat==='ALL'?t.includes('All'):stat==='PTS'?t.includes('Point'):
-      stat==='REB'?t.includes('Rebound'):stat==='AST'?t.includes('Assist'):
-      stat==='PRA'?t.includes('PRA'):t.includes('3-Point'));
-  });
+  document.querySelectorAll('#filterBar .filter-btn[data-stat]').forEach(b=>b.classList.toggle('active',b.dataset.stat===stat));
   renderTop10Cards(stat==='ALL'?top10:top10.filter(p=>p.stat===stat));
 }
 
 function filterAll(stat){
   activeAllStat=stat;
-  document.querySelectorAll('#allFilterBar .filter-btn').forEach(b=>{
-    const t=b.textContent;
-    b.classList.toggle('active',
-      stat==='ALL'?t==='All':stat==='PTS'?t.endsWith('Pts'):
-      stat==='REB'?t.includes('Reb')&&!t.includes('PRA'):
-      stat==='AST'?t.includes('Ast')&&!t.includes('PRA'):
-      stat==='PRA'?t.includes('PRA'):t.includes('3PM'));
-  });
+  document.querySelectorAll('#allFilterBar .filter-btn[data-stat]').forEach(b=>b.classList.toggle('active',b.dataset.stat===stat));
   applyAllFilters();
 }
 
@@ -1238,13 +1255,15 @@ function renderTop10Cards(picks){
           <span style="color:#fff"> ${bb.hits}/${bb.games} (${bb.pct}%)</span>
           <span style="color:${confColor};font-weight:800"> ${bb.conf}</span></div>`);
       }
-      // A — Full hit-rate ladder vs opponent (3+, 4+, 5+...)
+      // A — Hit-rate ladder, alt lines around the book line (line ±3)
       if(s.ladder && s.ladder.length){
+        const anchorLine=(s.dk_line!=null?s.dk_line:s.fd_line);
         const rungs=s.ladder.map(r=>{
           const c=r.pct>=70?'#4ade80':r.pct>=50?'#fbbf24':'#f87171';
-          return `<span style="color:${c};font-weight:700">${r.t}+ ${r.hits}/${r.games}</span>`;
+          const isLine=(anchorLine!=null&&r.t===anchorLine);
+          return `<span style="color:${c};font-weight:700${isLine?';text-decoration:underline':''}">o${r.t} ${r.hits}/${r.games}</span>`;
         }).join(`<span style="color:#444"> · </span>`);
-        lines.push(`<div style="font-size:.76rem;color:#aaa;margin:4px 0 8px"><span style="color:#888">ladder vs ${p.opp} ${(p.location||'').toLowerCase()}:</span> ${rungs}</div>`);
+        lines.push(`<div style="font-size:.76rem;color:#aaa;margin:4px 0 8px"><span style="color:#888">alt lines vs ${p.opp} ${(p.location||'').toLowerCase()}:</span> ${rungs}</div>`);
       }
       return `<div style="background:#0d0d0d;border:1px solid #1f1f1f;border-radius:10px;padding:12px 14px;margin-top:9px">
         <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:7px">
