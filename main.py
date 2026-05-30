@@ -803,9 +803,18 @@ async def run_analysis(selected_date: str = None, force: bool = False) -> Dict:
     # Take enough picks to surface TOP_N distinct players (cards group by player,
     # so 12 picks from 11 unique players = only 11 cards). Walk the sorted list
     # collecting picks until we hit TOP_N distinct names.
+    # CARD MINUTES FLOOR: the top cards are reserved for starters + 6th-man rotation
+    # players. Anyone averaging under CARD_MIN_MPG minutes over their recent games is a
+    # low-minute backup and is skipped for the cards (they still appear in all_picks for
+    # the parlay builder / all-by-game list). Unknown mpg (rare — no recent logs) is kept.
+    # To revert / loosen, lower CARD_MIN_MPG (set to 0 to disable).
+    CARD_MIN_MPG = 24
     top_picks = []
     _seen_players = set()
     for _pk in picks:
+        _mpg = _pk.get('mpg')
+        if _mpg is not None and _mpg < CARD_MIN_MPG:
+            continue
         top_picks.append(_pk)
         _seen_players.add(_pk['player'])
         if len(_seen_players) >= TOP_N:
@@ -1736,13 +1745,20 @@ async function runPicks(force=false){
     allPicksData=data.all_picks||[];
     activeTopStat='ALL';activeAllStat='ALL';
     const log=data.log||[];
-    if(!top10.length){
+    if(!top10.length && !allPicksData.length){
       document.getElementById('content').innerHTML=`<div class="msg-card"><span class="ico"></span><h2>No Qualifying Patterns</h2><p>No 70%+ patterns for today matchups.</p></div><div class="log-box">${log.join('<br>')}</div>`;
       renderPropsSection(data.props_picks, data.props_nopick);
       return;
     }
-    document.getElementById('filterBar').style.display='flex';
-    renderTop10Cards(top10);
+    if(top10.length){
+      document.getElementById('filterBar').style.display='flex';
+      renderTop10Cards(top10);
+    } else {
+      // Card minutes floor filtered everyone off the cards, but there are still 70%+ plays
+      // for the all-by-game list / parlay builder below — surface those, not a dead page.
+      document.getElementById('filterBar').style.display='none';
+      document.getElementById('content').innerHTML=`<div class="msg-card"><span class="ico"></span><h2>No Cards Today</h2><p>No starters or 6th-man players cleared the minutes floor for cards. All 70%+ plays and the parlay builder are below.</p></div>`;
+    }
     const lb=document.createElement('div');
     lb.className='log-box';
     lb.innerHTML=log.join('<br>')+`<br> ${data.total} total patterns found`;
@@ -1816,6 +1832,10 @@ document.addEventListener('DOMContentLoaded', function(){
       var fb = document.getElementById('filterBar');
       if (fb) fb.style.display = 'flex';
       renderTop10Cards(top10);
+    }
+    if (allPicksData.length) {
+      // Render the all-picks sections whenever there are plays, even if the card minutes
+      // floor left zero cards.
       var tc = document.getElementById('totalCount');
       if (tc) tc.textContent = allPicksData.length;
       var ap = document.getElementById('allPicksWrap');
