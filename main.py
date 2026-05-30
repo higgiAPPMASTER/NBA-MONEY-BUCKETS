@@ -1994,6 +1994,32 @@ async def run(request: Request):
     result = await run_analysis(selected_date, force=force)
     return result
 
+_CRON_BUSY_NBA = False
+
+@app.api_route("/api/cron-run", methods=["GET", "POST"])
+async def cron_run_nba(request: Request, date_str: str = ""):
+    # Cron-friendly trigger: authed by the static INTERNAL_API_TOKEN secret sent
+    # as a header (kept out of the URL so it isn't logged). No expiring hub login
+    # needed. Runs the pipeline + caches it so members can pull the picks, and
+    # wakes the free-tier app on Render. An in-flight guard blocks overlapping runs.
+    global _CRON_BUSY_NBA
+    import hmac
+    from fastapi import HTTPException
+    secret = os.environ.get("INTERNAL_API_TOKEN", "")
+    tok = request.headers.get("X-Internal-Token", "") or request.headers.get("Authorization", "").replace("Bearer ", "").strip()
+    if not secret or not hmac.compare_digest(tok or "", secret):
+        raise HTTPException(status_code=401, detail="Invalid cron token")
+    ds = date_str or date.today().isoformat()
+    if _CRON_BUSY_NBA:
+        return {"ran": False, "cached": bool(_cache_get("nba", ds)), "date": ds, "reason": "already running"}
+    _CRON_BUSY_NBA = True
+    try:
+        await run_analysis(ds)
+    finally:
+        _CRON_BUSY_NBA = False
+    return {"ran": True, "cached": bool(_cache_get("nba", ds)), "date": ds}
+
+
 @app.get("/api/cached")
 async def cached_nba(request: Request, target_date: str = None):
     # Read-only: serve picks already saved on file for this date. Never runs the
