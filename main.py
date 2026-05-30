@@ -1494,7 +1494,7 @@ function buildParlay(){
   var sel=document.getElementById('parlayLegs');
   var n=parseInt(sel?sel.value:'3',10)||3;
   var out=document.getElementById('parlayResult');
-  if(!allPicksData||!allPicksData.length){ if(out)out.innerHTML='<div style="color:#888;padding:10px">Run today\'s picks first, then build a parlay.</div>'; return; }
+  if(!allPicksData||!allPicksData.length){ if(out)out.innerHTML='<div style="color:#888;padding:10px">Run today&#39;s picks first, then build a parlay.</div>'; return; }
   var patternKeys=new Set((allPicksData||[]).filter(function(p){return p.has_consistency;}).map(function(p){return p.player+'|'+p.stat;}));
   var byPlayer={};
   (allPicksData||[]).forEach(function(p){
