@@ -1591,7 +1591,7 @@ async def api_warm_nba():
         return {"ok": True, "source": "cache", "date": today,
                 "picks": len(cached.get("picks", []))}
     try:
-        result = await run_logic()
+        result = await run_analysis(today)
         return {"ok": True, "source": "computed", "date": today,
                 "picks": len(result.get("picks", []))}
     except Exception as e:
