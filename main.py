@@ -902,6 +902,11 @@ LOGIN_HTML = """<!DOCTYPE html>
 <title>🏀 Money Buckets</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
+/* responsive: phones & tablets (mobile fit) */
+html,body{max-width:100%;overflow-x:hidden}
+img{max-width:100%;height:auto}
+@media (max-width:1200px){table{display:block;width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch;white-space:nowrap}}
+@media (max-width:560px){table{font-size:12px}table th,table td{padding:6px 8px}}
 body{
   background:#0d0d0d;
   background-image:radial-gradient(ellipse at 50% 0%,rgba(253,184,39,.1) 0%,transparent 55%);
@@ -1012,6 +1017,11 @@ MAIN_HTML = """<!DOCTYPE html>
 <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;700;900&family=Source+Sans+Pro:wght@300;400;600;700&display=swap" rel="stylesheet">
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
+/* responsive: phones & tablets (mobile fit) */
+html,body{max-width:100%;overflow-x:hidden}
+img{max-width:100%;height:auto}
+@media (max-width:1200px){table{display:block;width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch;white-space:nowrap}}
+@media (max-width:560px){table{font-size:12px}table th,table td{padding:6px 8px}}
 body{background:#0f0f0f;color:#fff;font-family:'Source Sans Pro',sans-serif;min-height:100vh}
 .bg-glow{position:fixed;inset:0;background:radial-gradient(ellipse at 50% 20%,rgba(245,158,11,.05),transparent 65%);pointer-events:none;z-index:0}
 nav{position:fixed;top:0;width:100%;background:rgba(10,10,10,.95);backdrop-filter:blur(12px);border-bottom:1px solid #1c1c1c;z-index:100;padding:0 32px;height:80px;display:flex;align-items:center}
