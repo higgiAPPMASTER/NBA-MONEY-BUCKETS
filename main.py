@@ -1275,7 +1275,8 @@ footer{text-align:center;padding:32px 24px;color:#4b5563;font-size:.78rem;border
 })();
 // Auto-enable admin view if this logged-in user is the admin (cosmetic — the
 // server independently re-verifies before honoring any force refresh).
-if(window.IS_ADMIN){document.body.classList.add('is-admin');}else{var _at=localStorage.getItem('__mpa_token')||'';var _ak=localStorage.getItem('__mpa_admin')||'';if(_at||_ak){fetch('/api/whoami?_tok='+encodeURIComponent(_at)+'&admin='+encodeURIComponent(_ak)).then(r=>r.json()).then(d=>{if(d&&d.is_admin){window.IS_ADMIN=true;document.body.classList.add('is-admin');}}).catch(function(){});}}
+function _nbaUnlockDates(){try{var dp=document.getElementById('datePicker');if(dp){dp.removeAttribute('min');dp.removeAttribute('max');}}catch(e){}}
+if(window.IS_ADMIN){document.body.classList.add('is-admin');_nbaUnlockDates();}else{var _at=localStorage.getItem('__mpa_token')||'';var _ak=localStorage.getItem('__mpa_admin')||'';if(_at||_ak){fetch('/api/whoami?_tok='+encodeURIComponent(_at)+'&admin='+encodeURIComponent(_ak)).then(r=>r.json()).then(d=>{if(d&&d.is_admin){window.IS_ADMIN=true;document.body.classList.add('is-admin');_nbaUnlockDates();}}).catch(function(){});}}
 let top10=[], allPicksData=[], activeTopStat='ALL', activeAllStat='ALL', sideFilter=null;
 
 function pctClass(p){return p>=90?['pct-green','bar-green']:p>=80?['pct-yellow','bar-yellow']:['pct-orange','bar-orange']}
