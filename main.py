@@ -288,18 +288,24 @@ async def get_odds_lines(today_str):
     props = []
     try:
         async with httpx.AsyncClient(timeout=20) as c:
-            # Time-window filter (UTC): include any event starting between
-            # 6 hours ago and 48 hours from now. This covers every ET/UTC
-            # edge case (e.g. a 10pm ET game = next-day UTC).
+            # Event filter: keep an event iff its US-Eastern calendar date equals the
+            # SELECTED date. Converting to ET first correctly handles a late ET tip that
+            # rolls into the next UTC day. Unlike a now-relative rolling window, scoping to
+            # the selected day lets admins pull lines for a game days out (the date picker is
+            # unlocked for them) while keeping each player's props bound to the right game —
+            # no cross-day overwrite from intermediate-day events. Non-admins are capped at
+            # tomorrow by the picker, so they only ever see today's/tomorrow's slate.
             from datetime import datetime as _dt, timezone as _tz, timedelta as _td
-            now_utc = _dt.now(_tz.utc)
-            window_start = now_utc - _td(hours=6)
-            window_end   = now_utc + _td(hours=48)
+            try:
+                from zoneinfo import ZoneInfo as _ZI
+                _ET = _ZI("America/New_York")
+            except Exception:
+                _ET = _tz(-_td(hours=4))  # EDT fallback if the tz database is unavailable
 
             def _in_window(iso_ts: str) -> bool:
                 try:
                     t = _dt.fromisoformat(iso_ts.replace('Z', '+00:00'))
-                    return window_start <= t <= window_end
+                    return t.astimezone(_ET).strftime('%Y-%m-%d') == today_str
                 except Exception:
                     return False
 
@@ -315,12 +321,12 @@ async def get_odds_lines(today_str):
                     if found:
                         events = found
                         active_key = sport_key
-                        print(f'[OddsAPI] {len(events)} NBA events ({sport_key}) within 48h window')
+                        print(f'[OddsAPI] {len(events)} NBA events ({sport_key}) for {today_str}')
                         break
                 else:
                     print(f'[OddsAPI] events {r.status_code} for {sport_key}: {r.text[:150]}')
             if not events:
-                print(f'[OddsAPI] No NBA events found within 48h window (now_utc={now_utc.isoformat()})')
+                print(f'[OddsAPI] No NBA events found for {today_str}')
                 return []
             markets = ','.join(ODDS_MARKET_MAP.keys())
             for ev in events:
