@@ -851,6 +851,7 @@ async def run_analysis(selected_date: str = None, force: bool = False) -> Dict:
     for game in games:
         h,a = game['home'],game['away']
         h_name,a_name = game['home_name'],game['away_name']
+        matchup_str = f"{a_name} @ {h_name}"
         for loc,tid,opp_id,opp_name,side in [('Home',game['home_id'],a,a_name,'HOME'),('Away',game['away_id'],h,h_name,'AWAY')]:
             for player in rosters.get(tid,[]):
                 pname,pid = player['name'],player['id']
@@ -858,18 +859,21 @@ async def run_analysis(selected_date: str = None, force: bool = False) -> Dict:
                     ob = odds_lookup.get((_nn(pname),sk),{})
                     if not ob or ob.get('line') is None: continue
                     line = float(ob['line'])
+                    dk_ob = dk_lookup.get((_nn(pname),sk),{})
+                    dk_over = dk_ob.get('over_odds','')
+                    dk_under = dk_ob.get('under_odds','')
                     # Same trade-aware filter: only games with current team vs today's opp at this location
                     cur_team = tid_to_abbr.get(tid, '')
                     opp_logs = [l for l in logs_by_player.get(pid, [])
                                 if l['opp'] == opp_id and l['location'] == loc and l.get('player_team') == cur_team][:10]
                     if not opp_logs:
-                        props_nopick.append({'player':pname,'stat':sk,'stat_label':sc['label'],'emoji':sc['emoji'],'side':side,'opp_name':opp_name,'line':line,'avg':None,'games':0,'history':'—','gap':None,'pick':None,'fd_odds':ob.get('odds','')})
+                        props_nopick.append({'player':pname,'stat':sk,'stat_label':sc['label'],'emoji':sc['emoji'],'side':side,'opp_name':opp_name,'line':line,'avg':None,'games':0,'history':'—','gap':None,'pick':None,'fd_odds':ob.get('odds',''),'dk_over_odds':dk_over,'dk_under_odds':dk_under,'matchup':matchup_str})
                         continue
                     vals = [float(l[sk]) for l in opp_logs]
                     avg = round(sum(vals)/len(vals),1)
                     gap = round(avg-line,1)
                     pick = 'OVER' if avg>line else ('UNDER' if avg<line else None)
-                    entry = {'player':pname,'stat':sk,'stat_label':sc['label'],'emoji':sc['emoji'],'side':side,'opp_name':opp_name,'line':line,'avg':avg,'games':len(vals),'history':','.join(str(int(v)) for v in vals[:8]),'gap':gap,'pick':pick,'fd_odds':ob.get('odds','')}
+                    entry = {'player':pname,'stat':sk,'stat_label':sc['label'],'emoji':sc['emoji'],'side':side,'opp_name':opp_name,'line':line,'avg':avg,'games':len(vals),'history':','.join(str(int(v)) for v in vals[:8]),'gap':gap,'pick':pick,'fd_odds':ob.get('odds',''),'dk_over_odds':dk_over,'dk_under_odds':dk_under,'matchup':matchup_str}
                     (props_picks if pick else props_nopick).append(entry)
     props_picks.sort(key=lambda x:abs(x.get('gap') or 0),reverse=True)
     log.append(f"Props: {len(props_picks)} picks")
@@ -1140,6 +1144,9 @@ body.is-admin #parlayCard{display:block}
 .log-box{background:#0a0a0a;border:1px solid #262626;border-radius:12px;padding:16px;font-size:.74rem;color:#374151;font-family:'Courier New',monospace;margin-top:20px;max-height:160px;overflow-y:auto;line-height:1.9}
 footer{text-align:center;padding:32px 24px;color:#4b5563;font-size:.78rem;border-top:1px solid #1c1c1c;margin-top:24px;font-family:'Source Sans Pro',sans-serif}
 .ft-logo{font-family:'Playfair Display',serif;color:#f59e0b;font-weight:700;font-size:.95rem;margin-bottom:6px}
+.props-player-chip{background:#161616;border:1px solid #262626;border-radius:10px;padding:10px 14px;min-width:150px;cursor:pointer;transition:border-color .15s;user-select:none}
+.props-player-chip:hover{border-color:#f59e0b}
+.props-game-sel{background:#111;color:#fff;border:1px solid #2a2a2a;border-radius:8px;padding:8px 14px;font-size:.85rem;font-family:'Source Sans Pro',sans-serif;outline:none;min-width:220px;cursor:pointer}
 </style>
 </head>
 <body>
@@ -1236,27 +1243,16 @@ footer{text-align:center;padding:32px 24px;color:#4b5563;font-size:.78rem;border
 </div>
 
 <div id="props-section" style="display:none;max-width:1400px;margin:28px auto 0;padding:0 24px 40px">
-  <div style="font-size:.85rem;font-weight:900;letter-spacing:2px;text-transform:uppercase;display:flex;align-items:center;gap:10px;font-size:.78rem;font-weight:700;color:#f59e0b;text-transform:uppercase;letter-spacing:.15em;margin:0 0 12px">⚡ Player Props vs Opponent History</div>
-  <div style="overflow-x:auto;border-radius:14px;border:1px solid #262626">
-    <table style="width:100%;border-collapse:collapse;font-size:.82rem;background:#161616">
-      <thead><tr style="border-bottom:1px solid rgba(245,158,11,.2)">
-        <th style="padding:12px 14px;text-align:left;color:#f59e0b;font-size:.7rem;font-weight:700;text-transform:uppercase;letter-spacing:.12em;background:#1a1a1a;white-space:nowrap">#</th>
-        <th style="padding:12px 14px;text-align:left;color:#f59e0b;font-size:.7rem;font-weight:700;text-transform:uppercase;letter-spacing:.12em;background:#1a1a1a;white-space:nowrap">Player</th>
-        <th style="padding:12px 14px;text-align:left;color:#f59e0b;font-size:.7rem;font-weight:700;text-transform:uppercase;letter-spacing:.12em;background:#1a1a1a;white-space:nowrap">Stat</th>
-        <th style="padding:12px 14px;text-align:left;color:#f59e0b;font-size:.7rem;font-weight:700;text-transform:uppercase;letter-spacing:.12em;background:#1a1a1a;white-space:nowrap">H/A</th>
-        <th style="padding:12px 14px;text-align:left;color:#f59e0b;font-size:.7rem;font-weight:700;text-transform:uppercase;letter-spacing:.12em;background:#1a1a1a;white-space:nowrap">Opponent</th>
-        <th style="padding:12px 14px;text-align:left;color:#f59e0b;font-size:.7rem;font-weight:700;text-transform:uppercase;letter-spacing:.12em;background:#1a1a1a;white-space:nowrap">Line</th>
-        <th style="padding:12px 14px;text-align:left;color:#f59e0b;font-size:.7rem;font-weight:700;text-transform:uppercase;letter-spacing:.12em;background:#1a1a1a;white-space:nowrap">Avg vs Opp</th>
-        <th style="padding:12px 14px;text-align:left;color:#f59e0b;font-size:.7rem;font-weight:700;text-transform:uppercase;letter-spacing:.12em;background:#1a1a1a;white-space:nowrap">Games</th>
-        <th style="padding:12px 14px;text-align:left;color:#f59e0b;font-size:.7rem;font-weight:700;text-transform:uppercase;letter-spacing:.12em;background:#1a1a1a;white-space:nowrap">History</th>
-        <th style="padding:12px 14px;text-align:left;color:#f59e0b;font-size:.7rem;font-weight:700;text-transform:uppercase;letter-spacing:.12em;background:#1a1a1a;white-space:nowrap">Pick</th>
-      </tr></thead>
-      <tbody id="props-body"></tbody>
-    </table>
+  <div style="font-size:.78rem;font-weight:700;color:#f59e0b;text-transform:uppercase;letter-spacing:.15em;margin:0 0 14px;display:flex;align-items:center;gap:10px">&#9889; Player Props vs Opponent History</div>
+  <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:14px">
+    <select id="propsGameSel" class="props-game-sel" onchange="propsSelectGame(this.value)">
+      <option value="">-- Select a game --</option>
+    </select>
+    <span id="propsGameHint" style="font-size:.75rem;color:#555">Select a game to browse players</span>
   </div>
-  <p style="font-size:.72rem;color:#555;margin-top:8px">
-    <strong style="color:#f59e0b">Avg vs Opp</strong> = average vs today's opponent at home/away (incl. playoffs) &nbsp;|&nbsp;
-    <strong style="color:#f59e0b">Pick</strong> = O (Over) if avg &gt; line, U (Under) if avg &lt; line
+  <div id="propsPlayerList" style="display:none"></div>
+  <p style="font-size:.72rem;color:#555;margin-top:10px">
+    <strong style="color:#f59e0b">Avg vr Opp</strong> = career avg at this location vs today&#39;s opponent (incl. playoffs) &nbsp;|&nbsp; Click any player to see all their prop lines
   </p>
 </div>
 </div><!-- /wrap -->
@@ -1869,45 +1865,126 @@ async function getPicks(){
 }
 
 function renderPropsSection(picks, nopick) {
-  var sec  = document.getElementById('props-section');
-  var body = document.getElementById('props-body');
-  if (!sec || !body) return;
-  sec.style.display = 'block';
-  var all = (picks||[]).concat((nopick||[]).filter(function(p){return p.games>0;}));
-  if (all.length === 0) {
-    body.innerHTML = '<tr><td colspan="11" style="text-align:center;padding:20px;color:#555">No prop lines available yet  check back closer to tip-off.</td></tr>';
-    return;
-  }
-  // Signal lookup from allPicksData (PATTERN/LINE/STREAK/MPA) keyed by player|stat
+  var sec = document.getElementById('props-section');
+  if (!sec) return;
+  var all = (picks||[]).concat(nopick||[]);
+  sec.style.display = all.length ? 'block' : 'none';
+  if (!all.length) return;
   var sigMap = {};
-  (allPicksData||[]).forEach(function(s){ sigMap[s.player+'|'+s.stat] = s; });
-  function badgesFor(p){
-    var s = sigMap[p.player+'|'+p.stat]; if(!s) return '';
-    var out = [];
-    if (s.has_consistency) out.push('<span style="background:rgba(245,158,11,.15);color:#fbbf24;padding:1px 6px;border-radius:4px;font-size:.6rem;font-weight:700;margin-right:3px">PATTERN '+s.pct+'%</span>');
-    if (s.line_rec) out.push('<span style="background:'+(s.line_rec==='UNDER'?'rgba(239,68,68,.15)':'rgba(74,222,128,.15)')+';color:'+(s.line_rec==='UNDER'?'#f87171':'#4ade80')+';padding:1px 6px;border-radius:4px;font-size:.6rem;font-weight:700;margin-right:3px">LINE '+s.line_rec+' '+s.line_rec_pct+'%</span>');
-    if (s.streak_rec) out.push('<span style="background:rgba(249,115,22,.15);color:#fb923c;padding:1px 6px;border-radius:4px;font-size:.6rem;font-weight:700;margin-right:3px">🔥 '+s.streak_n+' '+s.streak_rec+'</span>');
-    if (s.alt_rec) out.push('<span style="background:rgba(168,85,247,.15);color:#c084fc;padding:1px 6px;border-radius:4px;font-size:.6rem;font-weight:700;margin-right:3px">⭐ MPA '+s.alt_rec+'</span>');
-    return out.length ? '<div style="margin-top:3px;display:flex;flex-wrap:wrap;gap:2px">'+out.join('')+'</div>' : '';
-  }
-  body.innerHTML = all.map(function(p,i) {
-    var isOver=p.pick==='OVER'||p.pick==='O', isUnder=p.pick==='UNDER'||p.pick==='U';
-    var clr = isOver?'#4ade80':isUnder?'#f87171':'#555';
-    var gap = p.gap!=null?(p.gap>0?'+':'')+p.gap:'';
-    var sideBg = p.side==='HOME'?'rgba(253,184,39,.15)':'rgba(99,102,241,.15)';
-    return '<tr style="border-bottom:1px solid #1a1a1a">' +
-      '<td style="padding:9px 12px;color:#555;vertical-align:top">'+(i+1)+'</td>' +
-      '<td style="padding:9px 12px;font-weight:700">'+p.player+badgesFor(p)+'</td>' +
-      '<td style="padding:9px 12px;color:#FDB827;font-size:.8rem">'+p.emoji+' '+p.stat_label+'</td>' +
-      '<td style="padding:9px 12px"><span style="background:'+sideBg+';padding:2px 7px;border-radius:4px;font-size:.75rem">'+p.side+'</span></td>' +
-      '<td style="padding:9px 12px;color:#999;font-size:.8rem">'+p.opp_name+'</td>' +
-      '<td style="padding:9px 12px;font-family:monospace;font-weight:700">'+p.line+'</td>' +
-      '<td style="padding:9px 12px;font-family:monospace;font-weight:700;color:'+clr+';font-size:1rem">'+(p.avg!=null?p.avg:'')+'</td>' +
-      '<td style="padding:9px 12px;color:#555">'+p.games+'g</td>' +
-      '<td style="padding:9px 12px;font-family:monospace;font-size:.7rem;color:#555;max-width:130px">'+p.history+'</td>' +
-      '<td style="padding:9px 12px"><span style="color:'+clr+';font-weight:900;font-size:.95rem">'+(p.pick==='OVER'?'O':p.pick==='UNDER'?'U':(p.pick||''))+'</span></td>' +
-      '</tr>';
+  (allPicksData||[]).forEach(function(s){ sigMap[s.player+'|'+s.stat]=s; });
+  var byGame = {};
+  all.forEach(function(p){
+    var m=p.matchup||''; if(!m) return;
+    if(!byGame[m]) byGame[m]={};
+    if(!byGame[m][p.player]) byGame[m][p.player]=[];
+    byGame[m][p.player].push(p);
+  });
+  window.__PROPS_BY_GAME__=byGame; window.__PROPS_SIG__=sigMap;
+  var sel=document.getElementById('propsGameSel'); if(!sel) return;
+  var matchups=Object.keys(byGame);
+  sel.innerHTML='<option value="">-- Select a game --</option>'+
+    matchups.map(function(m){ return '<option value="'+m+'">'+m+'</option>'; }).join('');
+  document.getElementById('propsPlayerList').style.display='none';
+  if(matchups.length===1){ sel.value=matchups[0]; propsSelectGame(matchups[0]); }
+}
+function propsSelectGame(matchup) {
+  var plist=document.getElementById('propsPlayerList'); if(!plist) return;
+  var hint=document.getElementById('propsGameHint');
+  if(!matchup){ plist.style.display='none'; if(hint) hint.textContent='Select a game to browse players'; return; }
+  var byGame=window.__PROPS_BY_GAME__||{}; if(!byGame[matchup]){ plist.style.display='none'; return; }
+  window.__PROPS_PLAYERS__={};
+  var players=Object.keys(byGame[matchup]);
+  players.sort(function(a,b){ return a.split(' ').pop().localeCompare(b.split(' ').pop()); });
+  if(hint) hint.textContent=players.length+' players with prop lines';
+  var chips=players.map(function(name,idx){
+    window.__PROPS_PLAYERS__[idx]=name;
+    var ent=byGame[matchup][name]; var first=ent[0]||{};
+    var side=first.side||''; var opp=first.opp_name||''; var cnt=ent.length;
+    var sb=side==='HOME'?'rgba(253,184,39,.15)':'rgba(99,102,241,.15)';
+    var sc=side==='HOME'?'#fbbf24':'#818cf8';
+    return '<div class="props-player-chip" onclick="openPropsPlayer('+idx+')">' +
+      '<div style="font-weight:800;color:#fff;font-size:.88rem;font-family:Playfair Display,serif">'+name+'</div>' +
+      '<div style="font-size:.7rem;color:#888;margin-top:3px">' +
+        '<span style="background:'+sb+';color:'+sc+';padding:1px 5px;border-radius:3px;font-weight:700;margin-right:4px">'+side+'</span>' +
+        'vs '+opp+' &middot; '+cnt+' props</div>' +
+    '</div>';
   }).join('');
+  plist.innerHTML='<div style="display:flex;flex-wrap:wrap;gap:8px;padding:4px 0 12px">'+chips+'</div>';
+  plist.style.display='block';
+}
+function closePropsModal(ev){
+  if(ev && ev.target && ev.target.id!=='propsPlayerModal') return;
+  var o=document.getElementById('propsPlayerModal'); if(o) o.remove();
+}
+function openPropsPlayer(idx){
+  var name=(window.__PROPS_PLAYERS__||{})[idx]; if(name==null) return;
+  var matchup=(document.getElementById('propsGameSel')||{}).value||'';
+  var byGame=window.__PROPS_BY_GAME__||{};
+  var entries=(byGame[matchup]||{})[name]; if(!entries||!entries.length) return;
+  var sigMap=window.__PROPS_SIG__||{};
+  var esc=function(s){ return String(s==null?'':s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];}); };
+  var first=entries[0]||{}; var side=first.side||''; var opp=first.opp_name||'';
+  var rows=entries.map(function(p){
+    var sig=sigMap[name+'|'+p.stat]||{};
+    var isO=p.pick==='OVER', isU=p.pick==='UNDER';
+    var clr=isO?'#4ade80':isU?'#f87171':'#888';
+    var dkO=p.dk_over_odds||(sig.dk_over_odds||'');
+    var dkU=p.dk_under_odds||(sig.dk_under_odds||'');
+    var ba=[];
+    if(sig.has_consistency) ba.push('<span style="background:rgba(245,158,11,.15);color:#fbbf24;padding:1px 5px;border-radius:3px;font-size:.6rem;font-weight:700">PAT '+sig.pct+'%</span>');
+    if(sig.line_rec) ba.push('<span style="background:rgba(74,222,128,.12);color:#4ade80;padding:1px 5px;border-radius:3px;font-size:.6rem;font-weight:700">LINE '+sig.line_rec+'</span>');
+    if(sig.streak_rec) ba.push('<span style="background:rgba(249,115,22,.12);color:#fb923c;padding:1px 5px;border-radius:3px;font-size:.6rem;font-weight:700">STREAK '+sig.streak_n+'</span>');
+    if(sig.alt_rec) ba.push('<span style="background:rgba(168,85,247,.12);color:#c084fc;padding:1px 5px;border-radius:3px;font-size:.6rem;font-weight:700">MPA '+sig.alt_rec+'</span>');
+    var badges=ba.length?'<div style="margin-top:3px;display:flex;flex-wrap:wrap;gap:3px">'+ba.join('')+'</div>':'';
+    var hist=(p.history||'').split(',').filter(Boolean).slice(0,8);
+    var histHtml=hist.length?hist.map(function(v){
+      var n=parseFloat(v); var ln=p.line;
+      var hc=(!isNaN(n)&&ln!=null)?(n>ln?'#4ade80':n<ln?'#f87171':'#888'):'#666';
+      return '<span style="color:'+hc+';font-weight:700">'+v+'</span>';
+    }).join('<span style="color:#333;margin:0 1px">,</span>'):'<span style="color:#555">—</span>';
+    var avgDisp=p.avg!=null?esc(String(p.avg))+'<span style="color:#777;font-size:.7rem"> ('+esc(String(p.games))+'g)</span>':'<span style="color:#555">no history</span>';
+    var pickCell=(isO?'<span style="color:#4ade80;font-weight:900;font-size:.95rem">O</span>':isU?'<span style="color:#f87171;font-weight:900;font-size:.95rem">U</span>':'<span style="color:#555">—</span>')+badges;
+    return '<tr style="border-bottom:1px solid #1a1a1a">' +
+      '<td style="padding:10px 12px;white-space:nowrap">'+esc(p.emoji)+' <span style="color:#FDB827;font-weight:700">'+esc(p.stat_label)+'</span></td>' +
+      '<td style="padding:10px 12px;font-family:monospace;font-weight:800;color:#fff">'+esc(String(p.line||'—'))+'</td>' +
+      '<td style="padding:10px 12px;font-family:monospace;font-size:.82rem;color:#4ade80">'+(dkO||'—')+'</td>' +
+      '<td style="padding:10px 12px;font-family:monospace;font-size:.82rem;color:#f87171">'+(dkU||'—')+'</td>' +
+      '<td style="padding:10px 12px;font-family:monospace;font-size:.9rem;color:'+clr+';font-weight:700">'+avgDisp+'</td>' +
+      '<td style="padding:10px 12px;font-size:.75rem;font-family:monospace;max-width:160px">'+histHtml+'</td>' +
+      '<td style="padding:10px 12px">'+pickCell+'</td>' +
+    '</tr>';
+  });
+  closePropsModal();
+  var ov=document.createElement('div');
+  ov.id='propsPlayerModal';
+  ov.setAttribute('onclick','closePropsModal(event)');
+  ov.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.78);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px';
+  ov.innerHTML=
+    '<div style="background:#101010;border:1px solid #2a2a2a;border-radius:14px;max-width:820px;width:100%;max-height:86vh;overflow:auto;box-shadow:0 20px 60px rgba(0,0,0,.6)">' +
+      '<div style="background:linear-gradient(135deg,#1e3a5f,#0a1a2e);padding:14px 18px;border-bottom:2px solid #FDB827;display:flex;justify-content:space-between;align-items:flex-start;position:sticky;top:0;z-index:1">' +
+        '<div>' +
+          '<div style="color:#fff;font-weight:900;font-size:1.05rem;font-family:Playfair Display,serif">'+esc(name)+'</div>' +
+          '<div style="color:#FDB827;font-size:.76rem;font-weight:700;margin-top:3px">'+esc(side)+' &middot; vs '+esc(opp)+' &middot; '+esc(matchup)+'</div>' +
+        '</div>' +
+        '<span onclick="closePropsModal()" style="color:#888;font-size:1.5rem;line-height:1;cursor:pointer;padding:0 4px">&times;</span>' +
+      '</div>' +
+      '<div style="overflow-x:auto">' +
+        '<table style="width:100%;border-collapse:collapse;font-size:.82rem;background:#101010">' +
+          '<thead><tr style="background:#1a1a1a;border-bottom:1px solid rgba(245,158,11,.2)">' +
+            '<th style="padding:9px 12px;text-align:left;color:#f59e0b;font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.1em;white-space:nowrap">Stat</th>' +
+            '<th style="padding:9px 12px;text-align:left;color:#f59e0b;font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.1em">Line</th>' +
+            '<th style="padding:9px 12px;text-align:left;color:#4ade80;font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.1em">Over</th>' +
+            '<th style="padding:9px 12px;text-align:left;color:#f87171;font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.1em">Under</th>' +
+            '<th style="padding:9px 12px;text-align:left;color:#f59e0b;font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.1em">Avg vr Opp</th>' +
+            '<th style="padding:9px 12px;text-align:left;color:#f59e0b;font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.1em;white-space:nowrap">Last 8 vr Opp</th>' +
+            '<th style="padding:9px 12px;text-align:left;color:#f59e0b;font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.1em">Pick &amp; Signal</th>' +
+          '</tr></thead>' +
+          '<tbody>'+rows.join('')+'</tbody>' +
+        '</table>' +
+      '</div>' +
+      '<p style="font-size:.68rem;color:#444;padding:10px 14px;margin:0">Last 8 = head-to-head games at this location, newest-first &middot; Green = over the line, Red = under</p>' +
+    '</div>';
+  document.body.appendChild(ov);
 }
 
 // Snapshot mode: hub serves this page with picks baked in as
