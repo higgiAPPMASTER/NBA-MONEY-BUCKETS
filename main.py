@@ -1389,7 +1389,17 @@ function renderTop10Cards(picks){
         const over=s.dk_hits, under=(s.l10_games||10)-over;
         lines.push(`<div style="font-size:.8rem;color:#aaa;margin-bottom:3px">vs line last ${s.l10_games||10} (vs ${p.opp} ${(p.location||'').toLowerCase()}): <span style="color:#4ade80;font-weight:700">${over} over</span> · <span style="color:#f87171;font-weight:700">${under} under</span></div>`);
       }
+      if(s.recent_avg!=null){
+        var _gap=s.gap!=null?s.gap:null;
+        var _gapClr=_gap==null?'#94a3b8':_gap>0?'#4ade80':_gap<0?'#f87171':'#94a3b8';
+        var _gapTxt=_gap==null?'':_gap>0?(' +'+_gap+' above line'):(' '+_gap+' below line');
+        lines.push('<div style="font-size:.78rem;color:#888;margin-bottom:4px;padding:4px 7px;background:rgba(255,255,255,.03);border-radius:5px">L10 all-opp avg: <strong style="color:#fff">'+s.recent_avg+'</strong>'+'<span style="color:'+_gapClr+';font-weight:700">'+_gapTxt+'</span></div>');
+      }
       if(s.threshold) lines.push(`<div style="font-size:.8rem;color:#aaa;margin-bottom:8px">pattern: hit <strong style="color:#FDB827">${s.threshold}+</strong> ${s.stat_label} in <strong style="color:#fff">${s.hits}/${s.games}</strong> vs ${p.opp} ${(p.location||'').toLowerCase()}</div>`);
+      // Odds for the pick direction (DraftKings preferred, FanDuel fallback)
+      var _odir=verdict==='OVER'?'OVER':verdict==='UNDER'?'UNDER':(s.line_rec||s.streak_rec||s.alt_rec||'');
+      var _odds=_odir==='OVER'?(s.dk_over_odds||s.fd_odds||''):_odir==='UNDER'?(s.dk_under_odds||s.fd_odds||''):'';
+      if(_odds) lines.push('<div style="font-size:.8rem;margin-bottom:5px">DK <span style="font-family:monospace;font-weight:900;color:#fbbf24">'+_odds+'</span> <span style="color:#64748b;font-size:.72rem">'+_odir+'</span></div>');
       // B — Best bet at the sportsbook's actual line
       if(s.best_bet){
         const bb=s.best_bet, isPass=bb.side==='PASS';
