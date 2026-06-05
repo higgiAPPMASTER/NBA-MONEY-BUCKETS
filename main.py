@@ -2359,13 +2359,13 @@ async function _nbaSaveBet(){
     document.getElementById('nba-bet-modal').style.display='none';
     _nbaBetToast('\u2705 Bet logged');
     var mb=document.getElementById('nba-mybets-card');
-    if(mb&&mb.style.display!=='none') openNbaMyBets();
+    if(mb&&mb.style.display!=='none') openNbaMyBets(false);
   }catch(e){msg.textContent=(e.message||'Save failed');btn.disabled=false;btn.textContent='Log Bet';}
 }
-async function openNbaMyBets(){
+async function openNbaMyBets(scroll){
   var card=document.getElementById('nba-mybets-card');if(!card) return;
   card.style.display='block';
-  card.scrollIntoView({behavior:'smooth',block:'start'});
+  if(scroll!==false) card.scrollIntoView({behavior:'smooth',block:'start'});
   document.getElementById('nba-mybets-body').innerHTML='<p style="color:#94a3b8;font-size:.85rem">Loading\u2026</p>';
   try{
     var res=await fetch('/api/bets'+_nbaBetAuthQS());
@@ -2439,7 +2439,7 @@ async function _nbaDeleteBet(id){
   try{
     var res=await fetch('/api/bets/'+encodeURIComponent(id)+_nbaBetAuthQS(),{method:'DELETE'});
     if(!res.ok) throw new Error(await res.text());
-    openNbaMyBets();
+    openNbaMyBets(false);
   }catch(e){alert(e.message||'Delete failed');}
 }
 function downloadNbaMyBetsCSV(){
