@@ -42,7 +42,7 @@ def get_user(request: Request) -> Optional[str]:
     except Exception:
         return None
 
-_NBA_ADMIN_EMAIL = os.environ.get("ADMIN_EMAIL", "higgi117711@gmail.com").strip().lower()
+_NBA_ADMIN_EMAILS = {e.strip().lower() for e in os.environ.get("ADMIN_EMAIL", "higgi117711@gmail.com").split(",") if e.strip()}
 
 def _token_email(token: str) -> str:
     """Return the email (sub) from a hub token, else ''.
@@ -69,7 +69,7 @@ def _token_email(token: str) -> str:
         return ""
 
 def _is_admin_token(token: str) -> bool:
-    return bool(_NBA_ADMIN_EMAIL) and _token_email(token) == _NBA_ADMIN_EMAIL
+    return bool(_NBA_ADMIN_EMAILS) and _token_email(token) in _NBA_ADMIN_EMAILS
 
 # ─── Stat Config ──────────────────────────────────────────────────────────────
 # ESPN gamelog stats array order:
@@ -119,6 +119,230 @@ import pathlib
 _CACHE_DIR = pathlib.Path("/tmp/mpa_cache")
 _CACHE_DIR.mkdir(parents=True, exist_ok=True)
 _CACHE_TTL = 6 * 3600  # 6 hours
+
+# ── Bet Log ───────────────────────────────────────────────────────────────────
+import threading as _nba_th
+import uuid as _nba_uuid
+
+_NBA_BET_LOG_PATH = str(_CACHE_DIR / "_nba_bet_log.json")
+_NBA_BET_LOCK = _nba_th.Lock()
+_NBA_BET_STAT_KEYS = ("PTS","REB","AST","FG3M","BLK","STL","PRA","PTS_REB","PTS_AST","REB_AST")
+_NBA_STAT_LABEL = {"PTS":"Points","REB":"Rebounds","AST":"Assists","FG3M":"3-Pointers",
+    "PRA":"Pts+Reb+Ast","PTS_REB":"Pts+Reb","PTS_AST":"Pts+Ast",
+    "REB_AST":"Reb+Ast","BLK":"Blocks","STL":"Steals"}
+
+def _nba_load_bets() -> dict:
+    try:
+        with open(_NBA_BET_LOG_PATH) as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+def _nba_save_bets(data: dict):
+    try:
+        tmp = _NBA_BET_LOG_PATH + f".{os.getpid()}.tmp"
+        with open(tmp, "w") as f:
+            json.dump(data, f)
+        os.replace(tmp, _NBA_BET_LOG_PATH)
+    except Exception as e:
+        print(f"[nba_bet_log] save failed: {e}")
+
+def _nba_bet_admin_ok(tok: str, admin: str) -> bool:
+    return _is_admin_token(tok) or (
+        bool(admin) and admin == os.environ.get("INTERNAL_API_TOKEN", "__none__"))
+
+def _nba_bet_user_key(tok: str, admin: str) -> str:
+    em = _token_email(tok) if tok else ""
+    return em.lower().strip() if em else "__admin__"
+
+def _nba_american_profit(odds, stake, result) -> float:
+    try:
+        stake = float(stake)
+    except Exception:
+        return 0.0
+    if result == "WIN":
+        try:
+            o = float(odds)
+        except Exception:
+            return 0.0
+        return stake * (o / 100.0) if o > 0 else stake * (100.0 / abs(o))
+    if result == "LOSS":
+        return -stake
+    return 0.0
+
+def _nba_am_to_dec(odds) -> float:
+    try:
+        o = float(odds)
+    except Exception:
+        return 1.0
+    return round(1 + o / 100, 6) if o > 0 else round(1 + 100 / abs(o), 6)
+
+def _nba_extract_stat(stats_arr: list, stat_key: str):
+    """Extract NBA stat from ESPN box score stats array (MIN,FG,3PT,FT,OREB,DREB,REB,AST,STL,BLK,TO,PF,+/-,PTS)."""
+    IDX = {"PTS": 13, "REB": 6, "AST": 7, "FG3M": 2, "BLK": 9, "STL": 8}
+    if stat_key in IDX:
+        try:
+            raw = stats_arr[IDX[stat_key]]
+            if stat_key == "FG3M" and isinstance(raw, str) and "-" in raw:
+                return float(raw.split("-")[0])
+            return float(raw)
+        except Exception:
+            return None
+    _base = {"PRA": ("PTS","REB","AST"), "PTS_REB": ("PTS","REB"),
+             "PTS_AST": ("PTS","AST"), "REB_AST": ("REB","AST")}
+    if stat_key in _base:
+        vals = [_nba_extract_stat(stats_arr, k) for k in _base[stat_key]]
+        if all(v is not None for v in vals):
+            return sum(vals)
+    return None
+
+def _nba_box_lookup(date_str: str) -> dict:
+    """Return {lowername: {stat_key: float, 'final': bool}} for an NBA date."""
+    d = date_str.replace("-", "")
+    results: dict = {}
+    try:
+        sb = httpx.get(
+            f"https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?dates={d}",
+            timeout=15, headers={"User-Agent": "Mozilla/5.0"})
+        sb.raise_for_status()
+        events = sb.json().get("events", [])
+    except Exception as e:
+        print(f"[nba_box] scoreboard failed {date_str}: {e}")
+        return results
+    for ev in events:
+        is_final = ev.get("status", {}).get("type", {}).get("completed", False)
+        ev_id = ev.get("id")
+        if not ev_id:
+            continue
+        try:
+            bs = httpx.get(
+                f"https://site.api.espn.com/apis/site/v2/sports/basketball/nba/summary?event={ev_id}",
+                timeout=15, headers={"User-Agent": "Mozilla/5.0"})
+            if bs.status_code != 200:
+                continue
+            boxscore = bs.json().get("boxscore", {})
+        except Exception:
+            continue
+        for team in boxscore.get("players", []):
+            for grp in team.get("statistics", []):
+                for ath in grp.get("athletes", []):
+                    name = (ath.get("athlete", {}).get("displayName") or "").lower().strip()
+                    stats_arr = ath.get("stats", [])
+                    if not name or not stats_arr:
+                        continue
+                    ps: dict = {"final": is_final}
+                    for sk in _NBA_BET_STAT_KEYS:
+                        v = _nba_extract_stat(stats_arr, sk)
+                        if v is not None:
+                            ps[sk] = v
+                    results[name] = ps
+    return results
+
+def _nba_settle_cached(bet: dict, name_stats: dict) -> bool:
+    if bet.get("result") in ("WIN", "LOSS", "PUSH"):
+        return False
+    st = name_stats.get((bet.get("name") or "").lower())
+    if not st or not st.get("final"):
+        return False
+    stat_key = bet.get("stat_key")
+    actual = st.get(stat_key)
+    if actual is None:
+        return False
+    try:
+        line = float(bet.get("line"))
+    except Exception:
+        return False
+    side = bet.get("side", "OVER")
+    if actual == line:
+        res = "PUSH"
+    elif side == "OVER":
+        res = "WIN" if actual > line else "LOSS"
+    else:
+        res = "WIN" if actual < line else "LOSS"
+    bet["result"] = res
+    bet["actual"] = actual
+    bet["profit"] = round(_nba_american_profit(bet.get("odds"), bet.get("stake"), res), 2)
+    bet["settled_at"] = date.today().isoformat()
+    return True
+
+def _nba_settle_bet(bet: dict) -> bool:
+    if bet.get("result") in ("WIN", "LOSS", "PUSH"):
+        return False
+    bdate = bet.get("date")
+    if not bdate or bdate >= date.today().isoformat():
+        return False
+    try:
+        ns = _nba_box_lookup(bdate)
+    except Exception as e:
+        print(f"[nba_bet_log] settle lookup failed {bdate}: {e}")
+        return False
+    return _nba_settle_cached(bet, ns)
+
+def _nba_settle_batch(bets: list) -> bool:
+    today = date.today().isoformat()
+    dates_needed: set = set()
+    for b in bets:
+        if b.get("result") in ("WIN", "LOSS", "PUSH"):
+            continue
+        if b.get("date") and b["date"] < today:
+            dates_needed.add(b["date"])
+    if not dates_needed:
+        return False
+    ns_cache: dict = {}
+    for d in sorted(dates_needed):
+        try:
+            ns_cache[d] = _nba_box_lookup(d)
+        except Exception as e:
+            print(f"[nba_bet_log] batch settle failed {d}: {e}")
+    changed = False
+    for b in bets:
+        bdate = b.get("date")
+        if bdate and bdate in ns_cache:
+            if _nba_settle_cached(b, ns_cache[bdate]):
+                changed = True
+    return changed
+
+_NBA_CAT_ORDER = ["Points","Rebounds","Assists","3-Pointers","Pts+Reb+Ast",
+    "Pts+Reb","Pts+Ast","Reb+Ast","Blocks","Steals"]
+
+def _nba_summarize_bets(bets: list) -> dict:
+    cats: dict = {}
+    tot_staked = tot_profit = 0.0
+    w = l = pu = pend = 0
+    for b in bets:
+        res = b.get("result", "pending")
+        try:
+            stake = float(b.get("stake") or 0)
+        except Exception:
+            stake = 0.0
+        c = cats.setdefault(b.get("category", "?"),
+                            {"wins": 0, "losses": 0, "push": 0, "pending": 0,
+                             "staked": 0.0, "profit": 0.0})
+        if res == "WIN": w += 1; c["wins"] += 1
+        elif res == "LOSS": l += 1; c["losses"] += 1
+        elif res == "PUSH": pu += 1; c["push"] += 1
+        else: pend += 1; c["pending"] += 1
+        if res in ("WIN", "LOSS", "PUSH"):
+            prof = float(b.get("profit") or 0)
+            tot_staked += stake; c["staked"] += stake
+            tot_profit += prof; c["profit"] += prof
+    roi = (tot_profit / tot_staked * 100.0) if tot_staked > 0 else None
+    ordered = _NBA_CAT_ORDER + [k for k in cats if k not in _NBA_CAT_ORDER]
+    by_cat = []
+    for cat in ordered:
+        c = cats.get(cat)
+        if not c:
+            continue
+        st = c["staked"]; pr = c["profit"]
+        by_cat.append({"category": cat, "wins": c["wins"], "losses": c["losses"],
+            "push": c["push"], "pending": c["pending"],
+            "staked": round(st, 2), "profit": round(pr, 2),
+            "roi": round(pr / st * 100, 1) if st > 0 else None})
+    return {"wins": w, "losses": l, "push": pu, "pending": pend,
+        "staked": round(tot_staked, 2), "profit": round(tot_profit, 2),
+        "returned": round(tot_staked + tot_profit, 2),
+        "roi": round(roi, 1) if roi is not None else None,
+        "by_category": by_cat}
 
 def _cache_path(app: str, date_key: str) -> pathlib.Path:
     return _CACHE_DIR / f"{app}_{date_key}.json"
@@ -1151,7 +1375,7 @@ footer{text-align:center;padding:32px 24px;color:#4b5563;font-size:.78rem;border
 </head>
 <body>
 <div class="bg-glow"></div>
-<nav><div class="logo">Money <span>Picks</span> Arena</div></nav>
+<nav style="display:flex;justify-content:space-between;align-items:center"><div class="logo">Money <span>Picks</span> Arena</div><div style="display:flex;gap:8px;align-items:center"><button class="admin-only" onclick="openNbaMyBets()" style="background:#4338ca;color:#fff;border:none;border-radius:10px;padding:9px 16px;font-weight:800;font-size:.82rem;cursor:pointer;white-space:nowrap">&#128176; My Bets</button></div></nav>
 <div class="page">
 <div class="app-hdr">
   <h1>NBA <span>Money Buckets</span></h1>
@@ -1257,6 +1481,25 @@ footer{text-align:center;padding:32px 24px;color:#4b5563;font-size:.78rem;border
 </div>
 </div><!-- /wrap -->
 
+<style>
+.nba-bets-tbl{width:100%;border-collapse:collapse;font-size:.82rem}
+.nba-bets-tbl th{padding:7px 10px;text-align:left;font-size:.72rem;color:#94a3b8;font-weight:700;text-transform:uppercase;letter-spacing:.07em;border-bottom:1px solid #1e293b;white-space:nowrap}
+.nba-bets-tbl td{padding:8px 10px;border-bottom:1px solid #0f172a;vertical-align:middle;color:#e2e8f0}
+.nba-bets-tbl tr:last-child td{border-bottom:none}
+.nba-bets-tbl tr:hover td{background:rgba(255,255,255,.02)}
+</style>
+<div id="nba-mybets-card" style="display:none;max-width:960px;margin:0 auto 24px;padding:0 16px">
+  <div class="card" style="padding:20px">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;flex-wrap:wrap;gap:10px">
+      <div style="font-weight:800;color:#a5b4fc;font-size:1rem">&#128176; MY BETS &mdash; RECORD &amp; ROI</div>
+      <div style="display:flex;gap:8px;align-items:center">
+        <button onclick="getNbaBetsResults()" style="background:#1d4ed8;color:#fff;border:none;border-radius:8px;padding:8px 13px;font-size:.78rem;font-weight:700;cursor:pointer">&#128200; Settle Results</button>
+        <button onclick="document.getElementById(&#39;nba-mybets-card&#39;).style.display=&#39;none&#39;" style="background:#1e293b;border:none;color:#94a3b8;border-radius:8px;padding:8px 11px;font-size:.9rem;cursor:pointer">&#215;</button>
+      </div>
+    </div>
+    <div id="nba-mybets-body"><p style="color:#94a3b8;font-size:.85rem">Loading&#8230;</p></div>
+  </div>
+</div>
 <footer>
   <div class="ft-logo">Money Picks Arena</div>
   <div>NBA Money Buckets &middot; Pts &middot; Reb &middot; Ast &middot; 3PM &middot; Blk &middot; Stl &middot; Combos</div>
@@ -1422,6 +1665,8 @@ function renderTop10Cards(picks){
         <div style="display:flex;flex-wrap:wrap;gap:6px">${badges.join('')}</div>
       </div>`;
     }).join('');
+    const _bverd=_nbaPickVerdict(p);
+    const _betHtml=window.IS_ADMIN?_nbaBetBtn(p,_bverd):'';
     html+=`
     <div class="pick-card" style="padding:0;overflow:hidden;border-radius:14px;background:linear-gradient(180deg,#161616 0%,#0f0f0f 100%);border:1px solid #262626">
       <div style="background:linear-gradient(135deg,#1e3a5f 0%,#0a1a2e 100%);padding:12px 16px;display:flex;align-items:center;justify-content:space-between;border-bottom:2px solid #FDB827">
@@ -1445,6 +1690,7 @@ function renderTop10Cards(picks){
         <div style="font-size:.78rem;color:#666;margin-bottom:4px">${p.matchup}</div>
         ${statBlocks}
       </div>
+      ${_betHtml}
     </div>`;
   });
   html+='</div>';
@@ -2017,11 +2263,294 @@ document.addEventListener('DOMContentLoaded', function(){
     renderPropsSection(data.props_picks, data.props_nopick);
   } catch (e) { console.error('snapshot render failed', e); }
 });
+// ── My Bets ──────────────────────────────────────────────────────────────────
+function _nbaEsc(s){return(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+function _nbaMoney(v){var n=Number(v)||0;return(n>=0?'$':'\u2212$')+Math.abs(n).toFixed(2);}
+function _nbaBetAuthQS(){
+  var tok=localStorage.getItem('__mpa_token')||'';
+  var adm=localStorage.getItem('__mpa_admin')||new URLSearchParams(location.search).get('admin')||'';
+  return '?token='+encodeURIComponent(tok)+(adm?('&admin='+encodeURIComponent(adm)):'');
+}
+function _nbaBetToast(msg){
+  var t=document.createElement('div');t.textContent=msg;
+  t.style.cssText='position:fixed;bottom:80px;left:50%;transform:translateX(-50%);background:#312e81;color:#fff;padding:10px 20px;border-radius:10px;font-weight:700;font-size:.85rem;z-index:99999;white-space:nowrap;pointer-events:none;box-shadow:0 4px 20px rgba(0,0,0,.5)';
+  document.body.appendChild(t);
+  setTimeout(function(){t.style.opacity='0';t.style.transition='opacity .4s';setTimeout(function(){t.remove();},400);},2200);
+}
+var _nbaBetN=0;
+window.__NBA_BET_SRC__=window.__NBA_BET_SRC__||{};
+function _nbaPickVerdict(s){
+  if(!s) return null;
+  if(s.has_consistency) return 'OVER';
+  var votes={OVER:0,UNDER:0};
+  if(s.line_rec) votes[s.line_rec]++;
+  if(s.streak_rec) votes[s.streak_rec]++;
+  if(s.alt_rec) votes[s.alt_rec]++;
+  var tot=votes.OVER+votes.UNDER;
+  if(tot&&votes.OVER!==votes.UNDER) return votes.OVER>votes.UNDER?'OVER':'UNDER';
+  return null;
+}
+function _nbaBetBtn(p,verdict){
+  if(p.dk_line==null) return '';
+  var side=verdict==='OVER'||verdict==='UNDER'?verdict:'OVER';
+  var odds=side==='OVER'?(p.dk_over_odds||p.dk_under_odds||null):(p.dk_under_odds||p.dk_over_odds||null);
+  var tipDate=p.tipoff?p.tipoff.slice(0,10):'';
+  var k='nb'+(++_nbaBetN);
+  window.__NBA_BET_SRC__[k]={
+    name:p.player,team:(p.team||''),opp:(p.opp||''),
+    category:(p.stat_label||''),side:side,
+    stat_key:(p.stat||''),stat_label:(p.stat_label||''),
+    line:p.dk_line,odds:(odds!=null?odds:null),date:tipDate
+  };
+  return '<button data-betkey="'+k+'" class="admin-only" onclick="event.stopPropagation();_nbaBetForm(this.dataset.betkey)" style="width:100%;background:#1a1740;color:#a5b4fc;border:none;border-top:1px solid #26263a;padding:8px;font-size:.76rem;font-weight:800;cursor:pointer;border-radius:0 0 14px 14px;letter-spacing:.04em">Track Bet</button>';
+}
+function _nbaBetForm(key){
+  var src=(window.__NBA_BET_SRC__||{})[key]; if(!src) return;
+  window.__NBA_BET_CUR__=src;
+  var ov=document.getElementById('nba-bet-modal');
+  if(!ov){
+    ov=document.createElement('div'); ov.id='nba-bet-modal';
+    ov.style.cssText='position:fixed;inset:0;background:rgba(2,6,23,.82);z-index:10000;display:flex;align-items:center;justify-content:center;padding:16px';
+    ov.onclick=function(e){if(e.target===ov)ov.style.display='none';};
+    document.body.appendChild(ov);
+  }
+  var pickTxt=src.side+' '+src.line+' '+(src.stat_label||'');
+  ov.innerHTML=`<div style="background:#0f172a;border:1px solid #312e81;border-radius:16px;max-width:360px;width:100%;box-shadow:0 20px 60px rgba(0,0,0,.6)">
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;padding:16px 18px;border-bottom:1px solid #1e293b">
+      <div>
+        <div style="font-weight:800;color:#fff;font-size:1.02rem">${_nbaEsc(src.name)}</div>
+        <div style="color:#a5b4fc;font-size:.82rem;font-weight:800;margin-top:2px">${_nbaEsc(pickTxt)}</div>
+        <div style="color:#94a3b8;font-size:.72rem;margin-top:2px">${_nbaEsc(src.category||'')}${src.opp?' &middot; vs '+_nbaEsc(src.opp):''}${src.date?' &middot; '+src.date:''}</div>
+      </div>
+      <button onclick="document.getElementById('nba-bet-modal').style.display='none'" style="background:#1e293b;border:none;color:#cbd5e1;width:30px;height:30px;border-radius:8px;cursor:pointer;font-size:1rem">&#215;</button>
+    </div>
+    <div style="padding:16px 18px;display:grid;gap:12px">
+      <label style="font-size:.72rem;color:#94a3b8;font-weight:600">Odds (American)<input id="nba-bet-odds" type="number" value="${src.odds!=null?src.odds:''}" style="display:block;width:100%;margin-top:5px;background:#0b1120;border:1px solid #334155;border-radius:8px;padding:9px 11px;color:#fbbf24;font-family:monospace;font-weight:700;font-size:.95rem"></label>
+      <label style="font-size:.72rem;color:#94a3b8;font-weight:600">Bet size ($)<input id="nba-bet-stake" type="number" min="0" step="0.01" placeholder="e.g. 50" style="display:block;width:100%;margin-top:5px;background:#0b1120;border:1px solid #334155;border-radius:8px;padding:9px 11px;color:#fff;font-weight:700;font-size:.95rem"></label>
+      <div id="nba-bet-payout" style="font-size:.78rem;color:#64748b;min-height:1em"></div>
+      <div id="nba-bet-msg" style="font-size:.76rem;color:#f87171;min-height:1em"></div>
+      <button id="nba-bet-save" onclick="_nbaSaveBet()" style="background:#4338ca;color:#fff;border:none;border-radius:9px;padding:11px;font-weight:800;cursor:pointer;font-size:.92rem">Log Bet</button>
+    </div>
+  </div>`;
+  ov.style.display='flex';
+  var so=document.getElementById('nba-bet-odds'),ss=document.getElementById('nba-bet-stake');
+  function _calc(){
+    var o=parseFloat(so.value),s=parseFloat(ss.value);
+    var pay=document.getElementById('nba-bet-payout');
+    if(!isFinite(o)||!isFinite(s)||s<=0){pay.textContent='';return;}
+    var win=o>0?s*(o/100):s*(100/Math.abs(o));
+    pay.innerHTML='To win <strong style="color:#4ade80">$'+win.toFixed(2)+'</strong> &middot; total payout <strong style="color:#cbd5e1">$'+(s+win).toFixed(2)+'</strong>';
+  }
+  so.oninput=_calc;ss.oninput=_calc;_calc();
+  setTimeout(function(){ss.focus();},50);
+}
+async function _nbaSaveBet(){
+  var src=window.__NBA_BET_CUR__;if(!src) return;
+  var o=parseFloat(document.getElementById('nba-bet-odds').value);
+  var s=parseFloat(document.getElementById('nba-bet-stake').value);
+  var msg=document.getElementById('nba-bet-msg');
+  if(!isFinite(o)){msg.textContent='Enter the odds.';return;}
+  if(!isFinite(s)||s<=0){msg.textContent='Enter a bet size greater than 0.';return;}
+  var btn=document.getElementById('nba-bet-save');btn.disabled=true;btn.textContent='Saving\u2026';
+  try{
+    var body=Object.assign({},src,{odds:Math.round(o),stake:s,placed_at:new Date().toISOString()});
+    var res=await fetch('/api/bets'+_nbaBetAuthQS(),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    if(!res.ok){throw new Error(await res.text());}
+    document.getElementById('nba-bet-modal').style.display='none';
+    _nbaBetToast('\u2705 Bet logged');
+    var mb=document.getElementById('nba-mybets-card');
+    if(mb&&mb.style.display!=='none') openNbaMyBets();
+  }catch(e){msg.textContent=(e.message||'Save failed');btn.disabled=false;btn.textContent='Log Bet';}
+}
+async function openNbaMyBets(){
+  var card=document.getElementById('nba-mybets-card');if(!card) return;
+  card.style.display='block';
+  card.scrollIntoView({behavior:'smooth',block:'start'});
+  document.getElementById('nba-mybets-body').innerHTML='<p style="color:#94a3b8;font-size:.85rem">Loading\u2026</p>';
+  try{
+    var res=await fetch('/api/bets'+_nbaBetAuthQS());
+    if(!res.ok){
+      var t=await res.text();
+      if(res.status===403) t='Session expired \u2014 reopen from hub';
+      throw new Error(t);
+    }
+    window.__NBA_MYBETS__=await res.json();
+    renderNbaMyBets(window.__NBA_MYBETS__);
+  }catch(e){
+    document.getElementById('nba-mybets-body').innerHTML='<p style="color:#f87171;padding:16px">'+(e.message||'Error loading bets')+'</p>';
+  }
+}
+async function getNbaBetsResults(){await openNbaMyBets();}
+function _nbaBetOddsDisp(o){return o!=null?((o>0?'+':'')+o):'\u2014';}
+function _nbaResColor(r){return r==='WIN'?'#4ade80':(r==='LOSS'?'#f87171':(r==='PUSH'?'#facc15':'#94a3b8'));}
+function _nbaStatBox(lbl,val,clr){
+  return '<div style="background:#111;border-radius:10px;padding:10px 14px;min-width:92px">'
+    +'<div style="font-size:.64rem;color:#64748b;text-transform:uppercase;letter-spacing:.08em">'+lbl+'</div>'
+    +'<div style="font-size:1.12rem;font-weight:800;color:'+(clr||'#e2e8f0')+'">'+val+'</div></div>';
+}
+function renderNbaMyBets(d){
+  var s=d.summary||{};var bets=d.bets||[];
+  var roiTxt=s.roi!=null?((s.roi>0?'+':'')+s.roi+'%'):'\u2014';
+  var roiClr=s.roi==null?'#94a3b8':(s.roi>0?'#4ade80':(s.roi<0?'#f87171':'#facc15'));
+  var netClr=(s.profit||0)>0?'#4ade80':((s.profit||0)<0?'#f87171':'#cbd5e1');
+  var recTxt=(s.wins||0)+'-'+(s.losses||0)+(s.push?('-'+s.push+'P'):'');
+  var head='<div style="display:flex;flex-wrap:wrap;gap:12px;align-items:center;margin-bottom:18px">'
+    +_nbaStatBox('Record',recTxt,'#e2e8f0')
+    +_nbaStatBox('Pending',(s.pending||0),'#94a3b8')
+    +_nbaStatBox('Staked',_nbaMoney(s.staked||0),'#cbd5e1')
+    +_nbaStatBox('Net',_nbaMoney(s.profit||0),netClr)
+    +_nbaStatBox('Returned',_nbaMoney(s.returned||0),'#cbd5e1')
+    +_nbaStatBox('ROI',roiTxt,roiClr)
+    +'<div style="margin-left:auto"><button onclick="downloadNbaMyBetsCSV()" style="background:#4338ca;color:#fff;border:none;border-radius:8px;padding:8px 12px;font-size:.78rem;font-weight:700;cursor:pointer">&#11015; CSV</button></div>'
+    +'</div>';
+  var bc=(s.by_category||[]).map(function(c){
+    var croi=c.roi!=null?((c.roi>0?'+':'')+c.roi+'%'):'\u2014';
+    var cclr=c.roi==null?'#94a3b8':(c.roi>0?'#4ade80':(c.roi<0?'#f87171':'#facc15'));
+    return '<tr><td style="font-weight:600">'+_nbaEsc(c.category)+'</td>'
+      +'<td style="font-family:monospace">'+c.wins+'-'+c.losses+(c.push?('-'+c.push+'P'):'')+'</td>'
+      +'<td style="font-family:monospace;color:#94a3b8">'+(c.pending||0)+'</td>'
+      +'<td style="font-family:monospace">'+_nbaMoney(c.staked)+'</td>'
+      +'<td style="font-family:monospace;color:'+((c.profit||0)>=0?'#4ade80':'#f87171')+'">'+_nbaMoney(c.profit)+'</td>'
+      +'<td style="font-family:monospace;font-weight:700;color:'+cclr+'">'+croi+'</td></tr>';
+  }).join('');
+  var bcHtml=bc?'<div style="overflow-x:auto;margin-bottom:18px"><table class="nba-bets-tbl"><thead><tr><th>Category</th><th>W-L</th><th>Pend</th><th>Staked</th><th>Net</th><th>ROI</th></tr></thead><tbody>'+bc+'</tbody></table></div>':'';
+  var rows=bets.map(function(b){
+    var res=b.result||'pending';
+    var delBtn='<button data-delid="'+b.id+'" onclick="_nbaDeleteBet(this.dataset.delid)" title="Remove" style="background:none;border:none;color:#64748b;cursor:pointer;font-size:1rem">&#10006;</button>';
+    var pk=b.side+' '+b.line+' '+(b.stat_label||'');
+    var actTxt=b.actual!=null?(' <span style="color:#64748b;font-weight:400;font-size:.72rem">('+b.actual+')</span>'):'';
+    return '<tr>'
+      +'<td style="white-space:nowrap;color:#94a3b8;font-family:monospace;font-size:.76rem">'+(b.date||'')+'</td>'
+      +'<td style="font-weight:600">'+_nbaEsc(b.name||'')+'<div style="font-size:.68rem;color:#64748b">'+_nbaEsc(b.category||'')+'</div></td>'
+      +'<td style="font-size:.82rem">'+_nbaEsc(pk)+'</td>'
+      +'<td style="font-family:monospace">'+_nbaBetOddsDisp(b.odds)+'</td>'
+      +'<td style="font-family:monospace">'+_nbaMoney(b.stake)+'</td>'
+      +'<td style="font-weight:800;color:'+_nbaResColor(res)+'">'+(res==='pending'?'pending':res)+actTxt+'</td>'
+      +'<td style="font-family:monospace;font-weight:700;color:'+((b.profit||0)>=0?'#4ade80':'#f87171')+'">'+(b.profit!=null?_nbaMoney(b.profit):'\u2014')+'</td>'
+      +'<td>'+delBtn+'</td></tr>';
+  }).join('');
+  var rowsHtml=bets.length
+    ?'<div style="overflow-x:auto"><table class="nba-bets-tbl"><thead><tr><th>Date</th><th>Player</th><th>Pick</th><th>Odds</th><th>Stake</th><th>Result</th><th>Profit</th><th></th></tr></thead><tbody>'+rows+'</tbody></table></div>'
+    :'<p style="color:#94a3b8;padding:16px">No bets logged yet. Click <strong style="color:#c7d2fe">Track Bet</strong> on any pick card to start.</p>';
+  document.getElementById('nba-mybets-body').innerHTML=head+bcHtml+rowsHtml;
+}
+async function _nbaDeleteBet(id){
+  if(!confirm('Remove this bet from your log?')) return;
+  try{
+    var res=await fetch('/api/bets/'+encodeURIComponent(id)+_nbaBetAuthQS(),{method:'DELETE'});
+    if(!res.ok) throw new Error(await res.text());
+    openNbaMyBets();
+  }catch(e){alert(e.message||'Delete failed');}
+}
+function downloadNbaMyBetsCSV(){
+  var d=window.__NBA_MYBETS__;if(!d){alert('Open My Bets first.');return;}
+  var rows=[['Date','Player','Team','Category','Side','Pick','Odds','Stake','Result','Actual','Profit']];
+  (d.bets||[]).forEach(function(b){
+    rows.push([b.date||'',b.name||'',b.team||'',b.category||'',b.side||'',
+      b.side+' '+b.line+' '+(b.stat_label||''),
+      b.odds!=null?b.odds:'',b.stake!=null?b.stake:'',
+      b.result||'',b.actual!=null?b.actual:'',b.profit!=null?b.profit:'']);
+  });
+  function _c(v){var sv=String(v==null?'':v);if(/[,"\n]/.test(sv))sv='"'+sv.replace(/"/g,'""')+'"';return sv;}
+  var csv=rows.map(function(r){return r.map(_c).join(',');}).join('\r\n');
+  var blob=new Blob(['\ufeff'+csv],{type:'text/csv;charset=utf-8;'});
+  var url=URL.createObjectURL(blob);
+  var a=document.createElement('a');a.href=url;a.download='nba-my-bets.csv';
+  document.body.appendChild(a);a.click();document.body.removeChild(a);URL.revokeObjectURL(url);
+}
 </script>
 </body>
 
 </body>
 </html>"""
+
+# ─── Bet Log Routes ───────────────────────────────────────────────────────────
+@app.get("/api/bets")
+async def nba_get_bets(request: Request, token: str = "", admin: str = "", settle: bool = True):
+    from fastapi import HTTPException
+    tok = token or request.headers.get("Authorization","").replace("Bearer ","").strip()
+    if not _nba_bet_admin_ok(tok, admin):
+        raise HTTPException(status_code=403, detail="Admin only")
+    with _NBA_BET_LOCK:
+        data = _nba_load_bets()
+        key = _nba_bet_user_key(tok, admin)
+        bets = data.get(key, [])
+        changed = False
+        if settle:
+            changed = _nba_settle_batch(bets)
+        if changed:
+            data[key] = bets
+            _nba_save_bets(data)
+        snapshot = list(bets)
+    snapshot.sort(key=lambda b: (b.get("date",""), b.get("placed_at","")), reverse=True)
+    return {"bets": snapshot, "summary": _nba_summarize_bets(snapshot)}
+
+@app.post("/api/bets")
+async def nba_add_bet(request: Request, token: str = "", admin: str = ""):
+    from fastapi import HTTPException
+    tok = token or request.headers.get("Authorization","").replace("Bearer ","").strip()
+    if not _nba_bet_admin_ok(tok, admin):
+        raise HTTPException(status_code=403, detail="Admin only")
+    body = await request.json()
+    try:
+        stake = round(float(body.get("stake")), 2)
+        odds = int(round(float(body.get("odds"))))
+        line = float(body.get("line"))
+    except Exception:
+        raise HTTPException(status_code=400, detail="stake, odds and line must be numbers")
+    if stake <= 0:
+        raise HTTPException(status_code=400, detail="Bet size must be greater than 0")
+    name = (body.get("name") or "").strip()
+    stat_key = (body.get("stat_key") or "").strip()
+    side = (body.get("side") or "OVER").strip().upper()
+    if not name or stat_key not in _NBA_BET_STAT_KEYS or side not in ("OVER","UNDER"):
+        raise HTTPException(status_code=400, detail="Invalid bet")
+    bdate = (body.get("date") or date.today().isoformat()).strip()
+    bet = {"id": _nba_uuid.uuid4().hex[:12], "date": bdate,
+        "name": name, "team": (body.get("team") or "").strip(),
+        "opp": (body.get("opp") or "").strip(),
+        "category": (body.get("category") or "?").strip(),
+        "side": side, "stat_key": stat_key,
+        "stat_label": (body.get("stat_label") or "").strip(),
+        "line": line, "odds": odds, "stake": stake,
+        "placed_at": (body.get("placed_at") or date.today().isoformat()),
+        "result": "pending", "actual": None, "profit": None, "settled_at": None}
+    _nba_settle_bet(bet)
+    with _NBA_BET_LOCK:
+        data = _nba_load_bets()
+        key = _nba_bet_user_key(tok, admin)
+        data.setdefault(key, []).append(bet)
+        _nba_save_bets(data)
+    return {"ok": True, "bet": bet}
+
+@app.delete("/api/bets/{bet_id}")
+async def nba_delete_bet(bet_id: str, request: Request, token: str = "", admin: str = ""):
+    from fastapi import HTTPException
+    tok = token or request.headers.get("Authorization","").replace("Bearer ","").strip()
+    if not _nba_bet_admin_ok(tok, admin):
+        raise HTTPException(status_code=403, detail="Admin only")
+    with _NBA_BET_LOCK:
+        data = _nba_load_bets()
+        key = _nba_bet_user_key(tok, admin)
+        bets = data.get(key, [])
+        new_bets = [b for b in bets if b.get("id") != bet_id]
+        if len(new_bets) != len(bets):
+            data[key] = new_bets
+            _nba_save_bets(data)
+    return {"ok": True}
+
+@app.get("/api/bets/summary")
+async def nba_bets_summary(request: Request, token: str = "", admin: str = ""):
+    """Hub-callable summary — aggregated record and ROI only."""
+    from fastapi import HTTPException
+    tok = token or request.headers.get("Authorization","").replace("Bearer ","").strip()
+    if not _nba_bet_admin_ok(tok, admin):
+        raise HTTPException(status_code=403, detail="Admin only")
+    with _NBA_BET_LOCK:
+        data = _nba_load_bets()
+        key = _nba_bet_user_key(tok, admin)
+        bets = list(data.get(key, []))
+    return {"sport": "NBA", "summary": _nba_summarize_bets(bets)}
 
 # ─── Routes ───────────────────────────────────────────────────────────────────
 @app.get("/api/verify-token")
