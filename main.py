@@ -2451,8 +2451,8 @@ function downloadNbaMyBetsCSV(){
       b.odds!=null?b.odds:'',b.stake!=null?b.stake:'',
       b.result||'',b.actual!=null?b.actual:'',b.profit!=null?b.profit:'']);
   });
-  function _c(v){var sv=String(v==null?'':v);if(/[,"\n]/.test(sv))sv='"'+sv.replace(/"/g,'""')+'"';return sv;}
-  var csv=rows.map(function(r){return r.map(_c).join(',');}).join('\r\n');
+  function _c(v){var sv=String(v==null?'':v);if(/[,"\\n]/.test(sv))sv='"'+sv.replace(/"/g,'""')+'"';return sv;}
+  var csv=rows.map(function(r){return r.map(_c).join(',');}).join('\\r\\n');
   var blob=new Blob(['\ufeff'+csv],{type:'text/csv;charset=utf-8;'});
   var url=URL.createObjectURL(blob);
   var a=document.createElement('a');a.href=url;a.download='nba-my-bets.csv';
