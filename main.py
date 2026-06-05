@@ -196,8 +196,28 @@ def _nba_extract_stat(stats_arr: list, stat_key: str):
             return sum(vals)
     return None
 
+_NBA_BOX_CACHE: dict = {}
+_NBA_BOX_TTL = 120
+
 def _nba_box_lookup(date_str: str) -> dict:
-    """Return {lowername: {stat_key: float, 'final': bool}} for an NBA date."""
+    """Cached wrapper: final dates cached permanently, in-progress dates for
+    _NBA_BOX_TTL seconds. Prevents repeat ESPN scoreboard hits (HTTP 429) when
+    My Bets / the hub fan-out settle the same date many times."""
+    import time as _t
+    ent = _NBA_BOX_CACHE.get(date_str)
+    now = _t.time()
+    if ent and (ent["final"] or now - ent["ts"] < _NBA_BOX_TTL):
+        return ent["data"]
+    res, complete = _nba_box_lookup_raw(date_str)
+    allfinal = complete and bool(res)
+    _NBA_BOX_CACHE[date_str] = {"ts": now, "final": allfinal, "data": res}
+    return res
+
+def _nba_box_lookup_raw(date_str: str):
+    """Return (results, complete). results = {lowername: {stat_key: float, 'final': bool}}.
+    complete is True only when EVERY event for the date is final AND its box score was
+    fetched successfully, so the wrapper marks the cache permanent only on fully-complete
+    data (a failed summary fetch keeps the date on the short TTL so it retries)."""
     d = date_str.replace("-", "")
     results: dict = {}
     try:
@@ -208,20 +228,26 @@ def _nba_box_lookup(date_str: str) -> dict:
         events = sb.json().get("events", [])
     except Exception as e:
         print(f"[nba_box] scoreboard failed {date_str}: {e}")
-        return results
+        return results, False
+    complete = True
     for ev in events:
         is_final = ev.get("status", {}).get("type", {}).get("completed", False)
+        if not is_final:
+            complete = False
         ev_id = ev.get("id")
         if not ev_id:
+            complete = False
             continue
         try:
             bs = httpx.get(
                 f"https://site.api.espn.com/apis/site/v2/sports/basketball/nba/summary?event={ev_id}",
                 timeout=15, headers={"User-Agent": "Mozilla/5.0"})
             if bs.status_code != 200:
+                complete = False
                 continue
             boxscore = bs.json().get("boxscore", {})
         except Exception:
+            complete = False
             continue
         for team in boxscore.get("players", []):
             for grp in team.get("statistics", []):
@@ -236,7 +262,7 @@ def _nba_box_lookup(date_str: str) -> dict:
                         if v is not None:
                             ps[sk] = v
                     results[name] = ps
-    return results
+    return results, complete
 
 def _nba_settle_cached(bet: dict, name_stats: dict) -> bool:
     if bet.get("result") in ("WIN", "LOSS", "PUSH"):
@@ -2190,6 +2216,20 @@ function openPropsPlayer(idx){
     }).join('<span style="color:#333;margin:0 1px">,</span>'):'<span style="color:#555">—</span>';
     var avgDisp=p.avg!=null?esc(String(p.avg))+'<span style="color:#777;font-size:.7rem"> ('+esc(String(p.games))+'g)</span>':'<span style="color:#555">no history</span>';
     var pickCell=(isO?'<span style="color:#4ade80;font-weight:900;font-size:.95rem">O</span>':isU?'<span style="color:#f87171;font-weight:900;font-size:.95rem">U</span>':'<span style="color:#555">—</span>')+badges;
+    var _trackCell='';
+    if(window.IS_ADMIN){
+      if(p.line!=null){
+        var _bside=isU?'UNDER':'OVER';
+        var _bo=(p.dk_over_odds!=null?p.dk_over_odds:(sig.dk_over_odds!=null?sig.dk_over_odds:null));
+        var _bu=(p.dk_under_odds!=null?p.dk_under_odds:(sig.dk_under_odds!=null?sig.dk_under_odds:null));
+        var _bodds=_bside==='OVER'?(_bo!=null?_bo:_bu):(_bu!=null?_bu:_bo);
+        var _bk='np'+(++_nbaBetN);
+        (window.__NBA_BET_SRC__=window.__NBA_BET_SRC__||{})[_bk]={name:name,team:(p.team||''),opp:opp,category:(p.stat_label||''),side:_bside,stat_key:(p.stat||''),stat_label:(p.stat_label||''),line:p.line,odds:(_bodds!=null?_bodds:null),date:(p.tipoff?String(p.tipoff).slice(0,10):'')};
+        _trackCell='<td style="padding:10px 12px"><button data-betkey="'+_bk+'" class="admin-only" onclick="event.stopPropagation();_nbaBetForm(this.dataset.betkey)" style="background:#1a1740;color:#a5b4fc;border:1px solid #312e81;border-radius:7px;padding:5px 11px;font-size:.72rem;font-weight:800;cursor:pointer;white-space:nowrap">Track</button></td>';
+      } else {
+        _trackCell='<td style="padding:10px 12px;color:#555">—</td>';
+      }
+    }
     return '<tr style="border-bottom:1px solid #1a1a1a">' +
       '<td style="padding:10px 12px;white-space:nowrap">'+esc(p.emoji)+' <span style="color:#FDB827;font-weight:700">'+esc(p.stat_label)+'</span></td>' +
       '<td style="padding:10px 12px;font-family:monospace;font-weight:800;color:#fff">'+esc(String(p.line||'—'))+'</td>' +
@@ -2198,6 +2238,7 @@ function openPropsPlayer(idx){
       '<td style="padding:10px 12px;font-family:monospace;font-size:.9rem;color:'+clr+';font-weight:700">'+avgDisp+'</td>' +
       '<td style="padding:10px 12px;font-size:.75rem;font-family:monospace;max-width:160px">'+histHtml+'</td>' +
       '<td style="padding:10px 12px">'+pickCell+'</td>' +
+      _trackCell +
     '</tr>';
   });
   closePropsModal();
@@ -2224,6 +2265,7 @@ function openPropsPlayer(idx){
             '<th style="padding:9px 12px;text-align:left;color:#f59e0b;font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.1em">Avg vr Opp</th>' +
             '<th style="padding:9px 12px;text-align:left;color:#f59e0b;font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.1em;white-space:nowrap">Last 8 vr Opp</th>' +
             '<th style="padding:9px 12px;text-align:left;color:#f59e0b;font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.1em">Pick &amp; Signal</th>' +
+            (window.IS_ADMIN?'<th style="padding:9px 12px;text-align:left;color:#a5b4fc;font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.1em">Track</th>':'') +
           '</tr></thead>' +
           '<tbody>'+rows.join('')+'</tbody>' +
         '</table>' +
@@ -2474,14 +2516,25 @@ async def nba_get_bets(request: Request, token: str = "", admin: str = "", settl
     with _NBA_BET_LOCK:
         data = _nba_load_bets()
         key = _nba_bet_user_key(tok, admin)
-        bets = data.get(key, [])
-        changed = False
-        if settle:
-            changed = _nba_settle_batch(bets)
-        if changed:
-            data[key] = bets
-            _nba_save_bets(data)
-        snapshot = list(bets)
+        snapshot = list(data.get(key, []))
+    # Settle OFF-lock: ESPN network calls (now cached) must not block POST/DELETE
+    # behind _NBA_BET_LOCK. Re-acquire only to persist, MERGING settled fields by
+    # id so a bet added concurrently (during settle) is never clobbered.
+    if settle and _nba_settle_batch(snapshot):
+        # Apply ONLY bets settled to a terminal result this pass, and only onto a
+        # still-pending on-disk bet — never write pending/None back and never flip an
+        # already-terminal value (so a concurrent settle pass can't be clobbered).
+        settled = {b.get("id"): b for b in snapshot
+                   if b.get("id") and b.get("result") in ("WIN", "LOSS", "PUSH")}
+        if settled:
+            with _NBA_BET_LOCK:
+                data = _nba_load_bets()
+                for b in data.get(key, []):
+                    s = settled.get(b.get("id"))
+                    if s and b.get("result") not in ("WIN", "LOSS", "PUSH"):
+                        for f in ("result", "actual", "profit", "settled_at"):
+                            b[f] = s.get(f)
+                _nba_save_bets(data)
     snapshot.sort(key=lambda b: (b.get("date",""), b.get("placed_at","")), reverse=True)
     return {"bets": snapshot, "summary": _nba_summarize_bets(snapshot)}
 
