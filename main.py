@@ -2520,12 +2520,15 @@ async def nba_get_bets(request: Request, token: str = "", admin: str = "", settl
     # Settle OFF-lock: ESPN network calls (now cached) must not block POST/DELETE
     # behind _NBA_BET_LOCK. Re-acquire only to persist, MERGING settled fields by
     # id so a bet added concurrently (during settle) is never clobbered.
-    if settle and _nba_settle_batch(snapshot):
+    if settle:
+        loop = asyncio.get_running_loop()
+        changed = await loop.run_in_executor(None, _nba_settle_batch, snapshot)
         # Apply ONLY bets settled to a terminal result this pass, and only onto a
         # still-pending on-disk bet — never write pending/None back and never flip an
         # already-terminal value (so a concurrent settle pass can't be clobbered).
-        settled = {b.get("id"): b for b in snapshot
-                   if b.get("id") and b.get("result") in ("WIN", "LOSS", "PUSH")}
+        settled = ({b.get("id"): b for b in snapshot
+                    if b.get("id") and b.get("result") in ("WIN", "LOSS", "PUSH")}
+                   if changed else {})
         if settled:
             with _NBA_BET_LOCK:
                 data = _nba_load_bets()
