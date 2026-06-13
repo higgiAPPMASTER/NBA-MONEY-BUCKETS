@@ -197,21 +197,28 @@ def _nba_extract_stat(stats_arr: list, stat_key: str):
     return None
 
 _NBA_BOX_CACHE: dict = {}
+_NBA_BOX_LOCK = _nba_th.Lock()
 _NBA_BOX_TTL = 120
 
 def _nba_box_lookup(date_str: str) -> dict:
     """Cached wrapper: final dates cached permanently, in-progress dates for
     _NBA_BOX_TTL seconds. Prevents repeat ESPN scoreboard hits (HTTP 429) when
-    My Bets / the hub fan-out settle the same date many times."""
+    My Bets / the hub fan-out settle the same date many times.
+    Lock prevents concurrent misses from all hitting ESPN simultaneously."""
     import time as _t
     ent = _NBA_BOX_CACHE.get(date_str)
     now = _t.time()
     if ent and (ent["final"] or now - ent["ts"] < _NBA_BOX_TTL):
         return ent["data"]
-    res, complete = _nba_box_lookup_raw(date_str)
-    allfinal = complete and bool(res)
-    _NBA_BOX_CACHE[date_str] = {"ts": now, "final": allfinal, "data": res}
-    return res
+    with _NBA_BOX_LOCK:
+        ent = _NBA_BOX_CACHE.get(date_str)
+        now = _t.time()
+        if ent and (ent["final"] or now - ent["ts"] < _NBA_BOX_TTL):
+            return ent["data"]
+        res, complete = _nba_box_lookup_raw(date_str)
+        allfinal = complete and bool(res)
+        _NBA_BOX_CACHE[date_str] = {"ts": now, "final": allfinal, "data": res}
+        return res
 
 def _nba_box_lookup_raw(date_str: str):
     """Return (results, complete). results = {lowername: {stat_key: float, 'final': bool}}.
@@ -1321,7 +1328,7 @@ body.is-admin #parlayCard{display:block}
 .section-hdr{display:flex;align-items:center;justify-content:space-between;margin-bottom:18px}
 .section-title{font-size:1rem;font-weight:700;display:flex;align-items:center;gap:8px;color:#f59e0b;font-family:'Playfair Display',serif}
 .count-pill{background:rgba(245,158,11,.1);color:#f59e0b;padding:4px 14px;border-radius:999px;font-size:.78rem;font-weight:700;border:1px solid rgba(245,158,11,.2)}
-.picks-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:16px;margin-bottom:10px}
+.picks-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px;margin-bottom:10px}
 .pick-card{background:#161616;border:1px solid #262626;border-radius:20px;padding:22px;position:relative;overflow:hidden;transition:border-color .25s,transform .22s}
 .pick-card:hover{border-color:rgba(245,158,11,.4);transform:translateY(-3px);box-shadow:0 14px 40px rgba(0,0,0,.5)}
 .pick-rank{position:absolute;top:14px;right:15px;width:32px;height:32px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:.82rem;font-weight:900}
@@ -1695,20 +1702,20 @@ function renderTop10Cards(picks){
     const _betHtml=window.IS_ADMIN?_nbaBetBtn(p,_bverd):'';
     html+=`
     <div class="pick-card" style="padding:0;overflow:hidden;border-radius:14px;background:linear-gradient(180deg,#161616 0%,#0f0f0f 100%);border:1px solid #262626">
-      <div style="background:linear-gradient(135deg,#1e3a5f 0%,#0a1a2e 100%);padding:12px 16px;display:flex;align-items:center;justify-content:space-between;border-bottom:2px solid #FDB827">
-        <div style="display:flex;align-items:center;gap:10px">
-          <div style="width:34px;height:34px;border-radius:50%;background:#FDB827;color:#000;display:flex;align-items:center;justify-content:center;font-weight:900;font-size:1rem">${i+1}</div>
-          <div style="font-size:.78rem;letter-spacing:.12em;color:#FDB827;font-weight:800">NBA · ${p.team}</div>
+      <div style="background:linear-gradient(135deg,#1e3a5f 0%,#0a1a2e 100%);padding:8px 12px;display:flex;align-items:center;justify-content:space-between;border-bottom:2px solid #FDB827">
+        <div style="display:flex;align-items:center;gap:8px">
+          <div style="width:26px;height:26px;border-radius:50%;background:#FDB827;color:#000;display:flex;align-items:center;justify-content:center;font-weight:900;font-size:.82rem">${i+1}</div>
+          <div style="font-size:.72rem;letter-spacing:.12em;color:#FDB827;font-weight:800">NBA · ${p.team}</div>
         </div>
-        <img src="${teamLogo}" alt="${p.team}" style="height:38px;width:38px;object-fit:contain" onerror="this.style.display='none'"/>
+        <img src="${teamLogo}" alt="${p.team}" style="height:28px;width:28px;object-fit:contain" onerror="this.style.display='none'"/>
       </div>
-      <div style="position:relative;height:160px;background:radial-gradient(ellipse at center top,rgba(253,184,39,.15),transparent 70%),linear-gradient(180deg,#1e3a5f 0%,#0a1a2e 100%);overflow:hidden">
-        <img onclick="openLadder('${cardKey}')" src="${headshot}" alt="${pname}" style="position:absolute;bottom:-6px;left:50%;transform:translateX(-50%);height:170px;object-fit:contain;cursor:pointer" onerror="this.style.display='none'"/>
+      <div style="position:relative;height:110px;background:radial-gradient(ellipse at center top,rgba(253,184,39,.15),transparent 70%),linear-gradient(180deg,#1e3a5f 0%,#0a1a2e 100%);overflow:hidden">
+        <img onclick="openLadder('${cardKey}')" src="${headshot}" alt="${pname}" style="position:absolute;bottom:-6px;left:50%;transform:translateX(-50%);height:120px;object-fit:contain;cursor:pointer" onerror="this.style.display='none'"/>
         <div onclick="openLadder('${cardKey}')" style="position:absolute;bottom:6px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,.62);color:#FDB827;font-size:.62rem;font-weight:800;padding:3px 9px;border-radius:6px;border:1px solid #FDB82766;cursor:pointer;white-space:nowrap">📊 TAP FOR GAME LOG</div>
         ${p.position?`<div style="position:absolute;top:10px;right:12px;background:rgba(0,0,0,.6);color:#fff;font-weight:800;font-size:.88rem;padding:4px 10px;border-radius:6px;border:1px solid #444">${p.position}</div>`:''}
       </div>
-      <div style="background:#FDB827;color:#000;text-align:center;padding:10px 12px;font-weight:900;font-size:1.18rem;letter-spacing:.01em">${pname}</div>
-      <div style="padding:12px 14px 14px">
+      <div style="background:#FDB827;color:#000;text-align:center;padding:7px 10px;font-weight:900;font-size:.95rem;letter-spacing:.01em">${pname}</div>
+      <div style="padding:8px 10px 10px">
         <div style="display:flex;justify-content:space-between;align-items:center;font-size:.9rem;color:#aaa;margin-bottom:4px">
           <span>vs <strong style="color:#fff">${p.opp}</strong></span>
           ${tip?`<span>⏱ ${tip}</span>`:''}
