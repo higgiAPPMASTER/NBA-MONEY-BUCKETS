@@ -124,6 +124,173 @@ _CACHE_TTL = 6 * 3600  # 6 hours
 import threading as _nba_th
 import uuid as _nba_uuid
 
+# ── Supabase Track Record helpers ─────────────────────────────────────────────
+import os as _nba_os
+_NBA_SB_URL   = (_nba_os.getenv("SUPABASE_URL") or "").rstrip("/")
+_NBA_SB_KEY   = _nba_os.getenv("SUPABASE_SERVICE_KEY") or ""
+_NBA_SB_TBL   = "mpa_track_ledger"
+_NBA_TRK_APP  = "nba"
+_NBA_TRK_STAKE= 20.0
+_NBA_TRK_TOP  = 10
+_NBA_SNAP_CAT = "__picks__"
+_NBA_TRK_LOCK = _nba_th.Lock()
+
+def _nba_sb_get(params: dict) -> list:
+    if not _NBA_SB_URL: return []
+    h = {"apikey":_NBA_SB_KEY,"Authorization":f"Bearer {_NBA_SB_KEY}","Accept":"application/json"}
+    try:
+        r = httpx.get(f"{_NBA_SB_URL}/rest/v1/{_NBA_SB_TBL}", headers=h, params=params, timeout=12)
+        return r.json() if r.status_code==200 else []
+    except Exception as e:
+        print(f"[nba_track] sb_get: {e}"); return []
+
+def _nba_sb_upsert(rows: list, on_conflict: str=None) -> bool:
+    if not _NBA_SB_URL or not rows: return False
+    url = f"{_NBA_SB_URL}/rest/v1/{_NBA_SB_TBL}"
+    if on_conflict: url += f"?on_conflict={on_conflict}"
+    h = {"apikey":_NBA_SB_KEY,"Authorization":f"Bearer {_NBA_SB_KEY}",
+         "Content-Type":"application/json","Prefer":"resolution=merge-duplicates,return=minimal"}
+    try:
+        r = httpx.post(url, headers=h, json=rows, timeout=20)
+        return r.status_code in (200,201,204)
+    except Exception as e:
+        print(f"[nba_track] sb_upsert: {e}"); return False
+
+def _nba_save_picks_snapshot(date_str: str, result: dict):
+    """Freeze today's top picks to Supabase as one __picks__ row for later grading."""
+    top_picks = result.get("picks") or []
+    if not top_picks: return
+    flat = []
+    for rank, p in enumerate(top_picks, 1):
+        sk   = p.get("stat","")
+        side = (p.get("line_rec") or p.get("streak_rec") or "OVER").upper()
+        line = p.get("dk_line") or p.get("fd_line") or p.get("threshold") or 0
+        odds = (p.get("dk_over_odds") if side=="OVER" else p.get("dk_under_odds")) or p.get("fd_odds","")
+        flat.append({"name":p.get("player",""),"team":p.get("team",""),
+                     "category":_NBA_STAT_LABEL.get(sk,sk),"stat_key":sk,
+                     "side":side,"line":line,"odds":odds or "",
+                     "rank":rank,"is_overflow":rank>_NBA_TRK_TOP,
+                     "score":p.get("hit_rate") or 0})
+    ok = _nba_sb_upsert(
+        [{"app":_NBA_TRK_APP,"date":date_str,"category":_NBA_SNAP_CAT,
+          "side":"ALL","wins":0,"losses":0,"locked":False,"detail":flat}],
+        "app,date,category,side")
+    print(f"[nba_track] snapshot {'saved' if ok else 'FAILED'}: {len(flat)} picks -> {date_str}")
+
+def _nba_load_picks_snapshot(date_str: str) -> list:
+    rows = _nba_sb_get({"app":f"eq.{_NBA_TRK_APP}","category":f"eq.{_NBA_SNAP_CAT}",
+                        "side":"eq.ALL","date":f"eq.{date_str}","select":"detail","limit":"1"})
+    if rows:
+        d = rows[0].get("detail") or []
+        return d if isinstance(d, list) else []
+    return []
+
+def _nba_list_snap_dates() -> list:
+    rows = _nba_sb_get({"app":f"eq.{_NBA_TRK_APP}","category":f"eq.{_NBA_SNAP_CAT}",
+                        "side":"eq.ALL","select":"date","limit":"365"})
+    return sorted({r["date"] for r in rows if r.get("date")})
+
+def _nba_american_profit_trk(odds, stake: float, result: str) -> float:
+    try: o = float(str(odds).replace("+","")) if odds else 0
+    except: o = 0
+    if result=="PUSH": return 0.0
+    if result!="WIN": return -stake
+    if o>0: return round(stake*o/100,2)
+    if o<0: return round(stake*100/abs(o),2)
+    return round(stake*0.91,2)
+
+def _nba_grade_date(date_str: str, snap: list) -> dict:
+    from collections import defaultdict as _dd
+    box      = _nba_box_lookup(date_str)
+    any_game = bool(box)
+    all_final= any_game and all(v.get("final",False) for v in box.values())
+    main_rows, ovf_rows = [], []
+    for p in snap:
+        name_key = (p.get("name") or "").lower().strip()
+        pd       = (box or {}).get(name_key, {})
+        sk       = p.get("stat_key","")
+        line_raw = p.get("line")
+        odds     = p.get("odds")
+        side     = (p.get("side") or "OVER").upper()
+        result_val = actual = profit = None
+        if pd.get("final") and line_raw is not None and sk:
+            actual = pd.get(sk)
+            if actual is not None:
+                try:
+                    fl = float(line_raw)
+                    if actual==fl: result_val="PUSH"
+                    elif side=="OVER": result_val="WIN" if actual>fl else "LOSS"
+                    else: result_val="WIN" if actual<fl else "LOSS"
+                    if result_val and odds is not None:
+                        profit = _nba_american_profit_trk(odds, _NBA_TRK_STAKE, result_val)
+                except Exception: pass
+        row = {"name":p.get("name",""),"team":p.get("team",""),
+               "category":p.get("category","?"),"side":side,"stat_key":sk,
+               "line":line_raw,"odds":odds,"rank":p.get("rank",999),
+               "result":result_val,"actual":actual,"profit":profit}
+        if not p.get("is_overflow"):
+            main_rows.append(row)
+        else:
+            ovf_rows.append({**row,"category":"NBA Overflow"})
+    return {"any_game":any_game,"all_final":all_final,"main":main_rows,"overflow":ovf_rows}
+
+def _nba_aggregate_graded(graded: dict) -> dict:
+    agg: dict = {}
+    for row in graded.get("main",[]) + graded.get("overflow",[]):
+        if row.get("result") not in ("WIN","LOSS") or row.get("odds") is None: continue
+        rec = agg.setdefault(row["category"],{}).setdefault(row.get("side","OVER"),[0,0])
+        if row["result"]=="WIN": rec[0]+=1
+        else: rec[1]+=1
+    return agg
+
+def _nba_detail_graded(graded: dict) -> list:
+    out = []
+    for row in graded.get("main",[]) + graded.get("overflow",[]):
+        if row.get("result") not in ("WIN","LOSS") or row.get("odds") is None: continue
+        out.append({k:row.get(k) for k in
+                    ("name","team","category","side","stat_key","line","odds","rank","result","actual","profit")})
+    return out
+
+def _nba_update_track_ledger():
+    from datetime import date as _d
+    today = _d.today().isoformat()
+    with _NBA_TRK_LOCK:
+        locked = {r["date"] for r in (_nba_sb_get(
+            {"app":f"eq.{_NBA_TRK_APP}","category":"eq.__ledger__",
+             "locked":"eq.true","select":"date","limit":"500"}) or [])}
+        upserts = []
+        for d in _nba_list_snap_dates():
+            if d >= today or d in locked: continue
+            snap = _nba_load_picks_snapshot(d)
+            if not snap: continue
+            try: graded = _nba_grade_date(d, snap)
+            except Exception as e:
+                print(f"[nba_track] grade failed {d}: {e}"); continue
+            if not graded.get("any_game"): continue
+            try:
+                from datetime import date as _dd2
+                old_enough = (_dd2.today()-_dd2.fromisoformat(d)).days>=2
+            except Exception: old_enough=False
+            if not graded.get("all_final") and not old_enough: continue
+            agg = _nba_aggregate_graded(graded)
+            det = _nba_detail_graded(graded)
+            upserts += [
+                {"app":_NBA_TRK_APP,"date":d,"category":"__ledger__","side":"ALL",
+                 "wins":0,"losses":0,"locked":True,"detail":agg},
+                {"app":_NBA_TRK_APP,"date":d,"category":"__detail__","side":"ALL",
+                 "wins":0,"losses":0,"locked":True,"detail":det},
+            ]
+        if upserts:
+            for i in range(0,len(upserts),10):
+                _nba_sb_upsert(upserts[i:i+10],"app,date,category,side")
+            print(f"[nba_track] locked {len(upserts)//2} dates")
+
+def _nba_trk_bg(date_str: str, result: dict):
+    _nba_save_picks_snapshot(date_str, result)
+    _nba_th.Thread(target=_nba_update_track_ledger, daemon=True).start()
+
+_nba_th.Thread(target=_nba_update_track_ledger, daemon=True).start()
+
 _NBA_BET_LOG_PATH = str(_CACHE_DIR / "_nba_bet_log.json")
 _NBA_BET_LOCK = _nba_th.Lock()
 _NBA_BET_STAT_KEYS = ("PTS","REB","AST","FG3M","BLK","STL","PRA","PTS_REB","PTS_AST","REB_AST")
@@ -1143,6 +1310,7 @@ async def run_analysis(selected_date: str = None, force: bool = False) -> Dict:
         _cache_set("nba", today_str, result)
     else:
         print(f"[Cache] SKIP write — no prop lines yet for {today_str} (will retry on next request)")
+    _nba_trk_bg(today_str, result)
     try:
         from replit_push import push_picks_to_replit
         # Bake the picks into the page HTML so the Replit hub can serve an
@@ -1404,11 +1572,16 @@ footer{text-align:center;padding:32px 24px;color:#4b5563;font-size:.78rem;border
 .props-player-chip{background:#161616;border:1px solid #262626;border-radius:10px;padding:10px 14px;min-width:150px;cursor:pointer;transition:border-color .15s;user-select:none}
 .props-player-chip:hover{border-color:#f59e0b}
 .props-game-sel{background:#111;color:#fff;border:1px solid #2a2a2a;border-radius:8px;padding:8px 14px;font-size:.85rem;font-family:'Source Sans Pro',sans-serif;outline:none;min-width:220px;cursor:pointer}
+/* NBA Track Record */
+.nba-trk-tbl{width:100%;border-collapse:collapse;font-size:.8rem}
+.nba-trk-tbl th,.nba-trk-tbl td{padding:8px 10px;text-align:left;border-bottom:1px solid #1e293b;color:#e2e8f0}
+.nba-trk-tbl th{color:#818cf8;font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;background:#0a0a14}
+.nba-trk-tbl tr:hover td{background:#0f172a}
 </style>
 </head>
 <body>
 <div class="bg-glow"></div>
-<nav style="display:flex;justify-content:space-between;align-items:center"><div class="logo">Money <span>Picks</span> Arena</div><div style="display:flex;gap:8px;align-items:center"><button class="admin-only" onclick="openNbaMyBets()" style="background:#4338ca;color:#fff;border:none;border-radius:10px;padding:9px 16px;font-weight:800;font-size:.82rem;cursor:pointer;white-space:nowrap">&#128176; My Bets</button></div></nav>
+<nav style="display:flex;justify-content:space-between;align-items:center"><div class="logo">Money <span>Picks</span> Arena</div><div style="display:flex;gap:8px;align-items:center"><button onclick="document.getElementById(\'nba-track-section\').scrollIntoView({behavior:\'smooth\',block:\'start\'})" style="background:#4338ca;color:#fff;border:none;border-radius:10px;padding:9px 16px;font-weight:800;font-size:.82rem;cursor:pointer;white-space:nowrap">&#128202; Track Record</button><button class="admin-only" onclick="openNbaMyBets()" style="background:#4338ca;color:#fff;border:none;border-radius:10px;padding:9px 16px;font-weight:800;font-size:.82rem;cursor:pointer;white-space:nowrap">&#128176; My Bets</button></div></nav>
 <div class="page">
 <div class="app-hdr">
   <h1>NBA <span>Money Buckets</span></h1>
@@ -1538,6 +1711,24 @@ footer{text-align:center;padding:32px 24px;color:#4b5563;font-size:.78rem;border
   <div>NBA Money Buckets &middot; Pts &middot; Reb &middot; Ast &middot; 3PM &middot; Blk &middot; Stl &middot; Combos</div>
   <div style="margin-top:8px;font-size:.7rem">For entertainment only. Not a betting service. Must be 18+.</div>
 </footer>
+<!-- NBA Track Record — always visible below picks -->
+<div id="nba-track-section" style="max-width:960px;margin:18px auto 0;padding:0 16px 40px">
+  <div class="card" style="padding:20px 22px">
+    <div style="margin-bottom:14px">
+      <h2 style="font-family:\'Playfair Display\',serif;font-size:1.4rem;font-weight:700;color:#fff">&#128202; NBA Track Record</h2>
+    </div>
+    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:14px">
+      <label style="color:#94a3b8;font-size:.78rem;font-weight:700;text-transform:uppercase;letter-spacing:.1em">Date</label>
+      <input type="date" id="nbaTrkDate" style="background:#0f172a;border:1px solid #1e293b;border-radius:8px;padding:7px 11px;color:#e2e8f0;font-size:.85rem;outline:none" onchange="_nbaTrkDayName();renderNbaTrackDay()">
+      <span id="nbaTrkDayName" style="color:#34d399;font-weight:700;font-size:.9rem"></span>
+      <button onclick="loadNbaTrackRecord()" style="background:#4338ca;color:#fff;border:none;border-radius:8px;padding:8px 14px;font-weight:700;cursor:pointer;font-size:.82rem">&#8635; Get Results</button>
+      <button id="nbaTrkBtnCat" onclick="nbaTrkSetTab(\'cat\')" style="background:#4338ca;color:#fff;border:none;border-radius:8px;padding:8px 14px;font-weight:700;cursor:pointer;font-size:.82rem">By Category</button>
+      <button id="nbaTrkBtnList" onclick="nbaTrkSetTab(\'list\')" style="background:#1e293b;color:#fff;border:none;border-radius:8px;padding:8px 14px;font-weight:700;cursor:pointer;font-size:.82rem">Full List</button>
+    </div>
+    <div id="nbaTrkSummary"></div>
+    <div id="nbaTrkBody"></div>
+  </div>
+</div>
 <script>
 // Hub Access Gate - client side only, no server round-trip
 (function(){
@@ -2507,7 +2698,124 @@ function downloadNbaMyBetsCSV(){
   var a=document.createElement('a');a.href=url;a.download='nba-my-bets.csv';
   document.body.appendChild(a);a.click();document.body.removeChild(a);URL.revokeObjectURL(url);
 }
+// ── NBA Track Record ──────────────────────────────────────────────────────────
+var _nbaTrkData=null,_nbaTrkTabMode='cat';
+function _nbaTrkDayName(){
+  var dp=document.getElementById('nbaTrkDate'),dn=document.getElementById('nbaTrkDayName');
+  if(!dp||!dn) return;
+  try{var days=['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+    dn.textContent=days[new Date(dp.value+'T12:00:00').getDay()];}catch(e){dn.textContent='';}
+}
+async function loadNbaTrackRecord(){
+  var body=document.getElementById('nbaTrkBody');
+  if(body) body.innerHTML='<p style="color:#94a3b8;padding:24px">Loading\u2026</p>';
+  try{
+    var r=await fetch('/api/track-record');
+    if(!r.ok) throw new Error(await r.text());
+    var d=await r.json();
+    _nbaTrkData=d.dates||[];
+    renderNbaTrackDay();
+  }catch(e){
+    if(body) body.innerHTML='<p style="color:#f87171;padding:16px">'+(e.message||'Error loading track record')+'</p>';
+  }
+}
+function nbaTrkSetTab(tab){
+  _nbaTrkTabMode=tab;
+  var bc=document.getElementById('nbaTrkBtnCat'),bl=document.getElementById('nbaTrkBtnList');
+  if(bc) bc.style.background=tab==='cat'?'#4338ca':'#1e293b';
+  if(bl) bl.style.background=tab==='list'?'#4338ca':'#1e293b';
+  renderNbaTrackDay();
+}
+function renderNbaTrackDay(){
+  var dp=document.getElementById('nbaTrkDate');
+  var selDate=dp?dp.value:'';
+  var sumEl=document.getElementById('nbaTrkSummary'),bodyEl=document.getElementById('nbaTrkBody');
+  if(!_nbaTrkData||!_nbaTrkData.length){
+    if(bodyEl) bodyEl.innerHTML='<p style="color:#94a3b8;padding:16px">No graded picks yet. Run picks and check back after games finish.</p>';
+    return;
+  }
+  var day=_nbaTrkData.find(function(d){return d.date===selDate});
+  if(!day) day=_nbaTrkData[0];
+  if(!day){if(bodyEl) bodyEl.innerHTML='<p style="color:#94a3b8;padding:16px">No data for this date.</p>';return;}
+  var color=(day.net_pl||0)>=0?'#4ade80':'#f87171';
+  if(sumEl) sumEl.innerHTML='<div style="display:flex;gap:18px;flex-wrap:wrap;padding:4px 0 14px;border-bottom:1px solid #1e293b;margin-bottom:14px">'+
+    '<span style="color:#94a3b8;font-size:.8rem">'+day.date+'</span>'+
+    '<span style="color:#fff;font-weight:700">'+day.wins+'W\u2013'+day.losses+'L</span>'+
+    '<span style="color:'+color+';font-weight:800">'+(day.net_pl>=0?'+':'')+'$'+(day.net_pl||0).toFixed(2)+'</span>'+
+    '<span style="color:'+color+';font-size:.82rem">ROI: '+(day.roi>=0?'+':'')+day.roi+'%</span>'+
+    '</div>';
+  if(bodyEl) bodyEl.innerHTML=_nbaTrkTabMode==='cat'?_nbaTrkCatHtml(day):_nbaTrkListHtml(day);
+}
+function _nbaTrkCatHtml(day){
+  if(!day.by_cat||!day.by_cat.length) return '<p style="color:#94a3b8;padding:16px">No categories.</p>';
+  return day.by_cat.map(function(cat){
+    var color=(cat.net_pl||0)>=0?'#4ade80':'#f87171';
+    var total=cat.wins+cat.losses;
+    var hitRate=total>0?Math.round(cat.wins/total*100):0;
+    var barW=Math.min(100,hitRate);
+    var detail=(day.detail||[]).filter(function(b){return b.category===cat.category&&b.result;});
+    return '<div style="margin-bottom:20px">'+
+      '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">'+
+      '<span style="color:#e2e8f0;font-weight:700;font-size:.9rem">'+cat.category+'</span>'+
+      '<div style="display:flex;gap:12px;align-items:center">'+
+      '<span style="color:#e2e8f0;font-size:.82rem">'+cat.wins+'W\u2013'+cat.losses+'L</span>'+
+      '<span style="color:'+color+';font-weight:700;font-size:.82rem">'+(cat.net_pl>=0?'+':'')+'$'+(cat.net_pl||0).toFixed(2)+'</span>'+
+      '<span style="color:'+color+';font-size:.78rem">'+hitRate+'% | ROI:'+(cat.roi>=0?'+':'')+cat.roi+'%</span>'+
+      '</div></div>'+
+      '<div style="background:#0f172a;border-radius:4px;height:6px;margin-bottom:10px">'+
+      '<div style="height:6px;border-radius:4px;width:'+barW+'%;background:'+(hitRate>=60?'#4ade80':hitRate>=50?'#f59e0b':'#f87171')+'"></div></div>'+
+      (detail.length?'<div style="overflow-x:auto"><table class="nba-trk-tbl"><thead><tr>'+
+      '<th>Player</th><th>Stat</th><th>Side</th><th>Line</th><th>Odds</th><th>Actual</th><th>Result</th><th>P/L</th>'+
+      '</tr></thead><tbody>'+
+      detail.map(function(b){
+        var rc=b.result==='WIN'?'#4ade80':b.result==='LOSS'?'#f87171':'#94a3b8';
+        var pc=(b.profit||0)>=0?'#4ade80':'#f87171';
+        return '<tr>'+
+          '<td>'+b.name+'</td><td>'+b.stat_key+'</td>'+
+          '<td style="color:#94a3b8">'+b.side+'</td>'+
+          '<td>'+b.line+'</td><td style="color:#94a3b8">'+b.odds+'</td>'+
+          '<td>'+b.actual+'</td>'+
+          '<td style="color:'+rc+';font-weight:700">'+b.result+'</td>'+
+          '<td style="color:'+pc+';font-weight:700">'+(b.profit!=null?(b.profit>=0?'+':'')+'$'+parseFloat(b.profit).toFixed(2):'—')+'</td>'+
+          '</tr>';
+      }).join('')+'</tbody></table></div>':'')+'</div>';
+  }).join('');
+}
+function _nbaTrkListHtml(day){
+  var bets=(day.detail||[]).filter(function(b){return b.result==='WIN'||b.result==='LOSS'||b.result==='PUSH';});
+  if(!bets.length) return '<p style="color:#94a3b8;padding:16px">No graded picks.</p>';
+  var rows=bets.map(function(b){
+    var rc=b.result==='WIN'?'#4ade80':b.result==='LOSS'?'#f87171':'#94a3b8';
+    var pc=(b.profit||0)>=0?'#4ade80':'#f87171';
+    return '<tr>'+
+      '<td>#'+b.rank+'</td><td>'+b.name+'</td>'+
+      '<td>'+b.category+(b.category==='NBA Overflow'?' <span style="color:#f59e0b;font-size:.7rem">OVF</span>':'')+'</td>'+
+      '<td style="color:#94a3b8">'+b.side+'</td><td>'+b.line+'</td>'+
+      '<td style="color:#94a3b8">'+b.odds+'</td><td>'+b.actual+'</td>'+
+      '<td style="color:'+rc+';font-weight:700">'+b.result+'</td>'+
+      '<td style="color:'+pc+';font-weight:700">'+(b.profit!=null?(b.profit>=0?'+':'')+'$'+parseFloat(b.profit).toFixed(2):'—')+'</td>'+
+      '</tr>';
+  }).join('');
+  return '<div style="overflow-x:auto"><table class="nba-trk-tbl"><thead><tr>'+
+    '<th>#</th><th>Player</th><th>Market</th><th>Side</th><th>Line</th><th>Odds</th><th>Actual</th><th>Result</th><th>P/L</th>'+
+    '</tr></thead><tbody>'+rows+'</tbody></table></div>';
+}
+document.addEventListener('DOMContentLoaded',function(){
+  var dp=document.getElementById('nbaTrkDate');
+  if(dp){dp.value=new Date().toISOString().slice(0,10);
+    dp.addEventListener('change',function(){_nbaTrkDayName();renderNbaTrackDay();});}
+  _nbaTrkDayName();
+  loadNbaTrackRecord();
+  var top=document.getElementById('nba-btn-top'),bot=document.getElementById('nba-btn-bot');
+  function _sc(){var y=window.pageYOffset||document.documentElement.scrollTop;
+    var atBot=(y+window.innerHeight)>=document.body.scrollHeight-50;
+    if(top) top.style.display=y>400?'block':'none';
+    if(bot) bot.style.display=!atBot?'block':'none';}
+  window.addEventListener('scroll',_sc,{passive:true});_sc();
+});
 </script>
+<button id="nba-btn-top" onclick="window.scrollTo({top:0,behavior:'smooth'})" title="Back to top" style="position:fixed;bottom:76px;right:22px;z-index:9999;display:none;width:48px;height:48px;border-radius:50%;border:none;cursor:pointer;background:#f59e0b;color:#0a0a0a;font-size:1.4rem;font-weight:900;box-shadow:0 4px 14px rgba(0,0,0,.45);line-height:1">&#8593;</button>
+<button id="nba-btn-bot" onclick="window.scrollTo({top:document.body.scrollHeight,behavior:'smooth'})" title="Scroll to bottom" style="position:fixed;bottom:22px;right:22px;z-index:9999;display:none;width:48px;height:48px;border-radius:50%;border:none;cursor:pointer;background:#0ea5e9;color:#0a0a0a;font-size:1.4rem;font-weight:900;box-shadow:0 4px 14px rgba(0,0,0,.45);line-height:1">&#8595;</button>
 </body>
 
 </body>
@@ -2741,6 +3049,44 @@ async def clear_cache(request: Request):
     _cache = {}
     _cache_clear('nba')   # wipe disk-cached picks file too
     return {"status": "cleared"}
+
+@app.get("/api/track-record")
+async def nba_track_record():
+    """NBA Track Record — all graded picks by date, $20/play."""
+    from fastapi.responses import JSONResponse as _JR
+    _nba_th.Thread(target=_nba_update_track_ledger, daemon=True).start()
+    det_rows = _nba_sb_get({"app":f"eq.{_NBA_TRK_APP}","category":"eq.__detail__",
+                            "locked":"eq.true","select":"date,detail","limit":"365"})
+    detail_by_date = {r["date"]:(r.get("detail") or []) for r in (det_rows or [])}
+    dates = sorted(detail_by_date.keys(), reverse=True)
+    result = []
+    for d in dates:
+        det = detail_by_date[d]
+        decided = [r for r in det if r.get("result") in ("WIN","LOSS") and r.get("odds") is not None]
+        wins   = sum(1 for r in decided if r["result"]=="WIN")
+        losses = len(decided)-wins
+        net_pl = round(sum(r.get("profit") or 0 for r in decided),2)
+        staked = len(decided)*_NBA_TRK_STAKE
+        roi    = round(net_pl/staked*100,1) if staked else None
+        cats: dict = {}
+        for r in decided:
+            cat = r.get("category","?")
+            e = cats.setdefault(cat,{"wins":0,"losses":0,"pl":0.0,"staked":0.0})
+            if r["result"]=="WIN": e["wins"]+=1
+            else: e["losses"]+=1
+            e["pl"]    = round(e["pl"]+(r.get("profit") or 0),2)
+            e["staked"]+=_NBA_TRK_STAKE
+        by_cat=[]
+        for cat,e in cats.items():
+            total=e["wins"]+e["losses"]
+            by_cat.append({"category":cat,"wins":e["wins"],"losses":e["losses"],
+                           "net_pl":e["pl"],
+                           "roi":round(e["pl"]/e["staked"]*100,1) if e["staked"] else None,
+                           "rate":round(e["wins"]/total*100,1) if total else None})
+        by_cat.sort(key=lambda x:(x.get("roi") or -999),reverse=True)
+        result.append({"date":d,"wins":wins,"losses":losses,
+                       "net_pl":net_pl,"roi":roi,"by_cat":by_cat,"detail":det})
+    return _JR({"dates":result,"stake":_NBA_TRK_STAKE})
 
 @app.get("/health")
 async def health():
