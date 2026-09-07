@@ -107,6 +107,21 @@ ODDS_MARKET_MAP = {
     "player_blocks":                     "BLK",
     "player_steals":                     "STL",
 }
+# The Odds API's documented NBA alternate player-prop market keys.  Keep this
+# map separate from ODDS_MARKET_MAP: standard boards and their qualification
+# inputs intentionally consume standard lines only.
+ODDS_ALTERNATE_MARKET_MAP = {
+    "player_points_alternate":                    "PTS",
+    "player_rebounds_alternate":                  "REB",
+    "player_assists_alternate":                   "AST",
+    "player_threes_alternate":                    "FG3M",
+    "player_points_rebounds_assists_alternate":   "PRA",
+    "player_points_rebounds_alternate":           "PTS_REB",
+    "player_points_assists_alternate":            "PTS_AST",
+    "player_rebounds_assists_alternate":          "REB_AST",
+    "player_blocks_alternate":                    "BLK",
+    "player_steals_alternate":                    "STL",
+}
 MIN_GAMES     = 1
 MIN_MINUTES   = 10.0
 ESPN_SEASONS  = [2026, 2025, 2024, 2023, 2022, 2021, 2020]   # ESPN uses season END year — 7 seasons for full career H/A history
@@ -119,6 +134,7 @@ import pathlib
 _CACHE_DIR = pathlib.Path("/tmp/mpa_cache")
 _CACHE_DIR.mkdir(parents=True, exist_ok=True)
 _CACHE_TTL = 6 * 3600  # 6 hours
+_NBA_ALT_WARM_INFLIGHT: Dict[str, asyncio.Task] = {}
 
 # ── Bet Log ───────────────────────────────────────────────────────────────────
 import threading as _nba_th
@@ -571,6 +587,21 @@ def _cache_clear(app: str = None):
         if app is None or p.name.startswith(app + "_"):
             p.unlink(missing_ok=True)
 
+def _schedule_nba_alternates_warm(date_str: str) -> None:
+    """Warm only the separate alternate cache when a standard result is cached."""
+    if date_str < date.today().isoformat() or _cache_get('nba_alternates', date_str):
+        return
+    task = _NBA_ALT_WARM_INFLIGHT.get(date_str)
+    if task is not None and not task.done():
+        return
+    task = asyncio.create_task(get_odds_lines(date_str, alternate_only=True))
+    _NBA_ALT_WARM_INFLIGHT[date_str] = task
+
+    def _clear(done_task):
+        if _NBA_ALT_WARM_INFLIGHT.get(date_str) is done_task:
+            _NBA_ALT_WARM_INFLIGHT.pop(date_str, None)
+    task.add_done_callback(_clear)
+
 async def get_today_games(date_str: str = None) -> List[Dict]:
     if date_str:
         today_fmt = datetime.strptime(date_str, '%Y-%m-%d').strftime('%Y%m%d')
@@ -705,11 +736,16 @@ async def get_underdog_lines():
     """DEPRECATED — Underdog removed. Odds API is the sole line source."""
     return []
 
-async def get_odds_lines(today_str):
+async def get_odds_lines(today_str, alternate_only: bool = False):
     api_key = os.environ.get('ODDS_API_KEY', '')
     if not api_key:
         return []
+    # Alternates are deliberately live-only. Never let a caller turn a
+    # historical/replay request into a new alternate-market Odds API request.
+    if alternate_only and today_str < date.today().isoformat():
+        return []
     props = []
+    alternate_props = []
     try:
         async with httpx.AsyncClient(timeout=20) as c:
             # Event filter: keep an event iff its US-Eastern calendar date equals the
@@ -752,7 +788,16 @@ async def get_odds_lines(today_str):
             if not events:
                 print(f'[OddsAPI] No NBA events found for {today_str}')
                 return []
-            markets = ','.join(ODDS_MARKET_MAP.keys())
+            # Do not add alternates to a past-date request. This endpoint is a
+            # live ingestion path; standard-only handling for historical inputs
+            # remains exactly as it was.
+            is_live_run = today_str >= date.today().isoformat()
+            requested_market_map = (
+                dict(ODDS_ALTERNATE_MARKET_MAP) if alternate_only
+                else dict(ODDS_MARKET_MAP))
+            if is_live_run and not alternate_only:
+                requested_market_map.update(ODDS_ALTERNATE_MARKET_MAP)
+            markets = ','.join(requested_market_map.keys())
             for ev in events:
                 r2 = await c.get(
                     f"{ODDS_API_BASE}/sports/{active_key}/events/{ev['id']}/odds",
@@ -763,11 +808,14 @@ async def get_odds_lines(today_str):
                     continue
                 data = r2.json()
                 seen = set()
+                seen_alternates = set()
                 for book in data.get('bookmakers', []):
                     for mkt in book.get('markets', []):
-                        stat = ODDS_MARKET_MAP.get(mkt.get('key', ''))
+                        market_key = mkt.get('key', '')
+                        stat = requested_market_map.get(market_key)
                         if not stat:
                             continue
+                        is_alternate = market_key in ODDS_ALTERNATE_MARKET_MAP
                         # Collect BOTH Over and Under prices per player for this market.
                         by_player = {}
                         for oc in mkt.get('outcomes', []):
@@ -778,31 +826,48 @@ async def get_odds_lines(today_str):
                             line   = float(oc.get('point') or 0)
                             if not player or line <= 0:
                                 continue
-                            d = by_player.setdefault(player, {'line': line})
-                            d['line'] = line
+                            outcome_key = ((player, line) if is_alternate else player)
+                            d = by_player.setdefault(
+                                outcome_key, {'player': player, 'line': line})
+                            if not is_alternate:
+                                d['line'] = line
                             if nm == 'Over':
                                 d['over_odds'] = str(oc.get('price', ''))
                             else:
                                 d['under_odds'] = str(oc.get('price', ''))
-                        for player, d in by_player.items():
+                        for _, d in by_player.items():
+                            player = d['player']
                             if 'over_odds' not in d:   # require an Over line to register (mirrors prior behavior)
                                 continue
-                            key = f"{player}|{stat}"
-                            if key not in seen:
-                                seen.add(key)
-                                props.append({
+                            # Alternate ladders need their point in the identity;
+                            # standard rows preserve the existing player/stat
+                            # first-seen behavior used by the calibrated boards.
+                            key = (f"{player}|{stat}|{d['line']}"
+                                   if is_alternate else f"{player}|{stat}")
+                            target = alternate_props if is_alternate else props
+                            target_seen = seen_alternates if is_alternate else seen
+                            if key not in target_seen:
+                                target_seen.add(key)
+                                target.append({
                                     'player': player, 'stat': stat, 'line': d['line'],
                                     'odds': d.get('over_odds', ''),
                                     'over_odds': d.get('over_odds', ''),
                                     'under_odds': d.get('under_odds', ''),
                                     'home': data.get('home_team', ''),
                                     'away': data.get('away_team', ''),
+                                    'source_market': market_key,
+                                    'is_alternate': is_alternate,
                                 })
                     # check all bookmakers for best coverage
     except Exception as e:
         print(f'[OddsAPI] error: {e}')
-    print(f'[OddsAPI] {len(props)} NBA prop lines fetched')
-    return props
+    # Alternate rows are retained independently for a future alternate consumer.
+    # They are deliberately not returned to the existing standard-board inputs.
+    if alternate_props:
+        _cache_set('nba_alternates', today_str, {'date': today_str,
+                   'props': alternate_props})
+    print(f'[OddsAPI] {len(props)} NBA prop lines fetched; {len(alternate_props)} alternates warmed')
+    return alternate_props if alternate_only else props
 
 
 def parse_stat(val):
@@ -992,9 +1057,11 @@ async def run_analysis(selected_date: str = None, force: bool = False) -> Dict:
     if not force:
         _fc = _cache_get('nba', today_str)
         if _fc:
+            _schedule_nba_alternates_warm(today_str)
             _cache.update(_fc)
             return _fc
         if _cache.get('date') == today_str and _cache.get('picks') is not None and _cache.get('odds_loaded'):
+            _schedule_nba_alternates_warm(today_str)
             return _cache
 
     log = []
