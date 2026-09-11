@@ -566,7 +566,11 @@ def _cache_path(app: str, date_key: str) -> pathlib.Path:
 def _cache_get(app: str, date_key: str):
     p = _cache_path(app, date_key)
     try:
-        if p.exists() and (time.time() - p.stat().st_mtime) < _CACHE_TTL:
+        # Historical NBA replay is immutable and must remain reusable.  In
+        # particular, never make a past replay spend live Odds API quota again.
+        _permanent_nba_replay = app == "nba" and date_key < date.today().isoformat()
+        if p.exists() and (_permanent_nba_replay or
+                          (time.time() - p.stat().st_mtime) < _CACHE_TTL):
             data = json.loads(p.read_text(encoding="utf-8"))
             print(f"[Cache] FILE HIT {app}/{date_key}")
             return data
@@ -600,6 +604,15 @@ def _schedule_nba_alternates_warm(date_str: str) -> None:
     def _clear(done_task):
         if _NBA_ALT_WARM_INFLIGHT.get(date_str) is done_task:
             _NBA_ALT_WARM_INFLIGHT.pop(date_str, None)
+        # The alternate board is an independent cache and may finish after the
+        # standard run.  Re-capture while still pregame so genuine exact
+        # alternate lines can enter the Coach snapshot without touching NBA.
+        try:
+            _cached = _cache_get("nba", date_str)
+            if _cached:
+                _nba_coach_capture_pregame(date_str, _cached)
+        except Exception as _ce:
+            print(f"[nba_coach_track] alternate capture failed: {_ce}")
     task.add_done_callback(_clear)
 
 async def get_today_games(date_str: str = None) -> List[Dict]:
@@ -1053,19 +1066,27 @@ def best_bet_at_line(line, values):
 
 async def run_analysis(selected_date: str = None, force: bool = False) -> Dict:
     today_str = selected_date if selected_date else date.today().isoformat()
+    historical_replay = today_str < date.today().isoformat()
     # File cache check first (skipped on force refresh — admin only)
     if not force:
         _fc = _cache_get('nba', today_str)
         if _fc:
-            _schedule_nba_alternates_warm(today_str)
+            if not historical_replay:
+                _schedule_nba_alternates_warm(today_str)
             _cache.update(_fc)
+            if not historical_replay:
+                try: _nba_coach_capture_pregame(today_str, _fc)
+                except Exception as _ce: print(f"[nba_coach_track] cached capture failed: {_ce}")
             return _fc
         if _cache.get('date') == today_str and _cache.get('picks') is not None and _cache.get('odds_loaded'):
-            _schedule_nba_alternates_warm(today_str)
+            if not historical_replay:
+                _schedule_nba_alternates_warm(today_str)
+                try: _nba_coach_capture_pregame(today_str, _cache)
+                except Exception as _ce: print(f"[nba_coach_track] cached capture failed: {_ce}")
             return _cache
 
     log = []
-    log.append(f"Fetching schedule + sportsbook lines for {today_str}...")
+    log.append(f"Fetching schedule + {'ESPN replay logs' if historical_replay else 'sportsbook lines'} for {today_str}...")
 
     # Games first — if there are none today (e.g. a playoff off-day), bail out
     # immediately and skip the odds fetch + entire pipeline. No slow run, no
@@ -1081,17 +1102,23 @@ async def run_analysis(selected_date: str = None, force: bool = False) -> Dict:
                 'no_games': True,
                 'log': [f'No NBA games scheduled for {today_str}.'], 'total': 0}
 
-    # Games exist — now fetch the Odds API lines (sole sportsbook source).
-    try:
-        odds_raw = await get_odds_lines(today_str)
-        odds_props = odds_raw
-        log.append(f"OddsAPI: {len(odds_raw)} lines")
-    except Exception as e:
-        return {'date': today_str, 'picks': [], 'all_picks': [], 'games': [],
-                'log': [f'Error: {e}'], 'total': 0}
+    # Past dates are model replays, not historical sportsbook replays.  ESPN is
+    # the only source: live and alternate Odds API endpoints are never called.
+    if historical_replay:
+        odds_raw, odds_props = [], []
+        log.append("Historical replay: no sportsbook lines or prices; model thresholds only.")
+    else:
+        try:
+            odds_raw = await get_odds_lines(today_str)
+            odds_props = odds_raw
+            log.append(f"OddsAPI: {len(odds_raw)} lines")
+        except Exception as e:
+            return {'date': today_str, 'picks': [], 'all_picks': [], 'games': [],
+                    'log': [f'Error: {e}'], 'total': 0}
 
     log.append("Games: " + " | ".join(f"{g['away']} @ {g['home']}" for g in games))
-    log.append(f"{len(odds_props)} sportsbook prop lines loaded")
+    if not historical_replay:
+        log.append(f"{len(odds_props)} sportsbook prop lines loaded")
 
     # Build lookups — odds_lookup is last-seen (compute uses bet365/us2 line
     # when available) which is the behavior the picks have been calibrated
@@ -1145,6 +1172,14 @@ async def run_analysis(selected_date: str = None, force: bool = False) -> Dict:
     # flow naturally into picks.
     logs_by_player = {pid: sorted(logs, key=lambda l: l.get('date',''), reverse=True)
                       for pid, logs in log_results}
+    if historical_replay:
+        # A replay may only learn from ESPN games already played on or before
+        # the selected date; the replayed game's own final stats must also stay
+        # out of its pregame evidence.
+        logs_by_player = {
+            pid: [g for g in logs if str(g.get('date',''))[:10] < today_str]
+            for pid, logs in logs_by_player.items()
+        }
     total_entries = sum(len(v) for v in logs_by_player.values())
     log.append(f"{total_entries:,} historical game entries loaded")
 
@@ -1158,12 +1193,12 @@ async def run_analysis(selected_date: str = None, force: bool = False) -> Dict:
 
         for player in rosters.get(game['home_id'], []):
             pid, pname = player['id'], player['name']
-            # STARTER/ACTIVE FILTER: only consider players who have a sportsbook
+            # STARTER/ACTIVE FILTER: only live boards require a sportsbook
             # line posted today. Books drop lines for inactives and rarely post
             # lines for deep bench players. This solves "pick 1 isn't playing"
             # and the "more starters please" requests in one shot.
             has_any_line = any((_nn(pname), s) in odds_lookup for s in STAT_CONFIG)
-            if not has_any_line:
+            if not historical_replay and not has_any_line:
                 continue
             # HISTORY: last 10 games vs THIS opponent at THIS location (H/A)
             # ONLY while playing for the current team (filters out games from
@@ -1180,16 +1215,18 @@ async def run_analysis(selected_date: str = None, force: bool = False) -> Dict:
                 vals = [float(l[sk]) for l in opp_logs]
                 last10 = opp_logs[:10]
                 sb        = odds_lookup.get((_nn(pname), sk), {})
-                fd_line   = sb.get('line')
-                fd_odds   = sb.get('odds', '')
+                fd_line   = None if historical_replay else sb.get('line')
+                fd_odds   = None if historical_replay else sb.get('odds', '')
                 l10_sb_hits = sum(1 for l in last10 if float(l[sk]) > fd_line) if fd_line and last10 else None
                 dk_ob = dk_lookup.get((_nn(pname), sk), {})
-                dk_line = dk_ob.get('line')
-                dk_over_odds  = dk_ob.get('over_odds', '')
-                dk_under_odds = dk_ob.get('under_odds', '')
+                dk_line = None if historical_replay else dk_ob.get('line')
+                dk_over_odds  = None if historical_replay else dk_ob.get('over_odds', '')
+                dk_under_odds = None if historical_replay else dk_ob.get('under_odds', '')
                 dk_hits = sum(1 for l in last10 if float(l[sk]) > dk_line) if dk_line and last10 else None
                 # PATTERN: consistency measured at the ACTUAL betting line (over).
-                result = pattern_at_line(vals, dk_line if dk_line is not None else fd_line)
+                result = (find_best_threshold(vals, sc['thresholds'])
+                          if historical_replay else
+                          pattern_at_line(vals, dk_line if dk_line is not None else fd_line))
                 # PATTERN / LINE / STREAK: matchup + location specific.
                 # MPA Special: player rhythm across all recent games (not opponent-filtered).
                 recent10 = all_logs_player[:10]
@@ -1228,6 +1265,8 @@ async def run_analysis(selected_date: str = None, force: bool = False) -> Dict:
                               'streak_rec': streak_rec, 'streak_n': streak_n,
                               'alt_rec': alt_rec, 'alt_evens': alt_evens, 'alt_odds': alt_odds,
                               'has_consistency': result is not None,
+                              'historical_replay': historical_replay,
+                              'replay_threshold': result.get('threshold') if historical_replay and result else None,
                               'recent_avg': round(sum(recent_vals)/len(recent_vals), 1) if recent_vals else None,
                               'gap': round((sum(recent_vals)/len(recent_vals)) - dk_line, 1) if recent_vals and dk_line else None,
                               'mpg': round(sum(float(l.get('MIN',0) or 0) for l in recent10)/len(recent10), 1) if recent10 else None})
@@ -1235,7 +1274,7 @@ async def run_analysis(selected_date: str = None, force: bool = False) -> Dict:
         for player in rosters.get(game['away_id'], []):
             pid, pname = player['id'], player['name']
             has_any_line = any((_nn(pname), s) in odds_lookup for s in STAT_CONFIG)
-            if not has_any_line:
+            if not historical_replay and not has_any_line:
                 continue
             all_logs_player = logs_by_player.get(pid, [])
             # Last 10 games vs THIS opponent at THIS location (AWAY).
@@ -1348,36 +1387,51 @@ async def run_analysis(selected_date: str = None, force: bool = False) -> Dict:
                 pname,pid = player['name'],player['id']
                 for sk,sc in STAT_CONFIG.items():
                     ob = odds_lookup.get((_nn(pname),sk),{})
-                    if not ob or ob.get('line') is None: continue
-                    line = float(ob['line'])
+                    if historical_replay:
+                        line = None
+                    else:
+                        if not ob or ob.get('line') is None: continue
+                        line = float(ob['line'])
                     dk_ob = dk_lookup.get((_nn(pname),sk),{})
-                    dk_over = dk_ob.get('over_odds','')
-                    dk_under = dk_ob.get('under_odds','')
+                    dk_over = None if historical_replay else dk_ob.get('over_odds','')
+                    dk_under = None if historical_replay else dk_ob.get('under_odds','')
                     # Same trade-aware filter: only games with current team vs today's opp at this location
                     cur_team = tid_to_abbr.get(tid, '')
                     opp_logs = [l for l in logs_by_player.get(pid, [])
                                 if l['opp'] == opp_id and l['location'] == loc and l.get('player_team') == cur_team][:10]
                     if not opp_logs:
+                        if historical_replay:
+                            continue
                         props_nopick.append({'player':pname,'stat':sk,'stat_label':sc['label'],'emoji':sc['emoji'],'side':side,'opp_name':opp_name,'line':line,'avg':None,'games':0,'history':'—','gap':None,'pick':None,'fd_odds':ob.get('odds',''),'dk_over_odds':dk_over,'dk_under_odds':dk_under,'matchup':matchup_str})
                         continue
                     vals = [float(l[sk]) for l in opp_logs]
                     avg = round(sum(vals)/len(vals),1)
-                    gap = round(avg-line,1)
-                    pick = 'OVER' if avg>line else ('UNDER' if avg<line else None)
-                    entry = {'player':pname,'stat':sk,'stat_label':sc['label'],'emoji':sc['emoji'],'side':side,'opp_name':opp_name,'line':line,'avg':avg,'games':len(vals),'history':','.join(str(int(v)) for v in vals[:8]),'gap':gap,'pick':pick,'fd_odds':ob.get('odds',''),'dk_over_odds':dk_over,'dk_under_odds':dk_under,'matchup':matchup_str}
+                    replay = find_best_threshold(vals, sc['thresholds']) if historical_replay else None
+                    gap = round(avg-line,1) if line is not None else None
+                    pick = ('OVER' if replay else
+                            ('OVER' if avg>line else ('UNDER' if avg<line else None)))
+                    entry = {'player':pname,'stat':sk,'stat_label':sc['label'],'emoji':sc['emoji'],'side':side,'opp_name':opp_name,'line':line,'replay_threshold':replay.get('threshold') if replay else None,'avg':avg,'games':len(vals),'history':','.join(str(int(v)) for v in vals[:8]),'gap':gap,'pick':pick,'fd_odds':None if historical_replay else ob.get('odds',''),'dk_over_odds':dk_over,'dk_under_odds':dk_under,'matchup':matchup_str,'historical_replay':historical_replay}
                     (props_picks if pick else props_nopick).append(entry)
     props_picks.sort(key=lambda x:abs(x.get('gap') or 0),reverse=True)
     log.append(f"Props: {len(props_picks)} picks")
-    result = {'date':today_str,'picks':top_picks,'all_picks':picks,'games':games,'log':log,'total':len(picks),'odds_loaded':odds_loaded,'props_picks':props_picks,'props_nopick':props_nopick}
+    result = {'date':today_str,'picks':top_picks,'all_picks':picks,'games':games,'log':log,'total':len(picks),'odds_loaded':odds_loaded,'historical_replay':historical_replay,'props_picks':props_picks,'props_nopick':props_nopick}
     _cache.update(result)
     # Only cache if we actually got prop lines from the Odds API.
     # Otherwise the empty result gets pinned for 6h even after sportsbooks post lines.
-    has_lines = bool(props_picks) or bool(props_nopick)
+    has_lines = historical_replay or bool(props_picks) or bool(props_nopick)
     if has_lines:
         _cache_set("nba", today_str, result)
     else:
         print(f"[Cache] SKIP write — no prop lines yet for {today_str} (will retry on next request)")
-    _nba_trk_bg(today_str, result)
+    if not historical_replay:
+        _nba_trk_bg(today_str, result)
+    # Coach snapshots are deliberately separate from the normal NBA ledger.
+    # Only a complete, server-generated board may enter the Coach record.
+    try:
+        if not historical_replay:
+            _nba_coach_capture_pregame(today_str, result)
+    except Exception as _ce:
+        print(f"[nba_coach_track] capture failed: {_ce}")
     try:
         from replit_push import push_picks_to_replit
         # Bake the picks into the page HTML so the Replit hub can serve an
@@ -1925,7 +1979,7 @@ function renderTop10Cards(picks){
         var _gapTxt=_gap==null?'':_gap>0?(' +'+_gap+' above line'):(' '+_gap+' below line');
         lines.push('<div style="font-size:.78rem;color:#888;margin-bottom:4px;padding:4px 7px;background:rgba(255,255,255,.03);border-radius:5px">L10 all-opp avg: <strong style="color:#fff">'+s.recent_avg+'</strong>'+'<span style="color:'+_gapClr+';font-weight:700">'+_gapTxt+'</span></div>');
       }
-      if(s.threshold) lines.push(`<div style="font-size:.8rem;color:#aaa;margin-bottom:8px">pattern: hit <strong style="color:#FDB827">${s.threshold}+</strong> ${s.stat_label} in <strong style="color:#fff">${s.hits}/${s.games}</strong> vs ${p.opp} ${(p.location||'').toLowerCase()}</div>`);
+      if(s.threshold) lines.push(`<div style="font-size:.8rem;color:#aaa;margin-bottom:8px">${s.historical_replay?'<strong style="color:#a5b4fc">MODEL REPLAY THRESHOLD</strong>':'pattern:'} hit <strong style="color:#FDB827">${s.threshold}+</strong> ${s.stat_label} in <strong style="color:#fff">${s.hits}/${s.games}</strong> vs ${p.opp} ${(p.location||'').toLowerCase()}</div>`);
       // Odds — show Over/Under odds whenever available (DK preferred, FD fallback)
       var _ov=s.dk_over_odds||s.fd_odds||'';
       var _un=s.dk_under_odds||'';
@@ -2129,6 +2183,7 @@ function _parlayPool(){
   // key on c.player alone.
   var byKey={};
   (allPicksData||[]).forEach(function(p){
+    if(p.historical_replay) return; // replay rows are deliberately unpriced
     _legCandidates(p).forEach(function(c){
       if(c.mpg!=null && c.mpg<_MIN_MPG) return;
       if(!_floorOk(c.odds)) return;
@@ -2316,6 +2371,7 @@ async function runPicks(force=false){
     const r=await fetch('/run?_tok='+encodeURIComponent(_nbaTok)+'&admin='+encodeURIComponent(_adm),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({date:selectedDate,force:!!force})});
     if(!r.ok)throw new Error('Server error '+r.status);
     const data=await r.json();
+    window.__NBA_HISTORICAL_REPLAY__=!!data.historical_replay;
     renderGames(data.games);
     if(data.no_games){
       document.getElementById('filterBar').style.display='none';
@@ -2328,7 +2384,7 @@ async function runPicks(force=false){
     activeTopStat='ALL';activeAllStat='ALL';
     const log=data.log||[];
     if(!top10.length && !allPicksData.length){
-      document.getElementById('content').innerHTML=`<div class="msg-card"><span class="ico"></span><h2>No Qualifying Patterns</h2><p>No 70%+ patterns for today matchups.</p></div><div class="log-box">${log.join('<br>')}</div>`;
+      document.getElementById('content').innerHTML=`<div class="msg-card"><span class="ico"></span><h2>${data.historical_replay?'No Replay Patterns':'No Qualifying Patterns'}</h2><p>${data.historical_replay?'No ESPN model thresholds cleared the replay floor for these matchups.':'No 70%+ patterns for today matchups; sportsbook lines may not be posted yet.'}</p></div><div class="log-box">${log.join('<br>')}</div>`;
       renderPropsSection(data.props_picks, data.props_nopick);
       return;
     }
@@ -2370,6 +2426,7 @@ async function getPicks(){
     if(r.status===404){ document.getElementById('content').innerHTML=`<div class="msg-card"><span class="ico"></span><h2>Picks Not Ready</h2><p>Today's picks aren't ready yet - check back a little later.</p></div>`; return; }
     if(!r.ok)throw new Error('Server error '+r.status);
     const data=await r.json();
+    window.__NBA_HISTORICAL_REPLAY__=!!data.historical_replay;
     renderGames(data.games);
     if(data.no_games){
       document.getElementById('filterBar').style.display='none';
@@ -2432,7 +2489,9 @@ function propsSelectGame(matchup) {
   window.__PROPS_PLAYERS__={};
   var players=Object.keys(byGame[matchup]);
   players.sort(function(a,b){ return a.split(' ').pop().localeCompare(b.split(' ').pop()); });
-  if(hint) hint.textContent=players.length+' players with prop lines';
+  if(hint) hint.textContent=window.__NBA_HISTORICAL_REPLAY__
+    ? players.length+' players · model replay thresholds (no sportsbook lines/prices)'
+    : players.length+' players with prop lines';
   var chips=players.map(function(name,idx){
     window.__PROPS_PLAYERS__[idx]=name;
     var ent=byGame[matchup][name]; var first=ent[0]||{};
@@ -2888,6 +2947,92 @@ document.addEventListener('DOMContentLoaded',function(){
 </body>
 </html>"""
 
+# Kept outside MAIN_HTML so this large non-raw Python HTML string cannot be
+# accidentally damaged by Coach JavaScript template braces or backslashes.
+NBA_COACH_HTML = r"""
+<section id="nba-coach" class="card" style="max-width:1200px;margin:28px auto 20px;border-color:#312e81">
+  <h2 style="color:#a5b4fc;font-family:'Playfair Display',serif">🏀 NBA Coach Edge AI</h2>
+  <p style="color:#94a3b8;font-size:.82rem">Separate research board. Standard results use their exact loaded line/side/price; alternate results come only from the isolated alternate cache.</p>
+  <div style="display:flex;gap:8px;flex-wrap:wrap;margin:14px 0">
+    <button class="filter-btn" onclick="nbaCoachPreset('safest')">Safest bets</button>
+    <button class="filter-btn" onclick="nbaCoachPreset('positive edge')">Positive Coach Edge</button>
+    <button class="filter-btn" onclick="nbaCoachPreset('top points')">Top Points</button>
+    <button class="filter-btn" onclick="nbaCoachPreset('top rebounds')">Top Rebounds</button>
+    <button class="filter-btn" onclick="nbaCoachPreset('top assists')">Top Assists</button>
+    <button class="filter-btn" onclick="nbaCoachPreset('top 3-pointers')">Top 3-Pointers</button>
+    <button class="filter-btn" onclick="nbaCoachPreset('top pts+reb+ast')">Top PRA</button>
+    <button class="filter-btn" onclick="nbaCoachPreset('top pts+reb')">Top Pts+Reb</button>
+    <button class="filter-btn" onclick="nbaCoachPreset('top pts+ast')">Top Pts+Ast</button>
+    <button class="filter-btn" onclick="nbaCoachPreset('top reb+ast')">Top Reb+Ast</button>
+    <button class="filter-btn" onclick="nbaCoachPreset('top blocks')">Top Blocks</button>
+    <button class="filter-btn" onclick="nbaCoachPreset('top steals')">Top Steals</button>
+    <button class="filter-btn" onclick="nbaCoachPreset('alternate')">Genuine alternate lines</button>
+  </div>
+  <div style="display:flex;gap:8px;flex-wrap:wrap">
+    <input id="nbaCoachQuery" aria-label="Coach Edge search" placeholder="Player, team, category, over/under, count or odds intent" style="flex:1;min-width:240px;background:#0b1120;color:#fff;border:1px solid #334155;border-radius:8px;padding:10px">
+    <button class="btn" style="background:#4338ca;color:#fff" onclick="nbaCoachSearch()">Get Results</button>
+  </div>
+  <div id="nbaCoachMsg" role="status" style="color:#fbbf24;font-size:.78rem;margin-top:10px"></div>
+  <div id="nbaCoachResults" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:10px;margin-top:14px"></div>
+  <div style="margin-top:22px;padding-top:16px;border-top:1px solid #1e293b">
+    <h3 style="color:#c4b5fd;font-size:.95rem">Coach Track Record</h3>
+    <p style="color:#64748b;font-size:.72rem;margin:5px 0 10px">Pregame Coach presets are captured automatically. Results are loaded only when you ask for them.</p>
+    <button class="btn" style="background:#312e81;color:#fff" onclick="loadNbaCoachTrackRecord()">Get Results</button>
+    <div id="nbaCoachTrackMsg" role="status" style="color:#fbbf24;font-size:.78rem;margin-top:8px"></div>
+    <div id="nbaCoachTrackResults" style="margin-top:10px"></div>
+  </div>
+</section>
+<script>
+var __nbaCoachRows=[];
+function nbaCoachPreset(q){document.getElementById('nbaCoachQuery').value=q; nbaCoachSearch(q==='alternate'?'alternate':'all');}
+async function nbaCoachSearch(forceMode){
+  var q=document.getElementById('nbaCoachQuery').value||'', mode=forceMode||(/\balternate\b|\balt\b/i.test(q)?'alternate':'all');
+  var msg=document.getElementById('nbaCoachMsg'), box=document.getElementById('nbaCoachResults');
+  msg.textContent='Loading Coach Edge…'; box.innerHTML='';
+  var tok=localStorage.getItem('__mpa_token')||'', dp=document.getElementById('datePicker'), ds=(dp&&dp.value)||'__TODAY__';
+  try{
+    var r=await fetch('/api/nba/coach-edge?_tok='+encodeURIComponent(tok),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({date:ds,query:q,mode:mode,count:100})});
+    var d=await r.json(); if(!r.ok) throw new Error(d.detail||'Coach Edge unavailable');
+    __nbaCoachRows=d.results||[]; msg.textContent=d.message||(__nbaCoachRows.length+' positive-edge results');
+    box.innerHTML=__nbaCoachRows.map(function(x,i){return '<article tabindex="0" role="button" class="pick-card" onclick="nbaCoachDetail('+i+')" onkeydown="if(event.key===\'Enter\'||event.key===\' \'){event.preventDefault();nbaCoachDetail('+i+')}" style="cursor:pointer;border-color:#312e81">'+
+      '<div class="pick-player">'+x.player+'</div><div class="pick-team">'+(x.team||'')+' · '+x.category+(x.alternate?' · ALTERNATE':'')+'</div>'+
+      '<div style="color:#4ade80;font-weight:900;font-size:1.1rem">+'+(x.edge*100).toFixed(1)+'% edge</div>'+
+      '<div style="color:#e2e8f0;margin-top:8px">'+x.side+' '+x.line+' @ '+x.odds+'</div>'+
+      '<div style="color:#94a3b8;font-size:.72rem;margin-top:6px">Model '+(x.model_probability*100).toFixed(1)+'% · implied '+(x.implied_probability*100).toFixed(1)+'% · '+x.source+'</div></article>';}).join('');
+  }catch(e){msg.textContent=e.message;box.innerHTML='';}
+}
+function nbaCoachDetail(i){
+ var x=__nbaCoachRows[i], tok=localStorage.getItem('__mpa_token')||'', k='coach'+i, dp=document.getElementById('datePicker');
+ window.__NBA_BET_SRC__=window.__NBA_BET_SRC__||{};
+ window.__NBA_BET_SRC__[k]={name:x.player,team:x.team||'',opp:'',category:x.category,side:x.side,stat_key:x.stat,stat_label:x.category,line:x.line,odds:x.odds,date:(dp&&dp.value)||'__TODAY__'};
+ var w=window.open('','nba-coach-detail','width=440,height=650'); if(!w){return;}
+ w.document.write('<title>Coach Edge details</title><body style="background:#0b1120;color:#e2e8f0;font:15px Arial;padding:22px"><h2 style="color:#a5b4fc">'+x.player+' — '+x.category+'</h2>'+
+ '<p><b>'+x.side+' '+x.line+' @ '+x.odds+'</b><br>Source: '+x.source+'</p><p>Model probability: '+(x.model_probability*100).toFixed(1)+'%<br>Implied probability: '+(x.implied_probability*100).toFixed(1)+'%<br>Coach Edge: <b style="color:#4ade80">'+(x.edge*100).toFixed(1)+'%</b></p>'+
+ '<p>Recent average: '+x.recent_average+'<br>Game log: '+(x.game_log||[]).join(', ')+'<br>Opponent history: '+x.opponent_history+'</p><p>'+x.selection_reason+'</p>'+
+ '<button onclick="window.opener._nbaBetForm(\''+k+'\')" style="padding:10px;background:#4338ca;color:white;border:0;border-radius:8px">Open exact bet form</button></body>');
+}
+var _nbaCoachTrackData=null;
+async function loadNbaCoachTrackRecord(){
+  var msg=document.getElementById('nbaCoachTrackMsg'),box=document.getElementById('nbaCoachTrackResults');
+  if(msg) msg.textContent='Loading Coach Track Record…';
+  try{
+    var tok=localStorage.getItem('__mpa_token')||'';
+    var r=await fetch('/api/nba/coach-track-record?_tok='+encodeURIComponent(tok));
+    var d=await r.json(); if(!r.ok) throw new Error(d.detail||'Track Record unavailable');
+    _nbaCoachTrackData=d; var days=d.dates||[];
+    if(msg) msg.textContent=days.length?'Loaded '+days.length+' graded pregame slate'+(days.length===1?'':'s')+'.':'No graded Coach slates yet.';
+    if(!box) return;
+    var cats=d.by_category||[];
+    var html=cats.length?'<h4 style="color:#c4b5fd;margin:8px 0">Category summaries</h4><div style="overflow-x:auto"><table class="nba-trk-tbl"><thead><tr><th>Preset / Category</th><th>W-L</th><th>Rate</th><th>Net P/L</th><th>ROI</th></tr></thead><tbody>'+
+      cats.map(function(c){return '<tr><td>'+_nbaEsc(c.category)+'</td><td>'+c.wins+'-'+c.losses+'</td><td>'+c.rate+'%</td><td style="color:'+(c.net_pl>=0?'#4ade80':'#f87171')+'">'+(c.net_pl>=0?'+':'')+'$'+c.net_pl.toFixed(2)+'</td><td>'+c.roi+'%</td></tr>';}).join('')+'</tbody></table></div>':'';
+    days.forEach(function(day){html+='<h4 style="color:#c4b5fd;margin:16px 0 8px">'+day.date+' · '+day.wins+'W-'+day.losses+'L · '+(day.net_pl>=0?'+':'')+'$'+day.net_pl.toFixed(2)+'</h4><div style="overflow-x:auto"><table class="nba-trk-tbl"><thead><tr><th>Preset</th><th>Player</th><th>Pick</th><th>Odds</th><th>Actual</th><th>Result</th><th>P/L</th></tr></thead><tbody>'+
+      (day.detail||[]).map(function(x){return '<tr><td>'+_nbaEsc(x.preset||x.category)+'</td><td>'+_nbaEsc(x.name)+'</td><td>'+x.side+' '+x.line+'</td><td>'+x.odds+'</td><td>'+x.actual+'</td><td style="color:'+(x.result==='WIN'?'#4ade80':'#f87171')+'">'+x.result+'</td><td>'+((x.profit>=0?'+':'')+Number(x.profit||0).toFixed(2))+'</td></tr>';}).join('')+'</tbody></table></div>';});
+    box.innerHTML=html||'<p style="color:#94a3b8">No graded Coach rows yet.</p>';
+  }catch(e){if(msg)msg.textContent=e.message||'Error loading Coach Track Record';if(box)box.innerHTML='';}
+}
+</script>
+"""
+
 # ─── Bet Log Routes ───────────────────────────────────────────────────────────
 @app.get("/api/bets")
 async def nba_get_bets(request: Request, token: str = "", admin: str = "", settle: bool = True):
@@ -2990,6 +3135,295 @@ async def nba_bets_summary(request: Request, token: str = "", admin: str = ""):
         bets = list(data.get(key, []))
     return {"sport": "NBA", "summary": _nba_summarize_bets(bets)}
 
+# ─── NBA Coach Edge (isolated research surface) ───────────────────────────────
+# This deliberately consumes the already loaded standard board and the dedicated
+# alternate cache only.  It never writes to picks, bets, parlays, locks, or the
+# historical NBA ledger.
+def _nba_coach_implied(odds):
+    try:
+        o = float(str(odds).replace("+", ""))
+        if o < -1000:
+            return None
+        return round((100.0 / (o + 100.0) if o >= 0 else abs(o) / (abs(o) + 100.0)), 5)
+    except Exception:
+        return None
+
+def _nba_coach_prob(row, side, line):
+    """Bounded empirical probability from the available H/A opponent log."""
+    raw = row.get("history") or ""
+    vals = []
+    for x in str(raw).split(","):
+        try: vals.append(float(x))
+        except Exception: pass
+    if not vals:
+        # Props with no opponent log are not eligible; do not manufacture a prior.
+        return None, []
+    hits = sum(v > line if side == "OVER" else v < line for v in vals)
+    # Laplace smoothing prevents a tiny 1/1 sample displaying 100%, while retaining
+    # the app's empirical signal.  The bound is explicit and deterministic.
+    prob = (hits + 1.0) / (len(vals) + 2.0)
+    return max(0.01, min(0.99, prob)), vals
+
+def _nba_coach_source(row):
+    # Standard rows currently do not preserve a bookmaker identity. Never infer
+    # DraftKings (or any other book) from the generic Odds API feed.
+    return row.get("bookmaker_label") or row.get("bookmaker") or "Odds API (bookmaker not retained)"
+
+def _nba_coach_rows(standard, alternate, query="", mode="all", count=100):
+    q = (query or "").lower().strip()
+    cat_terms = {k.lower(): k for k in STAT_CONFIG}
+    cat_terms.update({v["label"].lower(): k for k, v in STAT_CONFIG.items()})
+    wanted_cat = next((v for k, v in cat_terms.items() if k in q), None)
+    wanted_side = "UNDER" if re.search(r"\bunder\b|\bless\b", q) else ("OVER" if re.search(r"\bover\b|\bmore\b", q) else None)
+    intent_only = bool(q) and not wanted_cat and not wanted_side and all(
+        t in {"safest","bets","positive","edge","top","pick","picks","coach","alternate","alt","genuine","lines"}
+        for t in q.split())
+    wanted_name = re.sub(r"\b(over|under|more|less|safest|edge|alternate|alt|coach|pick|top)\b", " ", q)
+    def make(src, is_alt):
+        out = []
+        for r in src or []:
+            stat = r.get("stat") or r.get("stat_key")
+            if stat not in STAT_CONFIG: continue
+            name = r.get("player") or r.get("name") or ""
+            if wanted_cat and stat != wanted_cat: continue
+            searchable = (name + " " + str(r.get("team","")) + " " + str(r.get("matchup","")) +
+                          " " + str(r.get("opp_name","")) + " " + STAT_CONFIG[stat]["label"]).lower()
+            if q and not any(tok in searchable for tok in q.split() if len(tok)>2 and tok not in
+                             {"safest","bets","positive","edge","top","pick","picks","coach","alternate","alt","genuine","lines"}):
+                # A category/side-only query is allowed; otherwise require a token.
+                if not wanted_cat and not wanted_side and not intent_only: continue
+            line = r.get("line") if is_alt else (r.get("dk_line") if r.get("dk_line") is not None else r.get("line"))
+            if line is None: continue
+            sides = [wanted_side] if wanted_side else ["OVER", "UNDER"]
+            for side in sides:
+                odds = r.get("over_odds") if side == "OVER" else r.get("under_odds")
+                if odds in (None, ""): odds = r.get("odds") if side == "OVER" else None
+                implied = _nba_coach_implied(odds)
+                if implied is None: continue
+                signal = r
+                if is_alt:
+                    signal = next((x for x in standard if (x.get("player") or "").lower() == name.lower() and (x.get("stat") or "") == stat), r)
+                model, vals = _nba_coach_prob(signal, side, float(line))
+                if model is None: continue
+                edge = model - implied
+                if edge <= 0: continue
+                out.append({"player":name,"team":r.get("team") or signal.get("team",""),"stat":stat,
+                    "category":STAT_CONFIG[stat]["label"],"side":side,"line":line,"odds":odds,
+                    "model_probability":round(model,5),"implied_probability":implied,
+                    "edge":round(edge,5),"recent_average":round(sum(vals[-10:])/len(vals[-10:]),1),
+                    "game_log":vals[-10:],"opponent_history":signal.get("history") or "—",
+                    "source":_nba_coach_source(r),"alternate":bool(is_alt),
+                    "selection_reason":"Positive Coach Edge: empirical H/A opponent log exceeds American-odds implied probability."})
+        return out
+    rows = make(alternate if mode == "alternate" else standard, mode == "alternate")
+    if mode == "all": rows += make(alternate, True)
+    rows.sort(key=lambda x:x["edge"], reverse=True)
+    return rows[:max(1, min(int(count or 100), 200))]
+
+@app.post("/api/nba/coach-edge")
+async def nba_coach_edge(request: Request):
+    if not get_user(request):
+        from fastapi import HTTPException
+        raise HTTPException(status_code=401, detail="Subscription required — please log in via moneypicksarena.com")
+    body = await request.json()
+    ds = str(body.get("date") or date.today().isoformat())
+    mode = str(body.get("mode") or "all").lower()
+    if mode not in ("all", "standard", "alternate"): mode = "all"
+    standard = _cache_get("nba", ds)
+    if not standard:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="Standard NBA result data is unavailable; run or load NBA picks first.")
+    alternate_doc = _cache_get("nba_alternates", ds) or {}
+    alternate = alternate_doc.get("props") if isinstance(alternate_doc, dict) else []
+    if mode == "alternate" and not alternate:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="NBA alternate lines are unavailable for this date.")
+    standard_rows = (standard.get("props_picks") or []) + (standard.get("props_nopick") or [])
+    qcount = re.search(r"\b(?:top|show|count|first)?\s*(\d{1,3})\s*(?:picks?|results?)?\b", str(body.get("query","")), re.I)
+    requested_count = int(qcount.group(1)) if qcount else body.get("count", 100)
+    rows = _nba_coach_rows(standard_rows, alternate, body.get("query",""), mode, requested_count)
+    if not rows:
+        return {"date":ds,"results":[],"message":"No eligible positive Coach Edge results for the requested intent."}
+    return {"date":ds,"results":rows,"source":"NBA loaded standard data + separate nba_alternates cache"}
+
+# ─── Separate NBA Coach Track Record ──────────────────────────────────────────
+# This namespace is intentionally disjoint from the normal NBA ledger.  A Coach
+# row is created only by this server after a complete pregame board was built;
+# clients cannot submit custom text or odds to it.
+_NBA_COACH_APP = "nba_coach_edge"
+_NBA_COACH_SNAP_CAT = "__coach_picks__"
+_NBA_COACH_LEDGER_CAT = "__coach_ledger__"
+_NBA_COACH_DETAIL_CAT = "__coach_detail__"
+_NBA_COACH_PRESETS = (
+    ("Safest bets", "safest", "all"),
+    ("Positive Coach Edge", "positive edge", "all"),
+    ("Points", "top points", "standard"),
+    ("Rebounds", "top rebounds", "standard"),
+    ("Assists", "top assists", "standard"),
+    ("3-Pointers", "top 3-pointers", "standard"),
+    ("Pts+Reb+Ast", "top pts+reb+ast", "standard"),
+    ("Pts+Reb", "top pts+reb", "standard"),
+    ("Pts+Ast", "top pts+ast", "standard"),
+    ("Reb+Ast", "top reb+ast", "standard"),
+    ("Blocks", "top blocks", "standard"),
+    ("Steals", "top steals", "standard"),
+    ("Genuine alternate lines", "alternate", "alternate"),
+)
+_NBA_COACH_STAKE = 20.0
+
+def _nba_coach_snapshot_row(date_str):
+    rows = _nba_sb_get({"app":f"eq.{_NBA_COACH_APP}",
+                        "category":f"eq.{_NBA_COACH_SNAP_CAT}",
+                        "side":"eq.ALL","date":f"eq.{date_str}",
+                        "select":"detail","limit":"1"})
+    return (rows[0].get("detail") or {}) if rows else None
+
+def _nba_coach_tipoff_freeze(result):
+    tips = []
+    for g in (result.get("games") or []):
+        raw = g.get("tipoff")
+        if not raw:
+            return None
+        try:
+            tips.append(datetime.fromisoformat(str(raw).replace("Z","+00:00")))
+        except Exception:
+            return None
+    return min(tips) if tips else None
+
+def _nba_coach_complete_pregame(date_str, result):
+    """Reject partial/error boards and any run after the slate has started."""
+    if not isinstance(result, dict) or result.get("date") != date_str:
+        return False
+    if not result.get("games") or not result.get("odds_loaded"):
+        return False
+    if result.get("log") and any(str(x).lower().startswith("error") for x in result["log"]):
+        return False
+    freeze = _nba_coach_tipoff_freeze(result)
+    if freeze is None:
+        return False
+    now = datetime.now(freeze.tzinfo) if freeze.tzinfo else datetime.utcnow()
+    return now < freeze
+
+def _nba_coach_capture_pregame(date_str: str, result: dict):
+    """Last eligible pregame run wins; the earliest tipoff freezes the record."""
+    if not _nba_coach_complete_pregame(date_str, result):
+        return False
+    old = _nba_coach_snapshot_row(date_str)
+    if isinstance(old, dict) and old.get("frozen"):
+        return False
+    standard = (result.get("props_picks") or []) + (result.get("props_nopick") or [])
+    alt_doc = _cache_get("nba_alternates", date_str) or {}
+    alternate = alt_doc.get("props") if isinstance(alt_doc, dict) else []
+    presets = {}
+    for label, query, mode in _NBA_COACH_PRESETS:
+        source_mode = "alternate" if mode == "alternate" else ("standard" if mode == "standard" else "all")
+        got = _nba_coach_rows(standard, alternate, query, source_mode, 200)
+        # Preserve exact server-owned side/line/price, and never record invalid
+        # prices. Alternate rows must be genuine cached rows, not inferred lines.
+        clean = []
+        for p in got:
+            try:
+                o = float(str(p.get("odds")).replace("+",""))
+                line = float(p.get("line"))
+            except Exception:
+                continue
+            if o < -1000 or not line == line:
+                continue
+            clean.append({**p, "preset": label, "captured_date": date_str})
+        presets[label] = clean
+    detail = []
+    seen = set()
+    for label, items in presets.items():
+        for p in items:
+            key = (label, p.get("player","").lower(), p.get("stat"), p.get("side"), str(p.get("line")), str(p.get("odds")))
+            if key not in seen:
+                seen.add(key); detail.append(p)
+    if not detail:
+        return False
+    freeze = _nba_coach_tipoff_freeze(result)
+    doc = {"date":date_str, "captured_at":datetime.utcnow().isoformat()+"Z",
+           "freeze_at":freeze.isoformat(), "frozen":False,
+           "presets":presets, "detail":detail}
+    return _nba_sb_upsert([{"app":_NBA_COACH_APP,"date":date_str,
+        "category":_NBA_COACH_SNAP_CAT,"side":"ALL","wins":0,"losses":0,
+        "locked":False,"detail":doc}], "app,date,category,side")
+
+def _nba_coach_profit(odds, result):
+    return _nba_american_profit_trk(odds, _NBA_COACH_STAKE, result)
+
+def _nba_coach_grade_date(date_str, doc):
+    box = _nba_box_lookup(date_str)
+    if not box:
+        return None
+    detail = []
+    for p in (doc.get("detail") or []):
+        actual = (box.get((p.get("player") or "").lower().strip()) or {}).get(p.get("stat"))
+        final = (box.get((p.get("player") or "").lower().strip()) or {}).get("final")
+        result = None
+        try:
+            if final and actual is not None:
+                line = float(p["line"])
+                result = "PUSH" if actual == line else ("WIN" if (actual > line) == (p.get("side") == "OVER") else "LOSS")
+        except Exception:
+            pass
+        if result in ("WIN","LOSS"):
+            detail.append({k:p.get(k) for k in ("preset","player","team","category","stat","side","line","odds")}|{
+                "name":p.get("player",""),"result":result,"actual":actual,
+                "profit":round(_nba_coach_profit(p.get("odds"),result),2)})
+    return detail
+
+def _nba_coach_update_track_ledger():
+    today = date.today().isoformat()
+    snaps = _nba_sb_get({"app":f"eq.{_NBA_COACH_APP}","category":f"eq.{_NBA_COACH_SNAP_CAT}",
+                         "side":"eq.ALL","select":"date,detail","limit":"365"}) or []
+    for row in snaps:
+        ds, doc = row.get("date"), row.get("detail") or {}
+        if not ds or ds >= today or not isinstance(doc, dict):
+            continue
+        graded = _nba_coach_grade_date(ds, doc)
+        if graded is None:
+            continue
+        agg = {}
+        for p in graded:
+            c = agg.setdefault(p.get("preset") or p.get("category","?"), {"wins":0,"losses":0})
+            c["wins"] += p["result"]=="WIN"; c["losses"] += p["result"]=="LOSS"
+        _nba_sb_upsert([
+            {"app":_NBA_COACH_APP,"date":ds,"category":_NBA_COACH_LEDGER_CAT,"side":"ALL",
+             "wins":sum(x["wins"] for x in agg.values()),"losses":sum(x["losses"] for x in agg.values()),
+             "locked":True,"detail":agg},
+            {"app":_NBA_COACH_APP,"date":ds,"category":_NBA_COACH_DETAIL_CAT,"side":"ALL",
+             "wins":0,"losses":0,"locked":True,"detail":graded}], "app,date,category,side")
+        if isinstance(doc, dict) and not doc.get("frozen"):
+            doc["frozen"] = True
+            _nba_sb_upsert([{"app":_NBA_COACH_APP,"date":ds,"category":_NBA_COACH_SNAP_CAT,
+                "side":"ALL","wins":0,"losses":0,"locked":False,"detail":doc}], "app,date,category,side")
+
+@app.get("/api/nba/coach-track-record")
+async def nba_coach_track_record(request: Request):
+    if not get_user(request):
+        from fastapi import HTTPException
+        raise HTTPException(status_code=401, detail="Subscription required — please log in via moneypicksarena.com")
+    _nba_th.Thread(target=_nba_coach_update_track_ledger, daemon=True).start()
+    rows = _nba_sb_get({"app":f"eq.{_NBA_COACH_APP}","category":f"eq.{_NBA_COACH_DETAIL_CAT}",
+                        "locked":"eq.true","select":"date,detail","limit":"365"}) or []
+    dates, all_rows = [], []
+    for r in rows:
+        det = r.get("detail") or []
+        wins = sum(x.get("result")=="WIN" for x in det); losses = sum(x.get("result")=="LOSS" for x in det)
+        pl = round(sum(x.get("profit") or 0 for x in det),2); staked=(wins+losses)*_NBA_COACH_STAKE
+        dates.append({"date":r.get("date"),"wins":wins,"losses":losses,"net_pl":pl,
+                      "roi":round(pl/staked*100,1) if staked else 0,"detail":det})
+        all_rows.extend(det)
+    cats = {}
+    for x in all_rows:
+        c=cats.setdefault(x.get("preset") or x.get("category","?"),{"wins":0,"losses":0,"net_pl":0.0})
+        c["wins"] += x.get("result")=="WIN"; c["losses"] += x.get("result")=="LOSS"; c["net_pl"] += x.get("profit") or 0
+    summary=[]
+    for k,c in cats.items():
+        n=c["wins"]+c["losses"]; st=n*_NBA_COACH_STAKE
+        summary.append({"category":k,**c,"net_pl":round(c["net_pl"],2),"rate":round(c["wins"]/n*100,1) if n else 0,"roi":round(c["net_pl"]/st*100,1) if st else 0})
+    return {"app":_NBA_COACH_APP,"dates":sorted(dates,key=lambda x:x.get("date") or "",reverse=True),"by_category":summary,"stake":_NBA_COACH_STAKE}
+
 # ─── Routes ───────────────────────────────────────────────────────────────────
 @app.get("/api/verify-token")
 async def verify_token_nba(request: Request):
@@ -3016,6 +3450,7 @@ async def index(request: Request, admin: str = "", token: str = ""):
     is_admin = (bool(admin) and admin == os.environ.get("INTERNAL_API_TOKEN", "__none__")) or _is_admin_token(token)
     js_flag = "true" if is_admin else "false"
     html = (MAIN_HTML.replace("__TODAY__", today_iso).replace("__TOMORROW__", tomorrow_iso)
+            .replace("</body>", NBA_COACH_HTML.replace("__TODAY__", today_iso) + "</body>", 1)
             .replace("</head>", f"<script>window.IS_ADMIN = {js_flag};</script></head>", 1))
     return HTMLResponse(html)
 
