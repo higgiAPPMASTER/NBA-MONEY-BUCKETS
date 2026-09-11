@@ -3866,7 +3866,8 @@ NBA_COACH_HTML = r"""
   <div class="nba-coach-presets">
     <button class="nba-coach-preset" onclick="nbaCoachPreset('safest')">Safest bets</button>
     <button class="nba-coach-preset" onclick="nbaCoachPreset('positive edge')">Coach Edge</button>
-    <button class="nba-coach-preset" onclick="nbaCoachPreset('alternate')" style="border-color:#f59e0b;color:#fde68a">Best Alternate Edge Plays · Top 10</button>
+    <button class="nba-coach-preset" onclick="nbaCoachPreset('alternate_minus')" style="border-color:#f59e0b;color:#fde68a">Best - Alternate Plays · Top 10</button>
+    <button class="nba-coach-preset" onclick="nbaCoachPreset('alternate_plus')" style="border-color:#4ade80;color:#bbf7d0">Best + Alternate Plays · Top 10</button>
   </div>
   <div style="margin-top:16px;font-size:.75rem;font-weight:800;color:#60a5fa;border-bottom:1px solid rgba(255,255,255,.1);padding-bottom:5px;letter-spacing:.05em;text-transform:uppercase">Player Props</div>
   <div class="nba-coach-presets">
@@ -3885,7 +3886,7 @@ NBA_COACH_HTML = r"""
     <input id="nbaCoachQuery" class="nba-coach-input" aria-label="Coach Edge search" placeholder="Type a question..." onkeydown="if(event.key==='Enter')nbaCoachSearch()">
     <button class="nba-coach-send" onclick="nbaCoachSearch()">Analyze</button>
   </div>
-  <div style="color:#64748b;font-size:.65rem;line-height:1.45;margin-top:8px">Requires a loaded NBA board and genuine sportsbook prices. Safest Bets ranks qualified sides by model probability; Coach Edge equals model probability minus sportsbook-implied probability.</div>
+  <div style="color:#64748b;font-size:.65rem;line-height:1.45;margin-top:8px">Requires a loaded NBA board and genuine sportsbook prices. Safest Bets and Best - Alternate Plays rank qualifying sides by highest app probability; Coach Edge still requires positive probability edge. Best + Alternate Plays ranks positive-odds alternates by Coach Edge.</div>
   <div id="nbaCoachMsg" role="status" style="color:#fbbf24;font-size:.72rem;margin-top:10px"></div>
   <div id="nbaCoachResults" class="nba-coach-answer"></div>
   <div id="nbaCoachTrackPanel" style="display:none;margin-top:22px;padding-top:16px;border-top:1px solid #1e293b">
@@ -3903,7 +3904,8 @@ function nbaCoachPreset(q){
  var labels={
   safest:'What are the safest NBA bets?',
   'positive edge':'What are the best NBA Coach Edge plays?',
-  alternate:'What are the Best Alternate NBA Edge Plays? — Top 10',
+  alternate_minus:'What are the Best - Alternate NBA Plays? — Top 10',
+  alternate_plus:'What are the Best + Alternate NBA Plays? — Top 10',
   'top points':'What are the best Points plays?',
   'top rebounds':'What are the best Rebounds plays?',
   'top assists':'What are the best Assists plays?',
@@ -3917,11 +3919,14 @@ function nbaCoachPreset(q){
  };
  var input=document.getElementById('nbaCoachQuery');
  if(input)input.value=labels[q]||q;
- nbaCoachSearch(q==='alternate'?'alternate':'all',q);
+ nbaCoachSearch(q==='alternate_minus'?'alternate_minus':(q==='alternate_plus'?'alternate_plus':'all'),q);
 }
 async function nbaCoachSearch(forceMode,presetQuery){
   var question=document.getElementById('nbaCoachQuery').value||'';
-  var q=presetQuery||question, mode=forceMode||(/\balternate\b|\balt\b/i.test(q)?'alternate':'all');
+   var q=presetQuery||question, mode=forceMode||(
+     /best\s*[-–]\s*alternate|minus|favorite|negative\s+odds/i.test(q)?'alternate_minus':
+     (/best\s*\+\s*alternate|plus|underdog|positive\s+odds/i.test(q)?'alternate_plus':
+     (/\balternate\b|\balt\b/i.test(q)?'alternate':'all')));
   var msg=document.getElementById('nbaCoachMsg'), box=document.getElementById('nbaCoachResults');
   if(!String(question).trim()){document.getElementById('nbaCoachQuery').focus();return;}
   msg.textContent='Analyzing loaded NBA props…'; box.style.display='none';box.innerHTML='';
@@ -4214,9 +4219,10 @@ def _nba_coach_rows(standard, alternate, query="", mode="all", count=100):
     wanted_cat = next((v for k, v in cat_terms.items() if k in q), None)
     wanted_side = "UNDER" if re.search(r"\bunder\b|\bless\b", q) else ("OVER" if re.search(r"\bover\b|\bmore\b", q) else None)
     intent_only = bool(q) and not wanted_cat and not wanted_side and all(
-        t in {"safest","bets","positive","edge","top","pick","picks","coach","alternate","alt","genuine","lines"}
+        t in {"safest","bets","positive","edge","top","pick","picks","coach","alternate","alt","genuine","lines",
+              "best","minus","plus","favorite","underdog","american","odds","plays"}
         for t in q.split())
-    wanted_name = re.sub(r"\b(over|under|more|less|safest|edge|alternate|alt|coach|pick|top)\b", " ", q)
+    wanted_name = re.sub(r"\b(over|under|more|less|safest|edge|alternate|alt|coach|pick|top|best|minus|plus|favorite|underdog|american|odds|plays)\b", " ", q)
     def make(src, is_alt):
         out = []
         for r in src or []:
@@ -4225,9 +4231,10 @@ def _nba_coach_rows(standard, alternate, query="", mode="all", count=100):
             name = r.get("player") or r.get("name") or ""
             if wanted_cat and stat != wanted_cat: continue
             searchable = (name + " " + str(r.get("team","")) + " " + str(r.get("matchup","")) +
-                          " " + str(r.get("opp_name","")) + " " + STAT_CONFIG[stat]["label"]).lower()
+                           " " + str(r.get("opp_name","")) + " " + STAT_CONFIG[stat]["label"]).lower()
             if q and not any(tok in searchable for tok in q.split() if len(tok)>2 and tok not in
-                             {"safest","bets","positive","edge","top","pick","picks","coach","alternate","alt","genuine","lines"}):
+                             {"safest","bets","positive","edge","top","pick","picks","coach","alternate","alt","genuine","lines",
+                              "best","minus","plus","favorite","underdog","american","odds","plays"}):
                 # A category/side-only query is allowed; otherwise require a token.
                 if not wanted_cat and not wanted_side and not intent_only: continue
             line = r.get("line") if is_alt else (r.get("dk_line") if r.get("dk_line") is not None else r.get("line"))
@@ -4244,6 +4251,16 @@ def _nba_coach_rows(standard, alternate, query="", mode="all", count=100):
                         odds = r.get("over_odds") if side == "OVER" else r.get("under_odds")
                     if odds in (None, "") and side == "OVER":
                         odds = r.get("fd_odds") or r.get("odds")
+                try:
+                    american = float(str(odds).replace("+", ""))
+                except Exception:
+                    american = None
+                if is_alt and mode == "alternate_minus" and (
+                        american is None or american > -100 or american < -1000):
+                    continue
+                if is_alt and mode == "alternate_plus" and (
+                        american is None or american <= 0):
+                    continue
                 implied = _nba_coach_implied(odds)
                 if implied is None: continue
                 signal = r
@@ -4261,9 +4278,12 @@ def _nba_coach_rows(standard, alternate, query="", mode="all", count=100):
                     "source":_nba_coach_source(r),"alternate":bool(is_alt),
                     "selection_reason":"Positive Coach Edge: empirical H/A opponent log exceeds American-odds implied probability."})
         return out
-    rows = make(alternate if mode == "alternate" else standard, mode == "alternate")
-    if mode == "all": rows += make(alternate, True)
-    rows.sort(key=lambda x:x["edge"], reverse=True)
+    is_alt_mode = mode in ("alternate", "alternate_minus", "alternate_plus")
+    rows = make(alternate if is_alt_mode else standard, is_alt_mode)
+    if mode == "alternate_minus":
+        rows.sort(key=lambda x:(x["model_probability"], x["edge"]), reverse=True)
+    else:
+        rows.sort(key=lambda x:x["edge"], reverse=True)
     # Every Coach answer is a true Top 10 and may show a player only once.
     # Because rows are already sorted by Coach Edge, the first row retained for
     # a player is that player's strongest qualifying market/side.
@@ -4285,7 +4305,12 @@ async def nba_coach_edge(request: Request):
     body = await request.json()
     ds = str(body.get("date") or date.today().isoformat())
     mode = str(body.get("mode") or "all").lower()
-    if mode not in ("all", "standard", "alternate"): mode = "all"
+    if mode not in ("all", "standard", "alternate", "alternate_minus", "alternate_plus"): mode = "all"
+    query_text = str(body.get("query", ""))
+    if mode == "all" and re.search(r"(?:best\s*[-–]\s*alternate|minus|favorite|negative\s+odds)", query_text, re.I):
+        mode = "alternate_minus"
+    elif mode == "all" and re.search(r"(?:best\s*\+\s*alternate|plus|underdog|positive\s+odds)", query_text, re.I):
+        mode = "alternate_plus"
     standard = _cache_get("nba", ds)
     if not standard:
         from fastapi import HTTPException
@@ -4295,7 +4320,8 @@ async def nba_coach_edge(request: Request):
     # cannot remain in an unbounded "Loading" state.
     existing_alternate = _cache_get("nba_alternates", ds)
     alternate_result = None
-    if (ds < date.today().isoformat()
+    is_alt_mode = mode in ("alternate", "alternate_minus", "alternate_plus")
+    if (is_alt_mode and ds < date.today().isoformat()
             and not (isinstance(existing_alternate, dict)
                      and existing_alternate.get("historical_alternates"))):
         games_for_alt = standard.get("games") or []
@@ -4311,7 +4337,7 @@ async def nba_coach_edge(request: Request):
     else:
         alternate_doc = existing_alternate or {}
     alternate = alternate_doc.get("props") if isinstance(alternate_doc, dict) else []
-    if mode == "alternate" and not alternate:
+    if mode in ("alternate", "alternate_minus", "alternate_plus") and not alternate:
         from fastapi import HTTPException
         detail = (alternate_doc.get("error") if isinstance(alternate_doc, dict)
                   else None) or "NBA alternate lines are unavailable for this date."
@@ -4324,8 +4350,12 @@ async def nba_coach_edge(request: Request):
         response = {"date":ds,"results":[],
                     "message":"No eligible positive Coach Edge results for the requested intent."}
     else:
-        response = {"date":ds,"results":rows,
-                    "source":"NBA loaded standard data + separate nba_alternates cache"}
+        response = {
+            "date":ds,
+            "results":rows,
+            "source":("NBA separate nba_alternates cache" if is_alt_mode
+                      else "NBA loaded standard data"),
+        }
     if (alternate_result and not alternate_result.get("ok", True)
             and mode in ("all", "standard")):
         response["alternate_error"] = alternate_result.get(
