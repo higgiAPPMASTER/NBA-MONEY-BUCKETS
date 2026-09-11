@@ -101,7 +101,7 @@ HISTORICAL_ODDS_REGION = "us"
 LIVE_ODDS_REGIONS = "us,us2,ca"
 HISTORICAL_ODDS_TIMEOUT = 55
 HISTORICAL_ODDS_CONCURRENCY = 4
-HISTORICAL_REPLAY_SCHEMA = 6
+HISTORICAL_REPLAY_SCHEMA = 7
 ODDS_MARKET_MAP = {
     "player_points":                    "PTS",
     "player_rebounds":                   "REB",
@@ -1254,21 +1254,31 @@ async def _nba_historical_board(date_str: str, games: list, log: list) -> dict:
             games_out.sort(key=lambda game: str(game.get("date", "")), reverse=True)
             return pid, games_out
 
-        try:
-            limits = httpx.Limits(max_connections=40, max_keepalive_connections=36)
-            async with httpx.AsyncClient(timeout=8, limits=limits) as client:
-                loaded = await asyncio.wait_for(
-                    asyncio.gather(*[
-                        one_player(pid, client) for pid in player_ids
-                    ]), timeout=40)
-            historical_logs = dict(loaded)
+        limits = httpx.Limits(max_connections=40, max_keepalive_connections=36)
+        async with httpx.AsyncClient(timeout=8, limits=limits) as client:
+            tasks = {
+                asyncio.create_task(one_player(pid, client)): pid
+                for pid in player_ids
+            }
+            done, pending = await asyncio.wait(tasks, timeout=40)
+            for task in done:
+                try:
+                    pid, games_out = task.result()
+                    historical_logs[pid] = games_out
+                except Exception:
+                    pass
+            for task in pending:
+                task.cancel()
+            if pending:
+                await asyncio.gather(*pending, return_exceptions=True)
+        log.append(
+            f"Loaded pre-replay opponent history for "
+            f"{len(historical_logs)}/{len(player_ids)} archived players")
+        if len(historical_logs) < len(player_ids):
             log.append(
-                f"Loaded pre-replay opponent history for "
-                f"{len(historical_logs)} archived players")
-        except asyncio.TimeoutError:
-            log.append(
-                "Opponent-history lookup timed out; archived lines and final "
-                "results remain available.")
+                "The ESPN history deadline was reached; completed player "
+                "histories were kept and unfinished players were excluded "
+                "from historical picks.")
     rows = []
     for prop in archived["props"]:
         player_name = prop.get("player") or ""
@@ -1319,9 +1329,42 @@ async def _nba_historical_board(date_str: str, games: list, log: list) -> dict:
             {"d": game.get("date", ""), "v": game[prop["stat"]]}
             for game in opponent_logs
         ]
+        # Historical replay follows the same evidence rule as the sport apps:
+        # a pick must come from pre-replay history versus this opponent at this
+        # location. Sportsbook juice alone never chooses the displayed side.
+        signal = best_bet_at_line(prop["line"], values) if values else None
+        history_side = (
+            signal.get("side")
+            if signal and signal.get("conf") in ("STRONG", "LEAN")
+            and signal.get("side") in ("OVER", "UNDER")
+            else None
+        )
+        row["side"] = history_side
+        row["pick"] = history_side
+        row["pct"] = signal.get("pct") if history_side else None
+        row["hits"] = signal.get("hits") if history_side else 0
+        row["model_edge"] = bool(history_side)
+        if history_side:
+            row["fd_odds"] = (
+                prop["over_odds"] if history_side == "OVER"
+                else prop["under_odds"])
+            actual = row.get("actual")
+            row["result"] = (
+                "PUSH" if actual == prop["line"] else
+                ("WIN" if (
+                    (history_side == "OVER" and actual > prop["line"]) or
+                    (history_side == "UNDER" and actual < prop["line"])
+                ) else "LOSS")
+            ) if actual is not None else None
+        else:
+            row["fd_odds"] = None
+            row["result"] = None
         rows.append(row)
     rows.sort(key=lambda x: (_nba_hist_price_probability(x.get("fd_odds")) or 0), reverse=True)
-    by_stat = {stat: [r for r in rows if r.get("stat") == stat] for stat in STAT_CONFIG}
+    qualified_rows = [row for row in rows if row.get("pick")]
+    by_stat = {
+        stat: [r for r in qualified_rows if r.get("stat") == stat]
+        for stat in STAT_CONFIG}
     top = []
     depth = 0
     while len(top) < TOP_N:
@@ -1336,7 +1379,10 @@ async def _nba_historical_board(date_str: str, games: list, log: list) -> dict:
         if not added:
             break
         depth += 1
-    msg = f"Historical Sportsbook Replay · archived snapshot {archived.get('snapshot')} · {len(rows)} exact lines"
+    msg = (
+        f"Historical Sportsbook Replay · archived snapshot "
+        f"{archived.get('snapshot')} · {len(rows)} exact lines · "
+        f"{len(qualified_rows)} opponent-history picks")
     if box:
         msg += " · final ESPN actuals attached where available"
     log = log + [msg, "Historical replay uses archived sportsbook prices only; no pregame player-stat model edge is claimed."]
@@ -1344,7 +1390,9 @@ async def _nba_historical_board(date_str: str, games: list, log: list) -> dict:
             "log": log, "total": len(rows), "odds_loaded": bool(rows),
             "historical_replay": True, "historical_snapshot": archived.get("snapshot"),
             "historical_replay_schema": HISTORICAL_REPLAY_SCHEMA,
-            "props_picks": rows, "props_nopick": []}
+            "props_picks": qualified_rows,
+            "props_nopick": [
+                row for row in rows if not row.get("pick")]}
 
 
 def parse_stat(val):
