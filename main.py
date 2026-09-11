@@ -3943,9 +3943,11 @@ def _nba_coach_prob(row, side, line):
     return max(0.01, min(0.99, prob)), vals
 
 def _nba_coach_source(row):
-    # Standard rows currently do not preserve a bookmaker identity. Never infer
-    # DraftKings (or any other book) from the generic Odds API feed.
-    return row.get("bookmaker_label") or row.get("bookmaker") or "Odds API (bookmaker not retained)"
+    # Live rows use bookmaker_label/bookmaker; archived historical rows retain
+    # the exact sportsbook title under book. Never infer a sportsbook, but do
+    # not discard the archived identity when it is present.
+    return (row.get("bookmaker_label") or row.get("book")
+            or row.get("bookmaker") or "Odds API (bookmaker not retained)")
 
 def _nba_coach_rows(standard, alternate, query="", mode="all", count=100):
     q = (query or "").lower().strip()
