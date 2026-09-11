@@ -3710,9 +3710,9 @@ async function nbaCoachSearch(forceMode,presetQuery){
   msg.textContent='Analyzing loaded NBA props…'; box.style.display='none';box.innerHTML='';
   var tok=localStorage.getItem('__mpa_token')||'', dp=document.getElementById('datePicker'), ds=(dp&&dp.value)||'__TODAY__';
   try{
-    var r=await fetch('/api/nba/coach-edge?_tok='+encodeURIComponent(tok),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({date:ds,query:q,mode:mode,count:100})});
+    var r=await fetch('/api/nba/coach-edge?_tok='+encodeURIComponent(tok),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({date:ds,query:q,mode:mode,count:10})});
     var d=await r.json(); if(!r.ok) throw new Error(d.detail||'Coach Edge unavailable');
-    __nbaCoachRows=d.results||[]; msg.textContent='';
+    __nbaCoachRows=(d.results||[]).slice(0,10); msg.textContent='';
     var questionHtml='<div class="nba-coach-question">'+_nbaEsc(question)+'</div>';
     if(!__nbaCoachRows.length){
       box.innerHTML=questionHtml+'<div style="margin-top:11px;color:#cbd5e1;font-size:.78rem;line-height:1.5">'+_nbaEsc(d.message||'No loaded NBA prop matched that request with a genuine sportsbook price and positive Coach Edge.')+'</div>';
@@ -4004,7 +4004,18 @@ def _nba_coach_rows(standard, alternate, query="", mode="all", count=100):
     rows = make(alternate if mode == "alternate" else standard, mode == "alternate")
     if mode == "all": rows += make(alternate, True)
     rows.sort(key=lambda x:x["edge"], reverse=True)
-    return rows[:max(1, min(int(count or 100), 200))]
+    # Every Coach answer is a true Top 10 and may show a player only once.
+    # Because rows are already sorted by Coach Edge, the first row retained for
+    # a player is that player's strongest qualifying market/side.
+    unique_rows = []
+    seen_players = set()
+    for row in rows:
+        player_key = re.sub(r"[^a-z0-9]+", "", str(row.get("player") or "").lower())
+        if not player_key or player_key in seen_players:
+            continue
+        seen_players.add(player_key)
+        unique_rows.append(row)
+    return unique_rows[:max(1, min(int(count or 10), 10))]
 
 @app.post("/api/nba/coach-edge")
 async def nba_coach_edge(request: Request):
@@ -4026,7 +4037,7 @@ async def nba_coach_edge(request: Request):
         raise HTTPException(status_code=404, detail="NBA alternate lines are unavailable for this date.")
     standard_rows = (standard.get("props_picks") or []) + (standard.get("props_nopick") or [])
     qcount = re.search(r"\b(?:top|show|count|first)?\s*(\d{1,3})\s*(?:picks?|results?)?\b", str(body.get("query","")), re.I)
-    requested_count = int(qcount.group(1)) if qcount else body.get("count", 100)
+    requested_count = min(10, int(qcount.group(1))) if qcount else min(10, int(body.get("count", 10) or 10))
     rows = _nba_coach_rows(standard_rows, alternate, body.get("query",""), mode, requested_count)
     if not rows:
         return {"date":ds,"results":[],"message":"No eligible positive Coach Edge results for the requested intent."}
