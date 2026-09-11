@@ -101,7 +101,7 @@ HISTORICAL_ODDS_REGION = "us"
 LIVE_ODDS_REGIONS = "us,us2,ca"
 HISTORICAL_ODDS_TIMEOUT = 55
 HISTORICAL_ODDS_CONCURRENCY = 4
-HISTORICAL_REPLAY_SCHEMA = 4
+HISTORICAL_REPLAY_SCHEMA = 5
 ODDS_MARKET_MAP = {
     "player_points":                    "PTS",
     "player_rebounds":                   "REB",
@@ -470,7 +470,7 @@ def _nba_box_lookup_raw(date_str: str):
                         if v is not None:
                             ps[sk] = v
                     results[name] = ps
-    return results
+    return results, complete
 
 def _nba_settle_cached(bet: dict, name_stats: dict) -> bool:
     if bet.get("result") in ("WIN", "LOSS", "PUSH"):
@@ -1137,6 +1137,49 @@ async def _nba_historical_board(date_str: str, games: list, log: list) -> dict:
                 "historical_replay_schema": HISTORICAL_REPLAY_SCHEMA,
                 "props_picks": [], "props_nopick": []}
     box = _nba_box_lookup(date_str)
+    historical_logs = {}
+    if box:
+        # The archived sportsbook feed identifies players but has no statistical
+        # history. Load only seasons that ended on/before the replay context and
+        # later filter every game strictly before the selected date.
+        replay_date = datetime.strptime(date_str, "%Y-%m-%d")
+        replay_season = replay_date.year + (1 if replay_date.month >= 10 else 0)
+        replay_seasons = [replay_season - offset for offset in range(7)]
+        player_ids = sorted({
+            str(data.get("player_id"))
+            for data in box.values()
+            if data.get("player_id")
+        })
+        sem = asyncio.Semaphore(36)
+
+        async def one_player(pid, client):
+            season_results = await asyncio.gather(*[
+                get_player_gamelogs_espn(pid, season, sem, client)
+                for season in replay_seasons
+            ], return_exceptions=True)
+            games_out = [
+                game for result in season_results if isinstance(result, list)
+                for game in result
+                if str(game.get("date", ""))[:10] < date_str
+            ]
+            games_out.sort(key=lambda game: str(game.get("date", "")), reverse=True)
+            return pid, games_out
+
+        try:
+            limits = httpx.Limits(max_connections=40, max_keepalive_connections=36)
+            async with httpx.AsyncClient(timeout=8, limits=limits) as client:
+                loaded = await asyncio.wait_for(
+                    asyncio.gather(*[
+                        one_player(pid, client) for pid in player_ids
+                    ]), timeout=40)
+            historical_logs = dict(loaded)
+            log.append(
+                f"Loaded pre-replay opponent history for "
+                f"{len(historical_logs)} archived players")
+        except asyncio.TimeoutError:
+            log.append(
+                "Opponent-history lookup timed out; archived lines and final "
+                "results remain available.")
     rows = []
     for prop in archived["props"]:
         player_name = prop.get("player") or ""
@@ -1163,10 +1206,30 @@ async def _nba_historical_board(date_str: str, games: list, log: list) -> dict:
                "matchup": f"{prop.get('away','')} @ {prop.get('home','')}"}
         if row["team"] == prop.get("home_abbr"):
             row["opp"] = prop.get("away_abbr") or prop.get("away", "")
+            row["location"] = "Home"
         elif row["team"] == prop.get("away_abbr"):
             row["opp"] = prop.get("home_abbr") or prop.get("home", "")
+            row["location"] = "Away"
         else:
             row["opp"] = ""
+            row["location"] = ""
+        player_logs = historical_logs.get(str(row.get("player_id")), [])
+        opponent_logs = [
+            game for game in player_logs
+            if game.get("opp") == row["opp"]
+            and game.get("location") == row["location"]
+            and game.get("player_team") == row["team"]
+        ][:8]
+        values = [float(game[prop["stat"]]) for game in opponent_logs]
+        row["avg"] = round(sum(values) / len(values), 1) if values else None
+        row["games"] = len(values)
+        row["history"] = ",".join(
+            str(int(value)) if value.is_integer() else str(value)
+            for value in values)
+        row["glog"] = [
+            {"d": game.get("date", ""), "v": game[prop["stat"]]}
+            for game in opponent_logs
+        ]
         rows.append(row)
     rows.sort(key=lambda x: (_nba_hist_price_probability(x.get("fd_odds")) or 0), reverse=True)
     by_stat = {stat: [r for r in rows if r.get("stat") == stat] for stat in STAT_CONFIG}
@@ -1746,7 +1809,7 @@ async def run_analysis(selected_date: str = None, force: bool = False) -> Dict:
                     if not opp_logs:
                         if historical_replay:
                             continue
-                        props_nopick.append({'player':pname,'stat':sk,'stat_label':sc['label'],'emoji':sc['emoji'],'side':side,'opp_name':opp_name,'line':line,'avg':None,'games':0,'history':'—','gap':None,'pick':None,'fd_odds':ob.get('odds',''),'dk_over_odds':dk_over,'dk_under_odds':dk_under,'matchup':matchup_str})
+                        props_nopick.append({'player':pname,'player_id':pid,'stat':sk,'stat_label':sc['label'],'emoji':sc['emoji'],'team':cur_team,'side':side,'opp_name':opp_name,'line':line,'avg':None,'games':0,'history':'—','gap':None,'pick':None,'fd_odds':ob.get('odds',''),'dk_over_odds':dk_over,'dk_under_odds':dk_under,'matchup':matchup_str})
                         continue
                     vals = [float(l[sk]) for l in opp_logs]
                     avg = round(sum(vals)/len(vals),1)
@@ -1754,7 +1817,7 @@ async def run_analysis(selected_date: str = None, force: bool = False) -> Dict:
                     gap = round(avg-line,1) if line is not None else None
                     pick = ('OVER' if replay else
                             ('OVER' if avg>line else ('UNDER' if avg<line else None)))
-                    entry = {'player':pname,'stat':sk,'stat_label':sc['label'],'emoji':sc['emoji'],'side':side,'opp_name':opp_name,'line':line,'replay_threshold':replay.get('threshold') if replay else None,'avg':avg,'games':len(vals),'history':','.join(str(int(v)) for v in vals[:8]),'gap':gap,'pick':pick,'fd_odds':None if historical_replay else ob.get('odds',''),'dk_over_odds':dk_over,'dk_under_odds':dk_under,'matchup':matchup_str,'historical_replay':historical_replay}
+                    entry = {'player':pname,'player_id':pid,'stat':sk,'stat_label':sc['label'],'emoji':sc['emoji'],'team':cur_team,'side':side,'opp_name':opp_name,'line':line,'replay_threshold':replay.get('threshold') if replay else None,'avg':avg,'games':len(vals),'history':','.join(str(int(v)) for v in vals[:8]),'gap':gap,'pick':pick,'fd_odds':None if historical_replay else ob.get('odds',''),'dk_over_odds':dk_over,'dk_under_odds':dk_under,'matchup':matchup_str,'historical_replay':historical_replay}
                     (props_picks if pick else props_nopick).append(entry)
     props_picks.sort(key=lambda x:abs(x.get('gap') or 0),reverse=True)
     log.append(f"Props: {len(props_picks)} picks")
@@ -2086,6 +2149,10 @@ footer{text-align:center;padding:32px 24px;color:#4b5563;font-size:.78rem;border
   <button class="filter-btn" data-stat="REB_AST" onclick="filterStat('REB_AST')">🔗 Reb+Ast</button>
   <button class="filter-btn" data-stat="BLK" onclick="filterStat('BLK')">🛡️ Blocks</button>
   <button class="filter-btn" data-stat="STL" onclick="filterStat('STL')">🧤 Steals</button>
+  <span style="width:1px;background:#2a2a2a;margin:2px 4px"></span>
+  <button class="filter-btn active" data-top-side="ALL" onclick="filterTopSide('ALL')" style="font-size:.72rem">All</button>
+  <button class="filter-btn" data-top-side="OVER" onclick="filterTopSide('OVER')" style="font-size:.72rem;color:#4ade80">Top 10 Over</button>
+  <button class="filter-btn" data-top-side="UNDER" onclick="filterTopSide('UNDER')" style="font-size:.72rem;color:#f87171">Top 10 Under</button>
 </div>
 <div id="content"></div>
 <div id="allPicksWrap" style="display:none">
@@ -2212,7 +2279,7 @@ footer{text-align:center;padding:32px 24px;color:#4b5563;font-size:.78rem;border
 // server independently re-verifies before honoring any force refresh).
 function _nbaUnlockDates(){try{var dp=document.getElementById('datePicker');if(dp){dp.removeAttribute('min');dp.removeAttribute('max');}}catch(e){}}
 if(window.IS_ADMIN){document.body.classList.add('is-admin');_nbaUnlockDates();}else{var _at=localStorage.getItem('__mpa_token')||'';var _ak=localStorage.getItem('__mpa_admin')||'';if(_at||_ak){fetch('/api/whoami?_tok='+encodeURIComponent(_at)+'&admin='+encodeURIComponent(_ak)).then(r=>r.json()).then(d=>{if(d&&d.is_admin){window.IS_ADMIN=true;document.body.classList.add('is-admin');_nbaUnlockDates();}}).catch(function(){});}}
-let top10=[], allPicksData=[], activeTopStat='ALL', activeAllStat='ALL', sideFilter=null;
+let top10=[], allPicksData=[], activeTopStat='ALL', activeTopSide='ALL', activeAllStat='ALL', sideFilter=null;
 
 function pctClass(p){return p>=90?['pct-green','bar-green']:p>=80?['pct-yellow','bar-yellow']:['pct-orange','bar-orange']}
 function _nbaHistImplied(odds){
@@ -2256,9 +2323,29 @@ function rankClass(i){return i===0?'rank-1':i===1?'rank-2':i===2?'rank-3':'rank-
 function filterStat(stat){
   activeTopStat=stat;
   document.querySelectorAll('#filterBar .filter-btn[data-stat]').forEach(b=>b.classList.toggle('active',b.dataset.stat===stat));
-  const source=(window.__NBA_HISTORICAL_REPLAY__&&stat!=='ALL')
-    ? allPicksData.filter(p=>p.stat===stat).slice(0,12)
-    : (stat==='ALL'?top10:top10.filter(p=>p.stat===stat));
+  renderTopCategory();
+}
+
+function filterTopSide(side){
+  activeTopSide=side;
+  document.querySelectorAll('#filterBar .filter-btn[data-top-side]').forEach(b=>b.classList.toggle('active',b.dataset.topSide===side));
+  renderTopCategory();
+}
+
+function _nbaTopSideOf(p){
+  return p&&p.historical_replay&&p.side?p.side:_nbaPickVerdict(p);
+}
+
+function renderTopCategory(){
+  let source;
+  if(activeTopStat==='ALL'&&activeTopSide==='ALL'){
+    source=top10;
+  }else{
+    source=allPicksData.filter(p=>
+      (activeTopStat==='ALL'||p.stat===activeTopStat)&&
+      (activeTopSide==='ALL'||_nbaTopSideOf(p)===activeTopSide)
+    ).slice(0,activeTopSide==='ALL'?12:10);
+  }
   renderTop10Cards(source);
 }
 
@@ -2303,7 +2390,10 @@ function renderTop10Cards(picks){
   const dirColor=d=>d==='OVER'?'#4ade80':d==='UNDER'?'#f87171':'#9ca3af';
   const dirBg=d=>d==='OVER'?'rgba(74,222,128,.14)':d==='UNDER'?'rgba(239,68,68,.14)':'rgba(156,163,175,.1)';
   const _statTitle={PTS:'Points',REB:'Rebounds',AST:'Assists',FG3M:'3-Pointers',PRA:'Pts+Reb+Ast',PTS_REB:'Pts+Reb',PTS_AST:'Pts+Ast',REB_AST:'Reb+Ast',BLK:'Blocks',STL:'Steals'};
-  const _boardTitle=activeTopStat==='ALL'?'Top Picks Today':`${_statTitle[activeTopStat]||activeTopStat} Picks`;
+  const _catName=activeTopStat==='ALL'?'All Stats':(_statTitle[activeTopStat]||activeTopStat);
+  const _boardTitle=activeTopSide==='ALL'
+    ? (activeTopStat==='ALL'?'Top Picks Today':`${_catName} Picks`)
+    : `${_catName} · Top 10 ${activeTopSide==='OVER'?'Over':'Under'}`;
   let html=`<div class="section-hdr"><div class="section-title">${_boardTitle}</div><span class="count-pill">${order.length} player${order.length!==1?'s':''}</span></div><div class="picks-grid">`;
   order.forEach((pname,i)=>{
     // Only show the single best pick per player card (highest-ranked, since
@@ -2773,7 +2863,8 @@ async function runPicks(force=false){
     }
     top10=data.picks||[];
     allPicksData=data.all_picks||[];
-    activeTopStat='ALL';activeAllStat='ALL';
+    activeTopStat='ALL';activeTopSide='ALL';activeAllStat='ALL';
+    document.querySelectorAll('#filterBar .filter-btn[data-top-side]').forEach(b=>b.classList.toggle('active',b.dataset.topSide==='ALL'));
     const log=data.log||[];
     if(!top10.length && !allPicksData.length){
       document.getElementById('content').innerHTML=`<div class="msg-card"><span class="ico"></span><h2>${data.historical_replay?'Historical Replay Unavailable':'No Qualifying Picks'}</h2><p>${data.historical_replay?(log[log.length-1]||'No complete archived player-prop slate was available.'):'No 70%+ picks for today matchups; sportsbook lines may not be posted yet.'}</p></div><div class="log-box">${log.join('<br>')}</div>`;
@@ -2829,7 +2920,8 @@ async function getPicks(){
     }
     top10=data.picks||[];
     allPicksData=data.all_picks||[];
-    activeTopStat='ALL';activeAllStat='ALL';
+    activeTopStat='ALL';activeTopSide='ALL';activeAllStat='ALL';
+    document.querySelectorAll('#filterBar .filter-btn[data-top-side]').forEach(b=>b.classList.toggle('active',b.dataset.topSide==='ALL'));
     if(top10.length){
       document.getElementById('filterBar').style.display='flex';
       renderTop10Cards(top10);
@@ -2893,13 +2985,15 @@ function propsSelectGame(matchup) {
     window.__PROPS_PLAYERS__[idx]=name;
     var ent=byGame[matchup][name]; var first=ent[0]||{};
     var side=first.side||''; var opp=first.opp_name||''; var cnt=ent.length;
+    var photo=first.headshot||(first.player_id?'https://a.espncdn.com/i/headshots/nba/players/full/'+first.player_id+'.png':'');
     var sb=side==='HOME'?'rgba(253,184,39,.15)':'rgba(99,102,241,.15)';
     var sc=side==='HOME'?'#fbbf24':'#818cf8';
-    return '<div class="props-player-chip" onclick="openPropsPlayer('+idx+')">' +
-      '<div style="font-weight:800;color:#fff;font-size:.88rem;font-family:Playfair Display,serif">'+name+'</div>' +
+    return '<div class="props-player-chip" onclick="openPropsPlayer('+idx+')" style="display:flex;align-items:center;gap:8px">' +
+      (photo?'<img src="'+photo+'" alt="'+name+'" style="width:36px;height:36px;border-radius:50%;object-fit:cover;object-position:top;background:#172554" onerror="this.style.display=\\'none\\'"/>':'') +
+      '<div><div style="font-weight:800;color:#fff;font-size:.88rem;font-family:Playfair Display,serif">'+name+'</div>' +
       '<div style="font-size:.7rem;color:#888;margin-top:3px">' +
         '<span style="background:'+sb+';color:'+sc+';padding:1px 5px;border-radius:3px;font-weight:700;margin-right:4px">'+side+'</span>' +
-        'vs '+opp+' &middot; '+cnt+' props</div>' +
+        'vs '+opp+' &middot; '+cnt+' props</div></div>' +
     '</div>';
   }).join('');
   plist.innerHTML='<div style="display:flex;flex-wrap:wrap;gap:8px;padding:4px 0 12px">'+chips+'</div>';
@@ -2916,7 +3010,8 @@ function openPropsPlayer(idx){
   var entries=(byGame[matchup]||{})[name]; if(!entries||!entries.length) return;
   var sigMap=window.__PROPS_SIG__||{};
   var esc=function(s){ return String(s==null?'':s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];}); };
-  var first=entries[0]||{}; var side=first.side||''; var opp=first.opp_name||'';
+  var first=entries[0]||{}; var side=first.side||''; var opp=first.opp_name||first.opp||'';
+  var playerPhoto=first.headshot||(first.player_id?'https://a.espncdn.com/i/headshots/nba/players/full/'+first.player_id+'.png':'');
   var rows=entries.map(function(p){
     var sig=sigMap[name+'|'+p.stat]||{};
     var isO=p.pick==='OVER', isU=p.pick==='UNDER';
@@ -2971,9 +3066,12 @@ function openPropsPlayer(idx){
   ov.innerHTML=
     '<div style="background:#101010;border:1px solid #2a2a2a;border-radius:14px;max-width:820px;width:100%;max-height:86vh;overflow:auto;box-shadow:0 20px 60px rgba(0,0,0,.6)">' +
       '<div style="background:linear-gradient(135deg,#1e3a5f,#0a1a2e);padding:14px 18px;border-bottom:2px solid #FDB827;display:flex;justify-content:space-between;align-items:flex-start;position:sticky;top:0;z-index:1">' +
-        '<div>' +
+        '<div style="display:flex;align-items:center;gap:12px">' +
+          (playerPhoto?'<img src="'+playerPhoto+'" alt="'+esc(name)+'" style="width:54px;height:54px;border-radius:50%;object-fit:cover;object-position:top;background:#172554;border:1px solid #FDB827" onerror="this.style.display=\\'none\\'"/>':'') +
+          '<div>' +
           '<div style="color:#fff;font-weight:900;font-size:1.05rem;font-family:Playfair Display,serif">'+esc(name)+'</div>' +
           '<div style="color:#FDB827;font-size:.76rem;font-weight:700;margin-top:3px">'+esc(side)+' &middot; vs '+esc(opp)+' &middot; '+esc(matchup)+'</div>' +
+          '</div>' +
         '</div>' +
         '<span onclick="closePropsModal()" style="color:#888;font-size:1.5rem;line-height:1;cursor:pointer;padding:0 4px">&times;</span>' +
       '</div>' +
@@ -3009,7 +3107,8 @@ document.addEventListener('DOMContentLoaded', function(){
     if (data.games) renderGames(data.games);
     top10        = data.picks || [];
     allPicksData = data.all_picks || [];
-    activeTopStat = 'ALL'; activeAllStat = 'ALL';
+    activeTopStat = 'ALL'; activeTopSide = 'ALL'; activeAllStat = 'ALL';
+    document.querySelectorAll('#filterBar .filter-btn[data-top-side]').forEach(b=>b.classList.toggle('active',b.dataset.topSide==='ALL'));
     if (top10.length) {
       var fb = document.getElementById('filterBar');
       if (fb) fb.style.display = 'flex';
@@ -3595,8 +3694,16 @@ def _nba_coach_rows(standard, alternate, query="", mode="all", count=100):
             if line is None: continue
             sides = [wanted_side] if wanted_side else ["OVER", "UNDER"]
             for side in sides:
-                odds = r.get("over_odds") if side == "OVER" else r.get("under_odds")
-                if odds in (None, ""): odds = r.get("odds") if side == "OVER" else None
+                if is_alt:
+                    odds = r.get("over_odds") if side == "OVER" else r.get("under_odds")
+                else:
+                    odds = (
+                        r.get("dk_over_odds") if side == "OVER"
+                        else r.get("dk_under_odds"))
+                    if odds in (None, ""):
+                        odds = r.get("over_odds") if side == "OVER" else r.get("under_odds")
+                    if odds in (None, "") and side == "OVER":
+                        odds = r.get("fd_odds") or r.get("odds")
                 implied = _nba_coach_implied(odds)
                 if implied is None: continue
                 signal = r
