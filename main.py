@@ -101,7 +101,7 @@ HISTORICAL_ODDS_REGION = "us"
 LIVE_ODDS_REGIONS = "us,us2,ca"
 HISTORICAL_ODDS_TIMEOUT = 55
 HISTORICAL_ODDS_CONCURRENCY = 4
-HISTORICAL_REPLAY_SCHEMA = 7
+HISTORICAL_REPLAY_SCHEMA = 8
 ODDS_MARKET_MAP = {
     "player_points":                    "PTS",
     "player_rebounds":                   "REB",
@@ -1014,8 +1014,13 @@ def _nba_hist_team_key(name: str) -> str:
 
 
 def _nba_hist_props(payload: dict, game: dict) -> list:
-    """Normalize archived standard markets without creating lines or prices."""
-    best = {}
+    """Select a consensus standard line, retaining one exact book quote.
+
+    Each book gets one vote: its most balanced two-sided standard quote.
+    Consensus breaks first, then price balance; juice never earns preference.
+    Alternate-market keys are deliberately absent from ODDS_MARKET_MAP.
+    """
+    candidates = {}
     for book in payload.get("bookmakers", []):
         for market in book.get("markets", []):
             stat = ODDS_MARKET_MAP.get(market.get("key"))
@@ -1050,13 +1055,35 @@ def _nba_hist_props(payload: dict, game: dict) -> list:
                             "home": game.get("home_name", ""), "away": game.get("away_name", ""),
                              "home_abbr": game.get("home", ""), "away_abbr": game.get("away", ""),
                              "book": book.get("title") or book.get("key") or "Archived sportsbook",
+                             "book_key": book.get("key") or book.get("title") or "Archived sportsbook",
+                             "quote_updated": market.get("last_update") or book.get("last_update"),
                              "source_market": market.get("key"), "historical_replay": True}
-                # Retain the strongest implied side actually available across
-                # every configured US sportsbook, never a fabricated price.
-                old = best.get(ident)
-                if old is None or (_nba_hist_price_probability(candidate["odds"]) or 0) > (_nba_hist_price_probability(old["odds"]) or 0):
-                    best[ident] = candidate
-    return list(best.values())
+                candidates.setdefault(ident, []).append(candidate)
+
+    def balance_key(quote):
+        over = _nba_hist_price_probability(quote["over_odds"])
+        under = _nba_hist_price_probability(quote["under_odds"])
+        # Normalize out the book's margin before comparing price balance.
+        return (abs(over / (over + under) - 0.5),
+                abs(over + under - 1), quote["book_key"], quote["line"])
+
+    selected = []
+    for quotes in candidates.values():
+        per_book = {}
+        for quote in quotes:
+            old = per_book.get(quote["book_key"])
+            if old is None or balance_key(quote) < balance_key(old):
+                per_book[quote["book_key"]] = quote
+        votes = {}
+        for quote in per_book.values():
+            votes[quote["line"]] = votes.get(quote["line"], 0) + 1
+        chosen = min(per_book.values(), key=lambda q: (
+            -votes[q["line"]], *balance_key(q)))
+        chosen["line_selection"] = "standard_book_consensus"
+        chosen["line_book_count"] = votes[chosen["line"]]
+        chosen["available_book_count"] = len(per_book)
+        selected.append(chosen)
+    return selected
 
 
 async def _nba_historical_odds_uncached(date_str: str, games: list):
@@ -1360,7 +1387,9 @@ async def _nba_historical_board(date_str: str, games: list, log: list) -> dict:
             row["fd_odds"] = None
             row["result"] = None
         rows.append(row)
-    rows.sort(key=lambda x: (_nba_hist_price_probability(x.get("fd_odds")) or 0), reverse=True)
+    rows.sort(key=lambda x: (
+        -(x.get("pct") or 0), -(x.get("games") or 0),
+        x.get("player", ""), x.get("stat", "")))
     qualified_rows = [row for row in rows if row.get("pick")]
     by_stat = {
         stat: [r for r in qualified_rows if r.get("stat") == stat]
@@ -1385,7 +1414,10 @@ async def _nba_historical_board(date_str: str, games: list, log: list) -> dict:
         f"{len(qualified_rows)} opponent-history picks")
     if box:
         msg += " · final ESPN actuals attached where available"
-    log = log + [msg, "Historical replay uses archived sportsbook prices only; no pregame player-stat model edge is claimed."]
+    log = log + [msg,
+        "Standard lines use book consensus with balanced-price tie-breaking; alternates stay out of the main boards.",
+        "Picks rank by pre-game opponent/home-away hit rate, then sample size; sportsbook juice does not rank picks.",
+        "Historical replay uses archived sportsbook prices only; no pregame player-stat model edge is claimed."]
     return {"date": date_str, "picks": top, "all_picks": rows, "games": games,
             "log": log, "total": len(rows), "odds_loaded": bool(rows),
             "historical_replay": True, "historical_snapshot": archived.get("snapshot"),
