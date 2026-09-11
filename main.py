@@ -101,7 +101,8 @@ HISTORICAL_ODDS_REGION = "us"
 LIVE_ODDS_REGIONS = "us,us2,ca"
 HISTORICAL_ODDS_TIMEOUT = 55
 HISTORICAL_ODDS_CONCURRENCY = 4
-HISTORICAL_REPLAY_SCHEMA = 9
+HISTORICAL_REPLAY_SCHEMA = 10
+HISTORICAL_ALT_MARKET_SCHEMA = 1
 ODDS_MARKET_MAP = {
     "player_points":                    "PTS",
     "player_rebounds":                   "REB",
@@ -139,11 +140,18 @@ _cache: Dict[str, Any] = {}  # kept for compat
 # ── File-based Picks Cache ────────────────────────────────────────────────────
 import pathlib
 _CACHE_DIR = pathlib.Path("/tmp/mpa_cache")
+# Deployments may point immutable historical paid archives at persistent
+# storage without changing the ordinary picks-cache location.  The default
+# remains the existing /tmp path for compatibility.
+_NBA_ARCHIVE_DIR = pathlib.Path(
+    os.getenv("NBA_ARCHIVE_DIR", str(_CACHE_DIR)))
 _CACHE_DIR.mkdir(parents=True, exist_ok=True)
+_NBA_ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
 _CACHE_TTL = 6 * 3600  # 6 hours
 _NBA_ALT_WARM_INFLIGHT: Dict[str, asyncio.Task] = {}
 _NBA_GAMELOG_CACHE: Dict[tuple, List[Dict]] = {}
 _NBA_HIST_INFLIGHT: Dict[str, asyncio.Task] = {}
+_NBA_HIST_ALT_INFLIGHT: Dict[str, asyncio.Task] = {}
 _NBA_PLAYER_IDENTITY_CACHE: Dict[str, dict] = {}
 
 # ── Bet Log ───────────────────────────────────────────────────────────────────
@@ -587,7 +595,10 @@ def _cache_get(app: str, date_key: str):
     try:
         # Historical NBA replay is immutable and must remain reusable.  In
         # particular, never make a past replay spend live Odds API quota again.
-        _permanent_nba_replay = app == "nba" and date_key < date.today().isoformat()
+        _permanent_nba_replay = (
+            app == "nba" or app == "nba_alternates"
+            or app.startswith("nba_historical")
+        ) and date_key < date.today().isoformat()
         if p.exists() and (_permanent_nba_replay or
                           (time.time() - p.stat().st_mtime) < _CACHE_TTL):
             data = json.loads(p.read_text(encoding="utf-8"))
@@ -606,7 +617,15 @@ def _cache_set(app: str, date_key: str, result: dict):
         print(f"[Cache] Write error: {e}")
 
 def _cache_clear(app: str = None):
+    # Paid historical sportsbook responses and their immutable alternate
+    # derivatives are not ordinary picks caches.  A standard-cache reset must
+    # never erase them: doing so would make the next historical/Coach request
+    # spend Odds API quota again.  Keep this guard independent of the caller
+    # (including a full clear) so archives survive every cache maintenance path.
+    archive_prefixes = ("nba_historical_", "nba_alternates_")
     for p in _CACHE_DIR.glob("*.json"):
+        if p.name.startswith(archive_prefixes):
+            continue
         if app is None or p.name.startswith(app + "_"):
             p.unlink(missing_ok=True)
 
@@ -683,7 +702,8 @@ async def get_team_roster_espn(team_id: str) -> List[Dict]:
 
 async def get_player_gamelogs_espn(player_id: str, season: int,
                                     sem: asyncio.Semaphore,
-                                    client: httpx.AsyncClient = None) -> List[Dict]:
+                                    client: httpx.AsyncClient = None,
+                                    strict: bool = False) -> List[Dict]:
     """Fetch one player's game logs for one season from ESPN."""
     cache_key = (str(player_id), int(season))
     cached = _NBA_GAMELOG_CACHE.get(cache_key)
@@ -699,9 +719,15 @@ async def get_player_gamelogs_espn(player_id: str, season: int,
             else:
                 r = await client.get(url, params={'season': season})
             if r.status_code != 200:
+                if strict:
+                    raise RuntimeError(
+                        f"ESPN game-log lookup unavailable ({r.status_code})")
                 return []
             gl = r.json()
-        except Exception:
+        except Exception as exc:
+            if strict:
+                raise RuntimeError(
+                    f"ESPN game-log lookup failed for {player_id}/{season}: {exc}") from exc
             return []
 
     events = gl.get('events', {})
@@ -917,7 +943,8 @@ async def get_odds_lines(today_str, alternate_only: bool = False):
 
 def _nba_hist_file(kind: str, key: str) -> pathlib.Path:
     safe = re.sub(r"[^A-Za-z0-9_.-]", "_", key)
-    return _CACHE_DIR / f"nba_historical_{kind}_{safe}.json"
+    archive_dir = globals().get("_NBA_ARCHIVE_DIR", _CACHE_DIR)
+    return archive_dir / f"nba_historical_{kind}_{safe}.json"
 
 
 def _nba_hist_read(kind: str, key: str):
@@ -936,10 +963,12 @@ def _nba_hist_write(kind: str, key: str, value):
     try:
         tmp.write_text(json.dumps(value, ensure_ascii=False), encoding="utf-8")
         os.replace(tmp, p)
+        return True
     except Exception as e:
         print(f"[NBA historical] cache write failed: {e}")
         try: tmp.unlink(missing_ok=True)
         except Exception: pass
+        return False
 
 
 def _nba_hist_pick_snapshot(games: list) -> Optional[str]:
@@ -992,6 +1021,42 @@ async def _nba_hist_event_odds(event_id: str, snapshot: str, api_key: str):
         payload = r.json()
     # Full response is permanent: never make a second paid request for it.
     _nba_hist_write("odds", key, payload)
+    return payload.get("data", payload) if isinstance(payload, dict) else payload
+
+
+async def _nba_hist_alternate_event_odds(event_id: str, snapshot: str,
+                                         api_key: str):
+    """Fetch one archived event's alternate markets, never the live endpoint.
+
+    The cache key is the archived Odds API event identity plus its point-in-time
+    snapshot.  A successful response is the raw paid response, kept forever in
+    the separate ``alternate_odds`` namespace.  This intentionally does not
+    reuse or mutate the standard ``odds`` response: Coach must see the exact
+    alternate quote/book that was purchased.
+    """
+    key = f"{event_id}_{snapshot}"
+    cached = _nba_hist_read("alternate_odds", key)
+    if cached is not None:
+        return cached.get("data", cached) if isinstance(cached, dict) else cached
+    async with httpx.AsyncClient(timeout=15) as c:
+        r = await c.get(
+            f"{ODDS_API_BASE}/historical/sports/basketball_nba/events/"
+            f"{event_id}/odds",
+            params={"apiKey": api_key, "date": snapshot,
+                    "regions": HISTORICAL_ODDS_REGION,
+                    "markets": ",".join(ODDS_ALTERNATE_MARKET_MAP),
+                    "oddsFormat": "american", "dateFormat": "iso"})
+        if r.status_code != 200:
+            raise RuntimeError(
+                f"historical alternate odds unavailable for event {event_id} "
+                f"({r.status_code})")
+        payload = r.json()
+    # Do not TTL this response.  Historical paid data is immutable and must
+    # never be purchased again after a process restart or a derived-cache miss.
+    if not _nba_hist_write("alternate_odds", key, payload):
+        raise RuntimeError(
+            f"historical alternate response for event {event_id} "
+            "could not be durably persisted; refusing to continue")
     return payload.get("data", payload) if isinstance(payload, dict) else payload
 
 
@@ -1052,6 +1117,7 @@ def _nba_hist_props(payload: dict, game: dict) -> list:
                 candidate = {"player": player, "stat": stat, "line": line,
                             "over_odds": sides["over"], "under_odds": sides["under"],
                             "odds": price, "side": side, "event_id": game.get("event_id"),
+                             "archived_event_id": game.get("archived_event_id"),
                             "home": game.get("home_name", ""), "away": game.get("away_name", ""),
                              "home_abbr": game.get("home", ""), "away_abbr": game.get("away", ""),
                              "book": book.get("title") or book.get("key") or "Archived sportsbook",
@@ -1084,6 +1150,429 @@ def _nba_hist_props(payload: dict, game: dict) -> list:
         chosen["available_book_count"] = len(per_book)
         selected.append(chosen)
     return selected
+
+
+def _nba_hist_alternate_props(payload: dict, game: dict) -> list:
+    """Normalize genuine alternate quotes without combining books or sides.
+
+    Unlike standard-line selection, Coach keeps every complete book/line quote
+    as an isolated candidate.  It is important that a line from one book never
+    receives an Over/Under price from another book, and that a missing side is
+    never fabricated.  The normal Coach odds floor is enforced at ingestion as
+    well as at presentation.
+    """
+    selected = []
+    for book in payload.get("bookmakers", []):
+        for market in book.get("markets", []):
+            stat = ODDS_ALTERNATE_MARKET_MAP.get(market.get("key"))
+            if not stat:
+                continue
+            quotes = {}
+            for outcome in market.get("outcomes", []):
+                if outcome.get("name") not in ("Over", "Under"):
+                    continue
+                player = str(outcome.get("description") or "").strip()
+                if not player:
+                    continue
+                try:
+                    line = float(outcome.get("point"))
+                except Exception:
+                    continue
+                if line <= 0 or _nba_hist_price_probability(
+                        outcome.get("price")) is None:
+                    continue
+                quote = quotes.setdefault((player, line), {})
+                quote[outcome["name"].lower()] = str(outcome.get("price", ""))
+            for (player, line), sides in quotes.items():
+                # A two-sided quote is the smallest unit Coach may price.
+                # Never display an exact alternate with an invented opposite
+                # side or with a side belonging to another line/book.
+                if "over" not in sides or "under" not in sides:
+                    continue
+                selected.append({
+                    "player": player, "stat": stat, "line": line,
+                    "over_odds": sides["over"], "under_odds": sides["under"],
+                    "odds": sides["over"], "event_id": game.get("event_id"),
+                    "archived_event_id": game.get("archived_event_id"),
+                    "home": game.get("home_name", ""),
+                    "away": game.get("away_name", ""),
+                    "home_abbr": game.get("home", ""),
+                    "away_abbr": game.get("away", ""),
+                    "book": (book.get("title") or book.get("key")
+                             or "Archived sportsbook"),
+                    "book_key": (book.get("key") or book.get("title")
+                                 or "Archived sportsbook"),
+                    "quote_updated": (market.get("last_update")
+                                      or book.get("last_update")),
+                    "source_market": market.get("key"),
+                    "is_alternate": True, "alternate": True,
+                    "historical_replay": True,
+                })
+    return selected
+
+
+def _nba_hist_archived_event_pairs(events: list, games: list):
+    """Match archived event IDs to ESPN's free schedule identities."""
+    wanted = {
+        (_nba_hist_team_key(g.get("home_name", "")),
+         _nba_hist_team_key(g.get("away_name", ""))): g
+        for g in games
+    }
+    matched = []
+    for event in events if isinstance(events, list) else []:
+        pair = (_nba_hist_team_key(event.get("home_team", "")),
+                _nba_hist_team_key(event.get("away_team", "")))
+        if pair in wanted:
+            matched.append((wanted.pop(pair), event))
+    return matched, wanted
+
+
+async def _nba_historical_alternates_uncached(date_str: str, games: list):
+    """Load one selected historical date's genuine alternate markets on demand.
+
+    This is deliberately a one-date operation.  It reuses the already archived
+    event-list identities and purchases only one alternate-market request per
+    matched event; it never calls ``get_odds_lines`` or the standard market
+    endpoint.  ``quota`` is returned so an admin can disclose the bounded
+    request budget before running any wider audit.
+    """
+    base = {
+        "date": date_str, "props": [], "historical_replay": True,
+        "historical_alternate": True,
+        "schema": HISTORICAL_ALT_MARKET_SCHEMA,
+        "markets": list(ODDS_ALTERNATE_MARKET_MAP),
+    }
+    if date_str >= date.today().isoformat():
+        return {**base, "status": "unavailable",
+                "error": "Historical alternate markets require a past game date.",
+                "message": "Alternate archive lookup is view-only for past dates."}
+    if date_str < HISTORICAL_ODDS_MIN_DATE:
+        return {**base, "status": "unavailable",
+                "error": "The alternate archive starts on 2023-05-03.",
+                "message": "No archived alternate coverage exists for this date."}
+    if not games:
+        return {**base, "status": "unavailable",
+                "error": "ESPN supplied no games for the selected date.",
+                "message": "Alternate archive coverage cannot be matched without a free ESPN slate."}
+    api_key = os.environ.get("ODDS_API_KEY", "")
+    if not api_key:
+        return {**base, "status": "unavailable",
+                "error": "Odds API key is not configured.",
+                "message": "Archived alternate markets are unavailable until the archive credential is configured."}
+    snapshot = _nba_hist_pick_snapshot(games)
+    if not snapshot:
+        return {**base, "status": "unavailable",
+                "error": "ESPN tipoff timestamp missing.",
+                "message": "The selected slate has no usable archived snapshot."}
+    base["snapshot"] = snapshot
+    try:
+        # This call is shared with standard historical replay.  If the standard
+        # board already ran, it is a permanent raw-cache hit and no event-list
+        # quota is spent again.
+        events = await asyncio.wait_for(
+            _nba_hist_events(date_str, snapshot, api_key),
+            timeout=HISTORICAL_ODDS_TIMEOUT)
+        matched, uncovered = _nba_hist_archived_event_pairs(events, games)
+        request_budget = {
+            "events_request": 1,
+            "matched_events": len(matched),
+            "alternate_markets_per_event": len(ODDS_ALTERNATE_MARKET_MAP),
+            "estimated_paid_event_market_requests": len(matched),
+            "historical_credit_cost_per_market": 10,
+            "estimated_alternate_market_credits": (
+                len(matched) * len(ODDS_ALTERNATE_MARKET_MAP) * 10),
+            "disclosed_credit_budget": (
+                1 + len(matched) * len(ODDS_ALTERNATE_MARKET_MAP) * 10),
+            "scope": "selected_date_only",
+        }
+        base["quota"] = request_budget
+        if uncovered or len(matched) != len(games):
+            return {**base, "status": "unavailable",
+                    "error": "Archived event coverage did not include every ESPN game.",
+                    "message": "No complete archived alternate slate is available for this date."}
+        sem = asyncio.Semaphore(HISTORICAL_ODDS_CONCURRENCY)
+
+        async def one(game, event):
+            async with sem:
+                payload = await _nba_hist_alternate_event_odds(
+                    str(event["id"]), snapshot, api_key)
+                if not isinstance(payload, dict) or "bookmakers" not in payload:
+                    raise RuntimeError(
+                        f"historical alternate response incomplete for event "
+                        f"{event.get('id')}")
+                return game, payload, str(event["id"])
+
+        results = await asyncio.wait_for(
+            asyncio.gather(*(one(game, event) for game, event in matched),
+                           return_exceptions=True),
+            timeout=HISTORICAL_ODDS_TIMEOUT)
+        failures = [result for result in results if isinstance(result, Exception)]
+        if failures:
+            unavailable = next((
+                failure for failure in failures
+                if re.search(
+                    r"historical alternate odds unavailable .*"
+                    r"\((?:400|404)\)", str(failure), re.I)
+            ), None)
+            if unavailable is not None:
+                return {
+                        **base, "status": "unavailable",
+                        "error": str(unavailable),
+                        "message": "No archived alternate event coverage is available for this date."
+                    }
+            return {
+                **base, "status": "failure",
+                "error": str(failures[0]),
+                "message": "Archived alternate market fetch failed; no Coach "
+                           "results were invented."
+            }
+        props = []
+        event_ids = []
+        for game, payload, event_id in results:
+            event_ids.append(event_id)
+            props.extend(_nba_hist_alternate_props(
+                payload, {**game, "archived_event_id": event_id}))
+        # A successfully published but empty alternate response means the
+        # archive has no alternate market coverage.  It is not equivalent to
+        # a loaded quote slate whose Coach probabilities simply produced no
+        # qualifiers; that distinction belongs to the endpoint after rows are
+        # evaluated.
+        status = "ready" if props else "unavailable"
+        message = (
+            "Genuine archived alternate quotes loaded for this date."
+            if props else
+            "No archived alternate markets were published for this date.")
+        doc = {**base, "status": status, "props": props,
+               "event_ids": event_ids, "message": message}
+        # This derived document is permanent too, while each raw paid event
+        # response remains independently reusable in ``alternate_odds``.
+        _nba_hist_write(
+            "alternate_props", f"{date_str}_{snapshot}", doc)
+        _cache_set("nba_alternates", date_str, doc)
+        return doc
+    except asyncio.TimeoutError:
+        return {**base, "status": "failure",
+                "error": "Archived alternate lookup timed out.",
+                "message": "The alternate archive did not finish before its bounded deadline."}
+    except Exception as exc:
+        text = str(exc)
+        absent_archive = bool(re.search(
+            r"(?:event list|alternate odds) unavailable .*"
+            r"\((?:400|404)\)", text, re.I))
+        return {
+            **base, "status": "unavailable" if absent_archive else "failure",
+            "error": text,
+            "message": (
+                "No archived event coverage is available for this date."
+                if absent_archive else
+                "Archived alternate lookup failed; retrying will reuse completed raw responses.")
+        }
+
+
+async def _nba_historical_alternates(date_str: str, games: list):
+    """Read permanent alternate data and deduplicate concurrent Coach clicks."""
+    cached = _cache_get("nba_alternates", date_str)
+    if isinstance(cached, dict) and cached.get("historical_alternate"):
+        return cached
+    snapshot = _nba_hist_pick_snapshot(games) if games else None
+    if snapshot:
+        raw_doc = _nba_hist_read("alternate_props", f"{date_str}_{snapshot}")
+        if isinstance(raw_doc, dict):
+            _cache_set("nba_alternates", date_str, raw_doc)
+            return raw_doc
+    task = _NBA_HIST_ALT_INFLIGHT.get(date_str)
+    if task is not None and not task.done():
+        # Callers that overlap the first bounded request receive an explicit
+        # loading state rather than treating the temporary absence as no data.
+        return {"date": date_str, "props": [], "historical_replay": True,
+                "historical_alternate": True, "status": "loading",
+                "message": "Archived alternate markets are still loading."}
+    task = asyncio.create_task(
+        _nba_historical_alternates_uncached(date_str, games))
+    _NBA_HIST_ALT_INFLIGHT[date_str] = task
+    try:
+        return await task
+    finally:
+        if _NBA_HIST_ALT_INFLIGHT.get(date_str) is task:
+            _NBA_HIST_ALT_INFLIGHT.pop(date_str, None)
+
+
+async def _nba_historical_alternate_context(date_str: str, games: list,
+                                            props: list,
+                                            standard_rows: list = None):
+    """Attach free ESPN pre-date H/A history to alternate quote rows.
+
+    A normal replay already has this context on its standard rows.  The
+    fallback is intentionally independent of standard sportsbook data so an
+    admin can verify one archived alternate date with its disclosed alternate
+    budget, without first purchasing a standard prop slate.
+    """
+    passthrough = []
+    context_props = []
+    for prop in props:
+        matching_standard = next((
+            row for row in (standard_rows or [])
+            if _nn(row.get("player") or "") == _nn(prop.get("player") or "")
+            and (row.get("stat") or "") == (prop.get("stat") or "")
+            and (not prop.get("event_id") or not row.get("event_id")
+                 or prop.get("event_id") == row.get("event_id"))
+        ), None)
+        if matching_standard and (
+                matching_standard.get("history")
+                or matching_standard.get("glog")):
+            passthrough.append(prop)
+        else:
+            context_props.append(prop)
+    if not context_props:
+        return props
+    props = context_props
+    box = _nba_box_lookup(date_str) or {}
+    names = sorted({str(p.get("player") or "").strip()
+                    for p in props if p.get("player")})
+    unresolved = [
+        name for name in names
+        if not any(_nm(existing, name) for existing in box)
+    ]
+    identities = {}
+    if unresolved:
+        try:
+            identity_sem = asyncio.Semaphore(12)
+
+            async def resolve(name, client):
+                async with identity_sem:
+                    return name, await _nba_espn_player_identity(
+                        name, client, strict=True)
+
+            async with httpx.AsyncClient(timeout=8) as identity_client:
+                resolved = await asyncio.wait_for(asyncio.gather(*[
+                    resolve(name, identity_client) for name in unresolved
+                ]), timeout=20)
+            identities = {name: identity for name, identity in resolved}
+        except Exception as exc:
+            raise RuntimeError(
+                f"Historical alternate identity lookup failed: {exc}") from exc
+
+    team_by_name = {}
+    for game in games:
+        team_by_name[_nba_hist_team_key(game.get("home_name", ""))] = game.get("home", "")
+        team_by_name[_nba_hist_team_key(game.get("away_name", ""))] = game.get("away", "")
+    player_ids = {}
+    for name in names:
+        found = box.get(name.lower().strip(), {})
+        if not found:
+            found = next((item for existing, item in box.items()
+                          if _nm(existing, name)), {})
+        if not found:
+            found = identities.get(name) or {}
+        if found.get("player_id"):
+            player_ids[name] = str(found["player_id"])
+
+    replay_date = datetime.strptime(date_str, "%Y-%m-%d")
+    replay_season = replay_date.year + (1 if replay_date.month >= 10 else 0)
+    replay_seasons = [replay_season - offset for offset in range(7)]
+    logs_by_player = {}
+    sem = asyncio.Semaphore(36)
+    if player_ids:
+        async def one_player(name, pid, client):
+            results = await asyncio.gather(*[
+                get_player_gamelogs_espn(
+                    pid, season, sem, client, strict=True)
+                for season in replay_seasons
+            ], return_exceptions=True)
+            failures = [result for result in results
+                        if isinstance(result, Exception)]
+            if failures:
+                raise RuntimeError(
+                    f"Historical alternate game-log lookup failed for "
+                    f"{name}: {failures[0]}")
+            rows = [game for result in results
+                    if isinstance(result, list)
+                    for game in result
+                    if str(game.get("date", ""))[:10] < date_str]
+            rows.sort(key=lambda game: str(game.get("date", "")), reverse=True)
+            return name, rows
+
+        try:
+            limits = httpx.Limits(max_connections=40, max_keepalive_connections=36)
+            async with httpx.AsyncClient(timeout=8, limits=limits) as client:
+                tasks = [
+                    asyncio.create_task(one_player(name, pid, client))
+                    for name, pid in player_ids.items()
+                ]
+                done, pending = await asyncio.wait(tasks, timeout=40)
+                first_failure = None
+                for task in done:
+                    try:
+                        name, rows = task.result()
+                        logs_by_player[name] = rows
+                    except Exception as exc:
+                        first_failure = exc
+                        break
+                for task in pending:
+                    task.cancel()
+                if pending:
+                    await asyncio.gather(*pending, return_exceptions=True)
+                if first_failure is not None:
+                    raise RuntimeError(
+                        f"Historical alternate game-log lookup failed: "
+                        f"{first_failure}") from first_failure
+        except Exception as exc:
+            raise RuntimeError(
+                f"Historical alternate history lookup failed: {exc}") from exc
+
+    out = []
+    for prop in props:
+        name = str(prop.get("player") or "")
+        player_box = box.get(name.lower().strip(), {})
+        if not player_box and box:
+            player_box = next((item for existing, item in box.items()
+                               if _nm(existing, name)), {})
+        player_logs = logs_by_player.get(name, [])
+        team = _norm_abbr(player_box.get("team") or "")
+        if team not in {prop.get("home_abbr"), prop.get("away_abbr")}:
+            # Search history for the player's team at the point immediately
+            # before the selected game; this handles archived names absent from
+            # the final box while still rejecting a previous traded team.
+            team = next((game.get("player_team") for game in player_logs
+                         if game.get("player_team") in {
+                             prop.get("home_abbr"), prop.get("away_abbr")}), "")
+        if not team:
+            identity = identities.get(name) or {}
+            team = team_by_name.get(_nba_hist_team_key(
+                identity.get("team_name", "")), "")
+        if team == prop.get("home_abbr"):
+            opp, location = prop.get("away_abbr") or prop.get("away", ""), "Home"
+        elif team == prop.get("away_abbr"):
+            opp, location = prop.get("home_abbr") or prop.get("home", ""), "Away"
+        else:
+            opp, location = "", ""
+        opponent_logs = [
+            game for game in player_logs
+            if game.get("opp") == opp
+            and game.get("location") == location
+            and game.get("player_team") == team
+        ][:8]
+        values = [float(game.get(prop.get("stat"))) for game in opponent_logs
+                  if game.get(prop.get("stat")) is not None]
+        recent_minutes = [float(game["MIN"]) for game in player_logs[:10]
+                          if game.get("MIN") is not None]
+        out.append({
+            **prop, "team": team, "opp": opp, "location": location,
+            "history": ",".join(
+                str(int(value)) if value.is_integer() else str(value)
+                for value in values),
+            "glog": [{"d": game.get("date", ""), "v": game.get(prop.get("stat"))}
+                     for game in opponent_logs],
+            "games": len(values),
+            "avg": round(sum(values) / len(values), 1) if values else None,
+            "mpg": (round(sum(recent_minutes) / len(recent_minutes), 1)
+                    if recent_minutes else None),
+            "history_cutoff_date": date_str, "history_pre_date_only": True,
+            "matchup": f"{prop.get('away', '')} @ {prop.get('home', '')}",
+            "player_id": player_box.get("player_id"),
+            "headshot": player_box.get("headshot") or "",
+        })
+    return passthrough + out
 
 
 async def _nba_historical_odds_uncached(date_str: str, games: list):
@@ -1125,7 +1614,15 @@ async def _nba_historical_odds_uncached(date_str: str, games: list):
                                        timeout=HISTORICAL_ODDS_TIMEOUT)
         props = []
         for game, payload in pairs:
-            props.extend(_nba_hist_props(payload, game))
+            # Retain both identities: ESPN identifies the selected schedule,
+            # while the archived Odds event ID is the paid-market identity.
+            archived_event = next(
+                (event for selected, event in matched if selected is game), None)
+            props.extend(_nba_hist_props(
+                payload,
+                {**game, "archived_event_id": (
+                    str(archived_event.get("id"))
+                    if archived_event else None)}))
         if len(pairs) != expected_games:
             return {"ok": False, "error": "Historical Sportsbook Replay incomplete: one or more event responses failed.", "props": [], "snapshot": snapshot}
         return {"ok": True, "props": props, "snapshot": snapshot}
@@ -1150,7 +1647,8 @@ async def _nba_historical_odds(date_str: str, games: list):
             _NBA_HIST_INFLIGHT.pop(key, None)
 
 
-async def _nba_espn_player_identity(player_name: str, client) -> dict:
+async def _nba_espn_player_identity(player_name: str, client,
+                                    strict: bool = False) -> dict:
     """Resolve an archived player when the selected box has no athlete row."""
     cache_key = _nn(player_name)
     if cache_key in _NBA_PLAYER_IDENTITY_CACHE:
@@ -1185,6 +1683,9 @@ async def _nba_espn_player_identity(player_name: str, client) -> dict:
                     "team_name": match.get("subtitle") or "",
                 }
     except Exception as exc:
+        if strict:
+            raise RuntimeError(
+                f"ESPN player identity lookup failed for {player_name}: {exc}") from exc
         print(f"[nba_history] player identity failed for {player_name}: {exc}")
     _NBA_PLAYER_IDENTITY_CACHE[cache_key] = identity
     return identity
@@ -1329,7 +1830,9 @@ async def _nba_historical_board(date_str: str, games: list, log: list) -> dict:
                "team": player_box.get("team") or "",
                "result": result, "historical_snapshot": archived.get("snapshot"),
                "historical_replay": True, "model_edge": False,
-               "matchup": f"{prop.get('away','')} @ {prop.get('home','')}"}
+               "matchup": f"{prop.get('away','')} @ {prop.get('home','')}",
+               "history_cutoff_date": date_str,
+               "history_pre_date_only": True}
         if row["team"] == prop.get("home_abbr"):
             row["opp"] = prop.get("away_abbr") or prop.get("away", "")
             row["location"] = "Home"
@@ -3756,15 +4259,34 @@ async function nbaCoachSearch(forceMode,presetQuery){
   var q=presetQuery||question, mode=forceMode||(/\balternate\b|\balt\b/i.test(q)?'alternate':'all');
   var msg=document.getElementById('nbaCoachMsg'), box=document.getElementById('nbaCoachResults');
   if(!String(question).trim()){document.getElementById('nbaCoachQuery').focus();return;}
-  msg.textContent='Analyzing loaded NBA props…'; box.style.display='none';box.innerHTML='';
-  var tok=localStorage.getItem('__mpa_token')||'', dp=document.getElementById('datePicker'), ds=(dp&&dp.value)||'__TODAY__';
+   var tok=localStorage.getItem('__mpa_token')||'', dp=document.getElementById('datePicker'), ds=(dp&&dp.value)||'__TODAY__';
+   var isHistorical=ds<'__TODAY__';
+   msg.textContent=isHistorical&&mode==='alternate'?'Loading archived alternate markets…':'Analyzing loaded NBA props…';
+   box.style.display='none';box.innerHTML='';
   try{
     var r=await fetch('/api/nba/coach-edge?_tok='+encodeURIComponent(tok),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({date:ds,query:q,mode:mode,count:10})});
-    var d=await r.json(); if(!r.ok) throw new Error(d.detail||'Coach Edge unavailable');
+     var d=await r.json(); if(!r.ok) throw new Error(d.detail||d.message||'Coach Edge unavailable');
+     window.__NBA_HISTORICAL_REPLAY__=!!d.historical_replay;
+     var state=d.status||d.alternate_status||'ready';
+     var qnote=(isHistorical&&mode==='alternate'&&d.quota&&d.quota.disclosed_credit_budget)
+       ?' · disclosed one-date archive budget: up to '+d.quota.disclosed_credit_budget+' credits'
+       :'';
+     if(state==='loading'){
+       msg.textContent='Loading archived alternate markets…';
+       box.innerHTML='<div style="color:#facc15;font-size:.78rem;line-height:1.5">The selected date is still loading genuine archived alternates. Checking again…</div>';
+       box.style.display='block';
+       window.setTimeout(function(){nbaCoachSearch(mode,q);},900);
+       return;
+     }
+     if(state==='unavailable'||state==='failure'){
+       msg.textContent=state==='failure'?'Archived alternate fetch failed':'Archived alternate coverage unavailable';
+       box.innerHTML='<div style="color:'+(state==='failure'?'#f87171':'#facc15')+';font-size:.78rem;line-height:1.5">'+_nbaEsc((d.message||'No archived alternate market coverage is available for this date.')+qnote)+'</div>';
+       box.style.display='block';return;
+     }
     __nbaCoachRows=(d.results||[]).slice(0,10); msg.textContent='';
     var questionHtml='<div class="nba-coach-question">'+_nbaEsc(question)+'</div>';
     if(!__nbaCoachRows.length){
-      box.innerHTML=questionHtml+'<div style="margin-top:11px;color:#cbd5e1;font-size:.78rem;line-height:1.5">'+_nbaEsc(d.message||'No loaded NBA prop matched that request with a genuine sportsbook price and positive Coach Edge.')+'</div>';
+       box.innerHTML=questionHtml+'<div style="margin-top:11px;color:#cbd5e1;font-size:.78rem;line-height:1.5">'+_nbaEsc((state==='no_qualifiers'?(d.message||'Archive loaded, but no qualifying positive Coach Edge results matched this request.'):(d.message||'No loaded NBA prop matched that request with a genuine sportsbook price and positive Coach Edge.'))+qnote)+'</div>';
       box.style.display='block';return;
     }
     var rows=__nbaCoachRows.map(function(x,i){
@@ -3775,7 +4297,7 @@ async function nbaCoachSearch(forceMode,presetQuery){
        '<td>'+Number(x.model_probability*100).toFixed(1)+'%</td><td>'+Number(x.implied_probability*100).toFixed(1)+'%</td>'+
        '<td style="color:#4ade80!important;font-weight:700">+'+Number(x.edge*100).toFixed(2)+' pts</td></tr>';
     }).join('');
-    var summary='<div style="margin-top:11px;color:#e5e7eb;font-size:.76rem;line-height:1.5">'+_nbaEsc(d.message||('I checked the loaded NBA board and ranked '+__nbaCoachRows.length+' matching positive-edge plays.'))+' Probability edge is shown in percentage points, not traditional expected ROI.</div>';
+     var summary='<div style="margin-top:11px;color:#e5e7eb;font-size:.76rem;line-height:1.5">'+_nbaEsc((d.message||('I checked the loaded NBA board and ranked '+__nbaCoachRows.length+' matching positive-edge plays.'))+qnote)+' Probability edge is shown in percentage points, not traditional expected ROI.</div>';
     box.innerHTML=questionHtml+summary+'<div class="nba-coach-table-wrap"><table class="nba-coach-table"><thead><tr><th>#</th><th>Player</th><th>Play</th><th>Odds</th><th>App Prob</th><th>Implied</th><th>Coach Edge</th></tr></thead><tbody>'+rows+'</tbody></table></div>';
     box.style.display='block';
   }catch(e){msg.textContent=e.message;box.innerHTML='';box.style.display='block';}
@@ -3789,9 +4311,12 @@ function openNbaCoachTrack(){
 function nbaCoachDetail(i){
  var x=__nbaCoachRows[i], k='coach'+i, dp=document.getElementById('datePicker');
  if(!x)return;
- window.__NBA_BET_SRC__=window.__NBA_BET_SRC__||{};
- window.__NBA_BET_SRC__[k]={name:x.player,team:x.team||'',opp:'',category:x.category,side:x.side,stat_key:x.stat,stat_label:x.category,line:x.line,odds:x.odds,date:(dp&&dp.value)||'__TODAY__'};
- window.__NBA_COACH_BET_KEY__=k;
+  var viewOnly=!!x.historical_replay||!!window.__NBA_HISTORICAL_REPLAY__;
+  if(!viewOnly){
+    window.__NBA_BET_SRC__=window.__NBA_BET_SRC__||{};
+    window.__NBA_BET_SRC__[k]={name:x.player,team:x.team||'',opp:'',category:x.category,side:x.side,stat_key:x.stat,stat_label:x.category,line:x.line,odds:x.odds,date:(dp&&dp.value)||'__TODAY__'};
+    window.__NBA_COACH_BET_KEY__=k;
+  }
  _nbaCloseCoachDetail();
  var ov=document.createElement('div');
  ov.id='nba-coach-detail-modal';
@@ -3819,8 +4344,8 @@ function nbaCoachDetail(i){
  '<div style="background:#0f172a;border-radius:10px;padding:10px"><div style="color:#64748b;font-size:.62rem">RECENT AVG</div><div style="color:#e2e8f0;font-weight:900">'+_nbaEsc(String(x.recent_average==null?'—':x.recent_average))+'</div></div></div>'+
  '<div style="margin-top:14px;background:#0f172a;border-radius:11px;padding:13px 15px"><div style="color:#c4b5fd;font-size:.7rem;font-weight:900;margin-bottom:6px">MATCHUP EVIDENCE</div>'+
  '<div style="color:#cbd5e1;font-size:.8rem;line-height:1.55"><b style="color:#94a3b8">Game log:</b> '+_nbaEsc(games)+'<br><b style="color:#94a3b8">Opponent history:</b> '+_nbaEsc(String(opponent))+'</div></div>'+
- '<div style="margin-top:10px;color:#cbd5e1;font-size:.78rem;line-height:1.55">'+_nbaEsc(x.selection_reason||'Positive Coach Edge based on opponent history and the exact sportsbook price.')+'</div>'+
- '<button onclick="_nbaCoachOpenBet()" style="width:100%;margin-top:16px;padding:11px 14px;background:#4338ca;color:#fff;border:0;border-radius:10px;font-weight:900;cursor:pointer">Open exact bet form</button>'+
+  '<div style="margin-top:10px;color:#cbd5e1;font-size:.78rem;line-height:1.55">'+_nbaEsc(x.selection_reason||'Positive Coach Edge based on opponent history and the exact sportsbook price.')+'</div>'+
+  (viewOnly?'<div style="margin-top:16px;padding:10px 12px;border:1px solid rgba(165,180,252,.3);border-radius:9px;color:#a5b4fc;font-size:.75rem;font-weight:800;text-align:center">HISTORICAL VIEW-ONLY · no bet tracking or official Coach record</div>':'<button onclick="_nbaCoachOpenBet()" style="width:100%;margin-top:16px;padding:11px 14px;background:#4338ca;color:#fff;border:0;border-radius:10px;font-weight:900;cursor:pointer">Open exact bet form</button>')+
  '</div></div>';
  document.body.appendChild(ov);
  document.body.style.overflow='hidden';
@@ -3975,13 +4500,40 @@ def _nba_coach_implied(odds):
     except Exception:
         return None
 
-def _nba_coach_prob(row, side, line):
-    """Bounded empirical probability from the available H/A opponent log."""
-    raw = row.get("history") or ""
+def _nba_coach_history_values(row, as_of_date=None):
+    """Return only the row's opponent/venue history before a replay date."""
     vals = []
+    glog = row.get("glog")
+    if isinstance(glog, list) and glog:
+        for item in glog:
+            if not isinstance(item, dict):
+                continue
+            if as_of_date and str(item.get("d") or "")[:10] >= as_of_date:
+                continue
+            try:
+                vals.append(float(item.get("v")))
+            except Exception:
+                pass
+        # A historical row with a game log is authoritative even when every
+        # entry was filtered out as same-day/post-date.  Never fall back to an
+        # un-dated history string in that case: it could contain hindsight.
+        return vals
+    if as_of_date and row.get("historical_replay") and isinstance(glog, list):
+        return vals
+    if vals:
+        return vals
+    raw = row.get("history") or ""
     for x in str(raw).split(","):
-        try: vals.append(float(x))
-        except Exception: pass
+        try:
+            vals.append(float(x))
+        except Exception:
+            pass
+    return vals
+
+
+def _nba_coach_prob(row, side, line, as_of_date=None):
+    """Bounded empirical probability from exact pre-date H/A history."""
+    vals = _nba_coach_history_values(row, as_of_date)
     if not vals:
         # Props with no opponent log are not eligible; do not manufacture a prior.
         return None, []
@@ -3998,7 +4550,8 @@ def _nba_coach_source(row):
     return (row.get("bookmaker_label") or row.get("book")
             or row.get("bookmaker") or "Odds API (bookmaker not retained)")
 
-def _nba_coach_rows(standard, alternate, query="", mode="all", count=100):
+def _nba_coach_rows(standard, alternate, query="", mode="all", count=100,
+                    as_of_date=None):
     q = (query or "").lower().strip()
     cat_terms = {k.lower(): k for k in STAT_CONFIG}
     cat_terms.update({v["label"].lower(): k for k, v in STAT_CONFIG.items()})
@@ -4038,21 +4591,48 @@ def _nba_coach_rows(standard, alternate, query="", mode="all", count=100):
                 implied = _nba_coach_implied(odds)
                 if implied is None: continue
                 signal = r
-                if is_alt:
-                    signal = next((x for x in standard if (x.get("player") or "").lower() == name.lower() and (x.get("stat") or "") == stat), r)
-                model, vals = _nba_coach_prob(signal, side, float(line))
+                if is_alt and not r.get("history"):
+                    # Alternate quotes have no statistical data of their own.
+                    # Borrow only the already loaded, pre-date opponent/location
+                    # history for the same player/stat/game; never its line,
+                    # side, price, or probability.
+                    signal = next((
+                        x for x in standard
+                        if _nn(x.get("player") or "") == _nn(name)
+                        and (x.get("stat") or "") == stat
+                        and (not r.get("event_id") or not x.get("event_id")
+                             or r.get("event_id") == x.get("event_id"))
+                        and (not r.get("team") or not x.get("team")
+                             or r.get("team") == x.get("team"))
+                    ), r)
+                model, vals = _nba_coach_prob(signal, side, float(line),
+                                              as_of_date)
                 if model is None: continue
                 edge = model - implied
                 if edge <= 0: continue
                 out.append({"player":name,"team":r.get("team") or signal.get("team",""),"stat":stat,
                     "category":STAT_CONFIG[stat]["label"],"side":side,"line":line,"odds":odds,
+                    "over_odds":r.get("over_odds"),"under_odds":r.get("under_odds"),
                     "model_probability":round(model,5),"implied_probability":implied,
                     "edge":round(edge,5),"recent_average":round(sum(vals[-10:])/len(vals[-10:]),1),
-                    "game_log":vals[-10:],"opponent_history":signal.get("history") or "—",
+                    "game_log":vals[-10:],
+                    "opponent_history":signal.get("history") or "—",
                     "source":_nba_coach_source(r),"alternate":bool(is_alt),
+                    "book":r.get("book") or r.get("bookmaker_label") or "",
+                    "book_key":r.get("book_key") or r.get("bookmaker") or "",
+                    "event_id":r.get("event_id"),
+                    "archived_event_id":r.get("archived_event_id"),
+                    "source_market":r.get("source_market"),
+                    "quote_updated":r.get("quote_updated"),
+                    "historical_replay":bool(
+                        r.get("historical_replay") or
+                        signal.get("historical_replay")),
+                    "history_cutoff_date": (
+                        signal.get("history_cutoff_date") or as_of_date),
                     "selection_reason":"Positive Coach Edge: empirical H/A opponent log exceeds American-odds implied probability."})
         return out
-    rows = make(alternate if mode == "alternate" else standard, mode == "alternate")
+    rows = make(alternate if mode == "alternate" else standard,
+                mode == "alternate")
     if mode == "all": rows += make(alternate, True)
     rows.sort(key=lambda x:x["edge"], reverse=True)
     # Every Coach answer is a true Top 10 and may show a player only once.
@@ -4077,22 +4657,90 @@ async def nba_coach_edge(request: Request):
     ds = str(body.get("date") or date.today().isoformat())
     mode = str(body.get("mode") or "all").lower()
     if mode not in ("all", "standard", "alternate"): mode = "all"
+    historical = ds < date.today().isoformat()
     standard = _cache_get("nba", ds)
-    if not standard:
-        from fastapi import HTTPException
-        raise HTTPException(status_code=404, detail="Standard NBA result data is unavailable; run or load NBA picks first.")
+    if historical and standard and not standard.get("historical_replay"):
+        # A stale live/model-only document is not admissible evidence for a
+        # point-in-time Coach answer.  Keep its free schedule only; rebuild
+        # alternate history from ESPN rather than copying current probabilities.
+        standard = {}
+    # A historical alternate verification may start from the free ESPN slate
+    # and the archived Odds event identities.  It must not require a paid
+    # standard board (or silently trigger one).
+    games = (standard or {}).get("games") or []
+    if historical and mode == "alternate" and not games:
+        try:
+            games = await get_today_games(ds)
+        except Exception as exc:
+            return {"date": ds, "results": [], "status": "failure",
+                    "alternate_status": "failure",
+                    "historical_replay": True,
+                    "message": f"Free ESPN schedule lookup failed: {exc}"}
+    if not standard and not (historical and mode == "alternate"):
+        return {
+            "date": ds, "results": [], "status": "unavailable",
+            "alternate_status": "unavailable",
+            "historical_replay": historical,
+            "historical_view_only": historical,
+            "message": "Standard NBA result data is unavailable; run or load NBA picks first.",
+        }
     alternate_doc = _cache_get("nba_alternates", ds) or {}
-    alternate = alternate_doc.get("props") if isinstance(alternate_doc, dict) else []
+    if historical and mode == "alternate":
+        # On-demand is the only historical alternate paid path.  It uses the
+        # archived event list plus alternate markets, never get_odds_lines().
+        alternate_doc = await _nba_historical_alternates(ds, games)
+    alternate = (alternate_doc.get("props")
+                 if isinstance(alternate_doc, dict) else [])
+    alternate_status = (
+        alternate_doc.get("status") if isinstance(alternate_doc, dict)
+        else "unavailable")
+    if not alternate_status and alternate:
+        alternate_status = "ready"
+    if historical and mode == "alternate" and alternate_status in (
+            "loading", "unavailable", "failure", "no_qualifiers"):
+        return {
+            "date": ds, "results": [], "status": alternate_status,
+            "alternate_status": alternate_status, "historical_replay": True,
+            "historical_view_only": True,
+            "message": (alternate_doc.get("message")
+                        or alternate_doc.get("error")
+                        or "No archived alternate results are available."),
+            "error": alternate_doc.get("error"),
+            "quota": alternate_doc.get("quota") or {},
+        }
     if mode == "alternate" and not alternate:
-        from fastapi import HTTPException
-        raise HTTPException(status_code=404, detail="NBA alternate lines are unavailable for this date.")
+        return {"date": ds, "results": [], "status": "unavailable",
+                "alternate_status": "unavailable",
+                "message": "NBA alternate lines are unavailable for this date."}
     standard_rows = (standard.get("props_picks") or []) + (standard.get("props_nopick") or [])
+    if historical and mode == "alternate":
+        alternate = await _nba_historical_alternate_context(
+            ds, games, alternate, standard_rows)
     qcount = re.search(r"\b(?:top|show|count|first)?\s*(\d{1,3})\s*(?:picks?|results?)?\b", str(body.get("query","")), re.I)
     requested_count = min(10, int(qcount.group(1))) if qcount else min(10, int(body.get("count", 10) or 10))
-    rows = _nba_coach_rows(standard_rows, alternate, body.get("query",""), mode, requested_count)
+    rows = _nba_coach_rows(
+        standard_rows, alternate, body.get("query",""), mode,
+        requested_count, ds if historical else None)
     if not rows:
-        return {"date":ds,"results":[],"message":"No eligible positive Coach Edge results for the requested intent."}
-    return {"date":ds,"results":rows,"source":"NBA loaded standard data + separate nba_alternates cache"}
+        return {
+            "date": ds, "results": [], "status": "no_qualifiers",
+            "alternate_status": alternate_status if mode == "alternate" else "not_requested",
+            "historical_replay": historical,
+            "historical_view_only": historical,
+            "message": "No qualifying positive Coach Edge results for the requested intent.",
+            "quota": (alternate_doc.get("quota") if isinstance(alternate_doc, dict)
+                      else {}) or {},
+        }
+    return {
+        "date": ds, "results": rows, "status": "ready",
+        "alternate_status": alternate_status if mode == "alternate" else "not_requested",
+        "historical_replay": historical, "historical_view_only": historical,
+        "source": ("NBA archived alternate event markets + free ESPN "
+                   "pre-date history" if historical and mode == "alternate"
+                   else "NBA loaded standard data + separate nba_alternates cache"),
+        "quota": (alternate_doc.get("quota") if isinstance(alternate_doc, dict)
+                  else {}) or {},
+    }
 
 # ─── Separate NBA Coach Track Record ──────────────────────────────────────────
 # This namespace is intentionally disjoint from the normal NBA ledger.  A Coach
