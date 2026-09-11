@@ -95,6 +95,11 @@ ESPN_SEASONS  = [2026, 2025, 2024, 2023, 2022, 2021, 2020]
 TOP_N         = 12
 
 ODDS_API_BASE   = "https://api.the-odds-api.com/v4"
+HISTORICAL_ODDS_MIN_DATE = "2023-05-03"
+# Historical requests are intentionally one-region and standard-market only.
+HISTORICAL_ODDS_REGION = "us"
+HISTORICAL_ODDS_TIMEOUT = 55
+HISTORICAL_ODDS_CONCURRENCY = 4
 ODDS_MARKET_MAP = {
     "player_points":                    "PTS",
     "player_rebounds":                   "REB",
@@ -135,6 +140,8 @@ _CACHE_DIR = pathlib.Path("/tmp/mpa_cache")
 _CACHE_DIR.mkdir(parents=True, exist_ok=True)
 _CACHE_TTL = 6 * 3600  # 6 hours
 _NBA_ALT_WARM_INFLIGHT: Dict[str, asyncio.Task] = {}
+_NBA_GAMELOG_CACHE: Dict[tuple, List[Dict]] = {}
+_NBA_HIST_INFLIGHT: Dict[str, asyncio.Task] = {}
 
 # ── Bet Log ───────────────────────────────────────────────────────────────────
 import threading as _nba_th
@@ -634,6 +641,7 @@ async def get_today_games(date_str: str = None) -> List[Dict]:
         if not home or not away:
             continue
         games.append({
+            'event_id':   str(event.get('id', '')),
             'home':      _norm_abbr(home['team']['abbreviation']),
             'away':      _norm_abbr(away['team']['abbreviation']),
             'home_id':   home['team']['id'],
@@ -662,17 +670,25 @@ async def get_team_roster_espn(team_id: str) -> List[Dict]:
 
 
 async def get_player_gamelogs_espn(player_id: str, season: int,
-                                    sem: asyncio.Semaphore) -> List[Dict]:
+                                    sem: asyncio.Semaphore,
+                                    client: httpx.AsyncClient = None) -> List[Dict]:
     """Fetch one player's game logs for one season from ESPN."""
+    cache_key = (str(player_id), int(season))
+    cached = _NBA_GAMELOG_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
     url = (f"https://site.web.api.espn.com/apis/common/v3/sports/"
            f"basketball/nba/athletes/{player_id}/gamelog")
     async with sem:
         try:
-            async with httpx.AsyncClient(timeout=20) as c:
-                r = await c.get(url, params={'season': season})
-                if r.status_code != 200:
-                    return []
-                gl = r.json()
+            if client is None:
+                async with httpx.AsyncClient(timeout=8) as c:
+                    r = await c.get(url, params={'season': season})
+            else:
+                r = await client.get(url, params={'season': season})
+            if r.status_code != 200:
+                return []
+            gl = r.json()
         except Exception:
             return []
 
@@ -729,6 +745,7 @@ async def get_player_gamelogs_espn(player_id: str, season: int,
             'BLK':         parse_stat(stats[9]),
             'STL':         parse_stat(stats[10]),
         })
+    _NBA_GAMELOG_CACHE[cache_key] = games
     return games
 
 # ─── Analysis ─────────────────────────────────────────────────────────────────
@@ -881,6 +898,254 @@ async def get_odds_lines(today_str, alternate_only: bool = False):
                    'props': alternate_props})
     print(f'[OddsAPI] {len(props)} NBA prop lines fetched; {len(alternate_props)} alternates warmed')
     return alternate_props if alternate_only else props
+
+
+def _nba_hist_file(kind: str, key: str) -> pathlib.Path:
+    safe = re.sub(r"[^A-Za-z0-9_.-]", "_", key)
+    return _CACHE_DIR / f"nba_historical_{kind}_{safe}.json"
+
+
+def _nba_hist_read(kind: str, key: str):
+    try:
+        p = _nba_hist_file(kind, key)
+        if p.exists():
+            return json.loads(p.read_text(encoding="utf-8"))
+    except Exception as e:
+        print(f"[NBA historical] cache read failed: {e}")
+    return None
+
+
+def _nba_hist_write(kind: str, key: str, value):
+    p = _nba_hist_file(kind, key)
+    tmp = p.with_name(p.name + f".{os.getpid()}.tmp")
+    try:
+        tmp.write_text(json.dumps(value, ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp, p)
+    except Exception as e:
+        print(f"[NBA historical] cache write failed: {e}")
+        try: tmp.unlink(missing_ok=True)
+        except Exception: pass
+
+
+def _nba_hist_pick_snapshot(games: list) -> Optional[str]:
+    """Return an ISO instant strictly before the earliest ESPN scheduled tip."""
+    tips = []
+    for g in games:
+        try:
+            tips.append(datetime.fromisoformat(g.get("tipoff", "").replace("Z", "+00:00")))
+        except Exception:
+            pass
+    if not tips:
+        return None
+    earliest = min(tips)
+    if earliest.tzinfo is None:
+        from datetime import timezone
+        earliest = earliest.replace(tzinfo=timezone.utc)
+    return (earliest - timedelta(seconds=1)).astimezone(__import__("datetime").timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+async def _nba_hist_events(date_str: str, snapshot: str, api_key: str):
+    key = f"{date_str}_{snapshot}"
+    cached = _nba_hist_read("events", key)
+    if cached is not None:
+        return cached.get("data", cached) if isinstance(cached, dict) else cached
+    async with httpx.AsyncClient(timeout=12) as c:
+        r = await c.get(f"{ODDS_API_BASE}/historical/sports/basketball_nba/events",
+                        params={"apiKey": api_key, "date": snapshot,
+                                "dateFormat": "iso"})
+        if r.status_code != 200:
+            raise RuntimeError(f"historical event list unavailable ({r.status_code})")
+        payload = r.json()
+    # Cache the complete immutable event list before any analysis.
+    _nba_hist_write("events", key, payload)
+    return payload.get("data", payload) if isinstance(payload, dict) else payload
+
+
+async def _nba_hist_event_odds(event_id: str, snapshot: str, api_key: str):
+    key = f"{event_id}_{snapshot}"
+    cached = _nba_hist_read("odds", key)
+    if cached is not None:
+        return cached.get("data", cached) if isinstance(cached, dict) else cached
+    async with httpx.AsyncClient(timeout=15) as c:
+        r = await c.get(f"{ODDS_API_BASE}/historical/sports/basketball_nba/events/{event_id}/odds",
+                        params={"apiKey": api_key, "date": snapshot,
+                                "regions": HISTORICAL_ODDS_REGION,
+                                "markets": ",".join(ODDS_MARKET_MAP),
+                                "oddsFormat": "american", "dateFormat": "iso"})
+        if r.status_code != 200:
+            raise RuntimeError(f"historical odds unavailable for event {event_id} ({r.status_code})")
+        payload = r.json()
+    # Full response is permanent: never make a second paid request for it.
+    _nba_hist_write("odds", key, payload)
+    return payload.get("data", payload) if isinstance(payload, dict) else payload
+
+
+def _nba_hist_price_probability(price) -> Optional[float]:
+    try:
+        p = float(price)
+        if p < -1000:
+            return None
+        return 100.0 / (p + 100.0) if p > 0 else abs(p) / (abs(p) + 100.0)
+    except Exception:
+        return None
+
+
+def _nba_hist_team_key(name: str) -> str:
+    key = _nn(name)
+    # ESPN uses "LA Clippers"; The Odds API uses "Los Angeles Clippers".
+    if key in ("la clippers", "los angeles clippers"):
+        return "clippers"
+    return key
+
+
+def _nba_hist_props(payload: dict, game: dict) -> list:
+    """Normalize archived standard markets without creating lines or prices."""
+    best = {}
+    for book in payload.get("bookmakers", []):
+        for market in book.get("markets", []):
+            stat = ODDS_MARKET_MAP.get(market.get("key"))
+            if not stat:
+                continue
+            rows = {}
+            for oc in market.get("outcomes", []):
+                if oc.get("name") not in ("Over", "Under") or not oc.get("description"):
+                    continue
+                try: line = float(oc["point"])
+                except Exception: continue
+                price = oc.get("price")
+                if _nba_hist_price_probability(price) is None:
+                    continue
+                d = rows.setdefault((oc["description"].strip(), line), {})
+                d[oc["name"].lower()] = str(price)
+            for (player, line), sides in rows.items():
+                if "over" not in sides or "under" not in sides:
+                    continue
+                op = _nba_hist_price_probability(sides["over"])
+                up = _nba_hist_price_probability(sides["under"])
+                side = "OVER" if op >= up else "UNDER"
+                price = sides["over"] if side == "OVER" else sides["under"]
+                ident = (_nn(player), stat, line, game.get("event_id"))
+                candidate = {"player": player, "stat": stat, "line": line,
+                            "over_odds": sides["over"], "under_odds": sides["under"],
+                            "odds": price, "side": side, "event_id": game.get("event_id"),
+                            "home": game.get("home_name", ""), "away": game.get("away_name", ""),
+                             "book": book.get("title") or book.get("key") or "Archived sportsbook",
+                             "source_market": market.get("key"), "historical_replay": True}
+                # Retain the strongest implied side actually available across
+                # every configured US sportsbook, never a fabricated price.
+                old = best.get(ident)
+                if old is None or (_nba_hist_price_probability(candidate["odds"]) or 0) > (_nba_hist_price_probability(old["odds"]) or 0):
+                    best[ident] = candidate
+    return list(best.values())
+
+
+async def _nba_historical_odds_uncached(date_str: str, games: list):
+    if date_str < HISTORICAL_ODDS_MIN_DATE:
+        return {"ok": False, "error": "Historical Sportsbook Replay is supported from 2023-05-03 onward only.", "props": []}
+    api_key = os.environ.get("ODDS_API_KEY", "")
+    if not api_key:
+        return {"ok": False, "error": "Historical Sportsbook Replay unavailable: Odds API key is not configured.", "props": []}
+    snapshot = _nba_hist_pick_snapshot(games)
+    if not snapshot:
+        return {"ok": False, "error": "Historical Sportsbook Replay unavailable: ESPN tipoff timestamp missing.", "props": []}
+    try:
+        events = await asyncio.wait_for(_nba_hist_events(date_str, snapshot, api_key),
+                                        timeout=HISTORICAL_ODDS_TIMEOUT)
+        # Match archived events only to ESPN's selected slate; ESPN remains the
+        # authority for tipoffs and event matching.
+        # ESPN and Odds API use different event IDs.  Match only by the ESPN
+        # schedule's home/away participants (and selected slate), then use the
+        # archived Odds event ID for the paid odds request.
+        wanted = {(_nba_hist_team_key(g.get("home_name", "")),
+                   _nba_hist_team_key(g.get("away_name", ""))): g
+                  for g in games}
+        expected_games = len(wanted)
+        matched = []
+        for ev in events if isinstance(events, list) else []:
+            pair = (_nba_hist_team_key(ev.get("home_team", "")),
+                    _nba_hist_team_key(ev.get("away_team", "")))
+            if pair in wanted: matched.append((wanted.pop(pair), ev))
+        if wanted or len(matched) != expected_games:
+            return {"ok": False, "error": "Historical Sportsbook Replay incomplete: archived event list did not cover the ESPN slate.", "props": [], "snapshot": snapshot}
+        sem = asyncio.Semaphore(HISTORICAL_ODDS_CONCURRENCY)
+        async def one(game, ev):
+            async with sem:
+                payload = await _nba_hist_event_odds(str(ev["id"]), snapshot, api_key)
+                if not isinstance(payload, dict) or "bookmakers" not in payload:
+                    raise RuntimeError(f"historical odds response incomplete for event {ev.get('id')}")
+                return game, payload
+        pairs = await asyncio.wait_for(asyncio.gather(*(one(g, e) for g, e in matched)),
+                                       timeout=HISTORICAL_ODDS_TIMEOUT)
+        props = []
+        for game, payload in pairs:
+            props.extend(_nba_hist_props(payload, game))
+        if len(pairs) != expected_games:
+            return {"ok": False, "error": "Historical Sportsbook Replay incomplete: one or more event responses failed.", "props": [], "snapshot": snapshot}
+        return {"ok": True, "props": props, "snapshot": snapshot}
+    except asyncio.TimeoutError:
+        return {"ok": False, "error": "Historical Sportsbook Replay timed out before all archived event responses completed.", "props": [], "snapshot": snapshot}
+    except Exception as e:
+        return {"ok": False, "error": f"Historical Sportsbook Replay unavailable: {e}", "props": [], "snapshot": snapshot}
+
+
+async def _nba_historical_odds(date_str: str, games: list):
+    """Deduplicate concurrent clicks so an event response is purchased once."""
+    key = date_str
+    task = _NBA_HIST_INFLIGHT.get(key)
+    if task is not None and not task.done():
+        return await task
+    task = asyncio.create_task(_nba_historical_odds_uncached(date_str, games))
+    _NBA_HIST_INFLIGHT[key] = task
+    try:
+        return await task
+    finally:
+        if _NBA_HIST_INFLIGHT.get(key) is task:
+            _NBA_HIST_INFLIGHT.pop(key, None)
+
+
+async def _nba_historical_board(date_str: str, games: list, log: list) -> dict:
+    """Build a priced, immutable replay board; never enters live tracking."""
+    if date_str < HISTORICAL_ODDS_MIN_DATE:
+        msg = "Historical Sportsbook Replay unavailable before 2023-05-03 (no Odds API calls made)."
+        return {"date": date_str, "picks": [], "all_picks": [], "games": games,
+                "log": log + [msg], "total": 0, "odds_loaded": False,
+                "historical_replay": True, "historical_unavailable": True,
+                "props_picks": [], "props_nopick": []}
+    archived = await _nba_historical_odds(date_str, games)
+    if not archived.get("ok"):
+        return {"date": date_str, "picks": [], "all_picks": [], "games": games,
+                "log": log + [archived.get("error", "Historical replay unavailable.")],
+                "total": 0, "odds_loaded": False, "historical_replay": True,
+                "historical_unavailable": True, "historical_snapshot": archived.get("snapshot"),
+                "props_picks": [], "props_nopick": []}
+    box = _nba_box_lookup(date_str)
+    rows = []
+    for prop in archived["props"]:
+        actual = (box.get((prop.get("player") or "").lower().strip(), {})
+                  .get(prop["stat"])) if box else None
+        result = None
+        if actual is not None:
+            result = "PUSH" if actual == prop["line"] else (
+                "WIN" if ((prop["side"] == "OVER" and actual > prop["line"]) or
+                          (prop["side"] == "UNDER" and actual < prop["line"])) else "LOSS")
+        row = {**prop, "stat_label": STAT_CONFIG[prop["stat"]]["label"],
+               "emoji": STAT_CONFIG[prop["stat"]]["emoji"], "line": prop["line"],
+               "pick": prop["side"], "fd_line": prop["line"], "fd_odds": prop["odds"],
+               "dk_line": prop["line"], "dk_over_odds": prop["over_odds"],
+               "dk_under_odds": prop["under_odds"], "actual": actual,
+               "result": result, "historical_snapshot": archived.get("snapshot"),
+               "historical_replay": True, "model_edge": False,
+               "matchup": f"{prop.get('away','')} @ {prop.get('home','')}"}
+        rows.append(row)
+    rows.sort(key=lambda x: (_nba_hist_price_probability(x.get("fd_odds")) or 0), reverse=True)
+    msg = f"Historical Sportsbook Replay · archived snapshot {archived.get('snapshot')} · {len(rows)} exact lines"
+    if box:
+        msg += " · final ESPN actuals attached where available"
+    log = log + [msg, "Historical replay uses archived sportsbook prices only; no pregame player-stat model edge is claimed."]
+    return {"date": date_str, "picks": rows[:TOP_N], "all_picks": rows, "games": games,
+            "log": log, "total": len(rows), "odds_loaded": bool(rows),
+            "historical_replay": True, "historical_snapshot": archived.get("snapshot"),
+            "props_picks": rows, "props_nopick": []}
 
 
 def parse_stat(val):
@@ -1070,6 +1335,10 @@ async def run_analysis(selected_date: str = None, force: bool = False) -> Dict:
     # File cache check first (skipped on force refresh — admin only)
     if not force:
         _fc = _cache_get('nba', today_str)
+        # Do not serve the retired ESPN model-only replay as a sportsbook replay.
+        if historical_replay and _fc and not (
+                _fc.get("historical_snapshot") or _fc.get("historical_unavailable")):
+            _fc = None
         if _fc:
             if not historical_replay:
                 _schedule_nba_alternates_warm(today_str)
@@ -1102,11 +1371,15 @@ async def run_analysis(selected_date: str = None, force: bool = False) -> Dict:
                 'no_games': True,
                 'log': [f'No NBA games scheduled for {today_str}.'], 'total': 0}
 
-    # Past dates are model replays, not historical sportsbook replays.  ESPN is
-    # the only source: live and alternate Odds API endpoints are never called.
     if historical_replay:
-        odds_raw, odds_props = [], []
-        log.append("Historical replay: no sportsbook lines or prices; model thresholds only.")
+        # Historical dates have a completely separate path.  It deliberately
+        # does not load rosters, gamelogs, Coach/Main records, bets, or live
+        # caches: only ESPN schedule/final boxes plus archived Odds responses.
+        result = await _nba_historical_board(today_str, games, log)
+        _cache.update(result)
+        if result.get("historical_unavailable") or result.get("odds_loaded"):
+            _cache_set("nba", today_str, result)
+        return result
     else:
         try:
             odds_raw = await get_odds_lines(today_str)
@@ -1156,16 +1429,35 @@ async def run_analysis(selected_date: str = None, force: bool = False) -> Dict:
     # Fetch game logs (all players, 3 seasons)
     all_player_ids = list({p['id'] for players in rosters.values() for p in players})
     log.append(f"Fetching game logs for {len(all_player_ids)} players x {len(ESPN_SEASONS)} seasons...")
-    sem = asyncio.Semaphore(10)
+    # A full slate can exceed 200 player-season requests. Reusing one HTTP/2
+    # connection pool avoids a fresh TLS handshake for every request, while the
+    # bounded concurrency and hard deadline prevent an endless loading screen.
+    sem = asyncio.Semaphore(36)
 
-    async def fetch_player_logs(pid: str):
+    async def fetch_player_logs(pid: str, client: httpx.AsyncClient):
         season_results = await asyncio.gather(
-            *[get_player_gamelogs_espn(pid, s, sem) for s in ESPN_SEASONS],
+            *[get_player_gamelogs_espn(pid, s, sem, client) for s in ESPN_SEASONS],
             return_exceptions=True)
         all_logs = [g for res in season_results if isinstance(res, list) for g in res]
         return pid, all_logs
 
-    log_results = await asyncio.gather(*[fetch_player_logs(pid) for pid in all_player_ids])
+    try:
+        limits = httpx.Limits(max_connections=40, max_keepalive_connections=36)
+        async with httpx.AsyncClient(timeout=8, limits=limits) as log_client:
+            log_results = await asyncio.wait_for(
+                asyncio.gather(*[
+                    fetch_player_logs(pid, log_client) for pid in all_player_ids
+                ]), timeout=40)
+    except asyncio.TimeoutError:
+        return {
+            'date': today_str, 'picks': [], 'all_picks': [], 'games': games,
+            'historical_replay': historical_replay, 'total': 0,
+            'log': [
+                'Error: ESPN player history did not finish within 40 seconds. '
+                'Please run this date again; completed player-season responses '
+                'were cached for the retry.'
+            ],
+        }
     # Sort every player's games by date DESCENDING (most recent first).
     # The whole algorithm now uses "last N games in the moment" instead of
     # vs-specific-opponent history, so playoff + recent regular season games
@@ -1794,6 +2086,7 @@ footer{text-align:center;padding:32px 24px;color:#4b5563;font-size:.78rem;border
 </div>
 
 <div id="props-section" style="display:none;max-width:1400px;margin:28px auto 0;padding:0 24px 40px">
+  <div class="props-historical-label"></div>
   <div style="font-size:.78rem;font-weight:700;color:#f59e0b;text-transform:uppercase;letter-spacing:.15em;margin:0 0 14px;display:flex;align-items:center;gap:10px">&#9889; Player Props vs Opponent History</div>
   <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:14px">
     <select id="propsGameSel" class="props-game-sel" onchange="propsSelectGame(this.value)">
@@ -2356,13 +2649,14 @@ function renderGames(games){
 async function runPicks(force=false){
   if(force && !window.IS_ADMIN) return;
   const selectedDate=document.getElementById('datePicker').value;
+  const isHistorical=selectedDate<'__TODAY__';
   document.getElementById('content').innerHTML=`
     <div class="msg-card">
       <div class="loading-ball"></div>
       <div class="ball-shadow"></div>
-      <h2 style="color:#FDB827">Analyzing Matchup Patterns</h2>
-      <p>Pulling data for <strong style="color:#FDB827">${selectedDate}</strong> from NBA Stats API.<br>
-      <span style="color:#1e3a5f">This takes ~45 seconds  worth the wait.</span></p>
+      <h2 style="color:#FDB827">${isHistorical?'Loading Historical Sportsbook Replay':'Analyzing Matchup Patterns'}</h2>
+      <p>${isHistorical?'Loading the final pregame Odds API snapshot and final box scores':'Pulling current matchup data'} for <strong style="color:#FDB827">${selectedDate}</strong>.<br>
+      <span style="color:#1e3a5f">${isHistorical?'Purchased historical responses are permanently cached.':'This can take up to 45 seconds.'}</span></p>
     </div>`;
   document.getElementById('allPicksWrap').style.display='none';
   try{
@@ -2372,6 +2666,7 @@ async function runPicks(force=false){
     if(!r.ok)throw new Error('Server error '+r.status);
     const data=await r.json();
     window.__NBA_HISTORICAL_REPLAY__=!!data.historical_replay;
+    window.__NBA_HISTORICAL_SNAPSHOT__=data.historical_snapshot||'';
     renderGames(data.games);
     if(data.no_games){
       document.getElementById('filterBar').style.display='none';
@@ -2384,7 +2679,7 @@ async function runPicks(force=false){
     activeTopStat='ALL';activeAllStat='ALL';
     const log=data.log||[];
     if(!top10.length && !allPicksData.length){
-      document.getElementById('content').innerHTML=`<div class="msg-card"><span class="ico"></span><h2>${data.historical_replay?'No Replay Patterns':'No Qualifying Patterns'}</h2><p>${data.historical_replay?'No ESPN model thresholds cleared the replay floor for these matchups.':'No 70%+ patterns for today matchups; sportsbook lines may not be posted yet.'}</p></div><div class="log-box">${log.join('<br>')}</div>`;
+      document.getElementById('content').innerHTML=`<div class="msg-card"><span class="ico"></span><h2>${data.historical_replay?'Historical Replay Unavailable':'No Qualifying Patterns'}</h2><p>${data.historical_replay?(log[log.length-1]||'No complete archived player-prop slate was available.'):'No 70%+ patterns for today matchups; sportsbook lines may not be posted yet.'}</p></div><div class="log-box">${log.join('<br>')}</div>`;
       renderPropsSection(data.props_picks, data.props_nopick);
       return;
     }
@@ -2427,6 +2722,7 @@ async function getPicks(){
     if(!r.ok)throw new Error('Server error '+r.status);
     const data=await r.json();
     window.__NBA_HISTORICAL_REPLAY__=!!data.historical_replay;
+    window.__NBA_HISTORICAL_SNAPSHOT__=data.historical_snapshot||'';
     renderGames(data.games);
     if(data.no_games){
       document.getElementById('filterBar').style.display='none';
@@ -2464,6 +2760,10 @@ function renderPropsSection(picks, nopick) {
   var all = (picks||[]).concat(nopick||[]);
   sec.style.display = all.length ? 'block' : 'none';
   if (!all.length) return;
+   var histHead=window.__NBA_HISTORICAL_REPLAY__
+     ? '<div style="color:#a5b4fc;font-weight:900;font-size:.8rem;margin-bottom:8px">HISTORICAL SPORTSBOOK REPLAY · archived snapshot '+(window.__NBA_HISTORICAL_SNAPSHOT__||'timestamp unavailable')+' · exact archived lines/prices; actual/result shown when final</div>'
+     : '';
+   sec.querySelector('.props-historical-label') && (sec.querySelector('.props-historical-label').innerHTML=histHead);
   var sigMap = {};
   (allPicksData||[]).forEach(function(s){ sigMap[s.player+'|'+s.stat]=s; });
   var byGame = {};
@@ -2489,8 +2789,8 @@ function propsSelectGame(matchup) {
   window.__PROPS_PLAYERS__={};
   var players=Object.keys(byGame[matchup]);
   players.sort(function(a,b){ return a.split(' ').pop().localeCompare(b.split(' ').pop()); });
-  if(hint) hint.textContent=window.__NBA_HISTORICAL_REPLAY__
-    ? players.length+' players · model replay thresholds (no sportsbook lines/prices)'
+   if(hint) hint.textContent=window.__NBA_HISTORICAL_REPLAY__
+     ? players.length+' players · archived sportsbook lines/prices (no pregame player-stat model edge)'
     : players.length+' players with prop lines';
   var chips=players.map(function(name,idx){
     window.__PROPS_PLAYERS__[idx]=name;
@@ -2541,7 +2841,7 @@ function openPropsPlayer(idx){
     var avgDisp=p.avg!=null?esc(String(p.avg))+'<span style="color:#777;font-size:.7rem"> ('+esc(String(p.games))+'g)</span>':'<span style="color:#555">no history</span>';
     var pickCell=(isO?'<span style="color:#4ade80;font-weight:900;font-size:.95rem">O</span>':isU?'<span style="color:#f87171;font-weight:900;font-size:.95rem">U</span>':'<span style="color:#555">—</span>')+badges;
     var _trackCell='';
-    if(window.IS_ADMIN){
+    if(window.IS_ADMIN && !window.__NBA_HISTORICAL_REPLAY__){
       if(p.line!=null){
         var _bside=isU?'UNDER':'OVER';
         var _bo=(p.dk_over_odds!=null?p.dk_over_odds:(sig.dk_over_odds!=null?sig.dk_over_odds:null));
@@ -2562,6 +2862,7 @@ function openPropsPlayer(idx){
       '<td style="padding:10px 12px;font-family:monospace;font-size:.9rem;color:'+clr+';font-weight:700">'+avgDisp+'</td>' +
       '<td style="padding:10px 12px;font-size:.75rem;font-family:monospace;max-width:160px">'+histHtml+'</td>' +
       '<td style="padding:10px 12px">'+pickCell+'</td>' +
+       (window.__NBA_HISTORICAL_REPLAY__?'<td style="padding:10px 12px;font-size:.75rem;color:#a5b4fc;font-weight:800">'+(p.actual!=null?('ACTUAL '+esc(p.actual)+' · '+esc(p.result||'PENDING')):'actual pending')+'</td>':'') +
       _trackCell +
     '</tr>';
   });
@@ -2589,6 +2890,7 @@ function openPropsPlayer(idx){
             '<th style="padding:9px 12px;text-align:left;color:#f59e0b;font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.1em">Avg vr Opp</th>' +
             '<th style="padding:9px 12px;text-align:left;color:#f59e0b;font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.1em;white-space:nowrap">Last 8 vr Opp</th>' +
             '<th style="padding:9px 12px;text-align:left;color:#f59e0b;font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.1em">Pick &amp; Signal</th>' +
+            (window.__NBA_HISTORICAL_REPLAY__?'<th style="padding:9px 12px;text-align:left;color:#a5b4fc;font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.1em">Actual / Result</th>':'') +
             (window.IS_ADMIN?'<th style="padding:9px 12px;text-align:left;color:#a5b4fc;font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.1em">Track</th>':'') +
           '</tr></thead>' +
           '<tbody>'+rows.join('')+'</tbody>' +
