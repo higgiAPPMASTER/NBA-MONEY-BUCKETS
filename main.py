@@ -3614,67 +3614,181 @@ document.addEventListener('DOMContentLoaded',function(){
 # Kept outside MAIN_HTML so this large non-raw Python HTML string cannot be
 # accidentally damaged by Coach JavaScript template braces or backslashes.
 NBA_COACH_HTML = r"""
-<section id="nba-coach" class="card" style="max-width:1200px;margin:28px auto 20px;border-color:#312e81">
-  <h2 style="color:#a5b4fc;font-family:'Playfair Display',serif">🏀 NBA Coach Edge AI</h2>
-  <p style="color:#94a3b8;font-size:.82rem">Separate research board. Standard results use their exact loaded line/side/price; alternate results come only from the isolated alternate cache.</p>
-  <div style="display:flex;gap:8px;flex-wrap:wrap;margin:14px 0">
-    <button class="filter-btn" onclick="nbaCoachPreset('safest')">Safest bets</button>
-    <button class="filter-btn" onclick="nbaCoachPreset('positive edge')">Positive Coach Edge</button>
-    <button class="filter-btn" onclick="nbaCoachPreset('top points')">Top Points</button>
-    <button class="filter-btn" onclick="nbaCoachPreset('top rebounds')">Top Rebounds</button>
-    <button class="filter-btn" onclick="nbaCoachPreset('top assists')">Top Assists</button>
-    <button class="filter-btn" onclick="nbaCoachPreset('top 3-pointers')">Top 3-Pointers</button>
-    <button class="filter-btn" onclick="nbaCoachPreset('top pts+reb+ast')">Top PRA</button>
-    <button class="filter-btn" onclick="nbaCoachPreset('top pts+reb')">Top Pts+Reb</button>
-    <button class="filter-btn" onclick="nbaCoachPreset('top pts+ast')">Top Pts+Ast</button>
-    <button class="filter-btn" onclick="nbaCoachPreset('top reb+ast')">Top Reb+Ast</button>
-    <button class="filter-btn" onclick="nbaCoachPreset('top blocks')">Top Blocks</button>
-    <button class="filter-btn" onclick="nbaCoachPreset('top steals')">Top Steals</button>
-    <button class="filter-btn" onclick="nbaCoachPreset('alternate')">Genuine alternate lines</button>
+<style>
+.nba-coach-shell{border:1px solid rgba(245,158,11,.45)!important;background:linear-gradient(145deg,#1f1406,#100902)!important}
+.nba-coach-presets{display:flex;gap:7px;flex-wrap:wrap;margin:12px 0 9px}
+.nba-coach-preset{background:#111827;color:#cbd5e1;border:1px solid #334155;border-radius:999px;padding:7px 11px;font-size:.69rem;font-weight:900;cursor:pointer}
+.nba-coach-preset:hover{border-color:#f59e0b;color:#fde68a}
+.nba-coach-row{display:flex;gap:8px;margin-top:16px}
+.nba-coach-input{flex:1;min-width:0;background:#070d18;color:#fff;border:1px solid #334155;border-radius:11px;padding:12px 14px;font:inherit;font-size:.84rem;outline:none}
+.nba-coach-input:focus{border-color:#f59e0b;box-shadow:0 0 0 3px rgba(245,158,11,.1)}
+.nba-coach-send{background:linear-gradient(135deg,#d97706,#f59e0b);color:#fff;border:0;border-radius:11px;padding:0 18px;font-weight:900;cursor:pointer}
+.nba-coach-answer{display:none;margin-top:14px;border-top:1px solid rgba(245,158,11,.25);padding-top:14px}
+.nba-coach-question{margin-left:auto;max-width:82%;background:#271604;border:1px solid rgba(245,158,11,.3);border-radius:12px 12px 3px 12px;padding:9px 12px;color:#fde68a;font-size:.75rem}
+.nba-coach-table-wrap{overflow-x:auto;margin-top:10px;border:1px solid #292929;border-radius:11px}
+.nba-coach-table{width:100%;border-collapse:collapse;font-size:.7rem;min-width:720px}
+.nba-coach-table th{background:#111;color:#9ca3af;text-align:left;padding:8px 9px;font-size:.59rem;text-transform:uppercase;letter-spacing:.06em;white-space:nowrap}
+.nba-coach-table td{padding:9px;border-top:1px solid #222;color:#e5e7eb;vertical-align:top}
+.nba-coach-table tbody tr{cursor:pointer}
+.nba-coach-table tbody tr:hover{background:rgba(245,158,11,.06)}
+@media(max-width:600px){.nba-coach-row{flex-direction:column}.nba-coach-send{padding:12px}.nba-coach-question{max-width:94%}}
+</style>
+<section id="nba-coach" class="card nba-coach-shell" style="max-width:960px;margin:28px auto 20px;padding:20px 22px">
+  <div style="display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap">
+    <div>
+      <div style="color:#f59e0b;font-size:.66rem;font-weight:900;letter-spacing:.12em;text-transform:uppercase">Grounded NBA analysis</div>
+      <h2 style="font-family:'Playfair Display',serif;color:#fff;font-size:1.35rem;margin-top:4px">The Edge Coach · NBA Props Analyst</h2>
+      <div style="color:#94a3b8;font-size:.76rem;margin-top:5px">Find safer sportsbook sides or scan the loaded NBA board for positive Coach Edge.</div>
+    </div>
+    <div>
+      <div style="color:#86efac;border:1px solid rgba(74,222,128,.35);border-radius:999px;padding:5px 9px;height:max-content;font-size:.62rem;font-weight:900;margin-top:6px;white-space:nowrap">NO INVENTED PLAYS</div>
+      <button onclick="openNbaCoachTrack()" style="width:100%;margin-top:8px;background:#0e7490;color:#fff;border:0;border-radius:8px;padding:7px 10px;font-size:.68rem;font-weight:900;cursor:pointer;white-space:nowrap">Coach Track Record</button>
+    </div>
   </div>
-  <div style="display:flex;gap:8px;flex-wrap:wrap">
-    <input id="nbaCoachQuery" aria-label="Coach Edge search" placeholder="Player, team, category, over/under, count or odds intent" style="flex:1;min-width:240px;background:#0b1120;color:#fff;border:1px solid #334155;border-radius:8px;padding:10px">
-    <button class="btn" style="background:#4338ca;color:#fff" onclick="nbaCoachSearch()">Get Results</button>
+  <div style="margin-top:18px;font-size:.75rem;font-weight:800;color:#facc15;border-bottom:1px solid rgba(255,255,255,.1);padding-bottom:5px;letter-spacing:.05em;text-transform:uppercase">Core</div>
+  <div class="nba-coach-presets">
+    <button class="nba-coach-preset" onclick="nbaCoachPreset('safest')">Safest bets</button>
+    <button class="nba-coach-preset" onclick="nbaCoachPreset('positive edge')">Coach Edge</button>
+    <button class="nba-coach-preset" onclick="nbaCoachPreset('alternate')" style="border-color:#f59e0b;color:#fde68a">Best Alternate Edge Plays · Top 10</button>
   </div>
-  <div id="nbaCoachMsg" role="status" style="color:#fbbf24;font-size:.78rem;margin-top:10px"></div>
-  <div id="nbaCoachResults" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:10px;margin-top:14px"></div>
-  <div style="margin-top:22px;padding-top:16px;border-top:1px solid #1e293b">
+  <div style="margin-top:16px;font-size:.75rem;font-weight:800;color:#60a5fa;border-bottom:1px solid rgba(255,255,255,.1);padding-bottom:5px;letter-spacing:.05em;text-transform:uppercase">Player Props</div>
+  <div class="nba-coach-presets">
+    <button class="nba-coach-preset" onclick="nbaCoachPreset('top points')">Points</button>
+    <button class="nba-coach-preset" onclick="nbaCoachPreset('top rebounds')">Rebounds</button>
+    <button class="nba-coach-preset" onclick="nbaCoachPreset('top assists')">Assists</button>
+    <button class="nba-coach-preset" onclick="nbaCoachPreset('top 3-pointers')">3-Pointers</button>
+    <button class="nba-coach-preset" onclick="nbaCoachPreset('top pts+reb+ast')">PRA</button>
+    <button class="nba-coach-preset" onclick="nbaCoachPreset('top pts+reb')">Pts+Reb</button>
+    <button class="nba-coach-preset" onclick="nbaCoachPreset('top pts+ast')">Pts+Ast</button>
+    <button class="nba-coach-preset" onclick="nbaCoachPreset('top reb+ast')">Reb+Ast</button>
+    <button class="nba-coach-preset" onclick="nbaCoachPreset('top blocks')">Blocks</button>
+    <button class="nba-coach-preset" onclick="nbaCoachPreset('top steals')">Steals</button>
+  </div>
+  <div class="nba-coach-row">
+    <input id="nbaCoachQuery" class="nba-coach-input" aria-label="Coach Edge search" placeholder="Type a question..." onkeydown="if(event.key==='Enter')nbaCoachSearch()">
+    <button class="nba-coach-send" onclick="nbaCoachSearch()">Analyze</button>
+  </div>
+  <div style="color:#64748b;font-size:.65rem;line-height:1.45;margin-top:8px">Requires a loaded NBA board and genuine sportsbook prices. Safest Bets ranks qualified sides by model probability; Coach Edge equals model probability minus sportsbook-implied probability.</div>
+  <div id="nbaCoachMsg" role="status" style="color:#fbbf24;font-size:.72rem;margin-top:10px"></div>
+  <div id="nbaCoachResults" class="nba-coach-answer"></div>
+  <div id="nbaCoachTrackPanel" style="display:none;margin-top:22px;padding-top:16px;border-top:1px solid #1e293b">
     <h3 style="color:#c4b5fd;font-size:.95rem">Coach Track Record</h3>
     <p style="color:#64748b;font-size:.72rem;margin:5px 0 10px">Pregame Coach presets are captured automatically. Results are loaded only when you ask for them.</p>
-    <button class="btn" style="background:#312e81;color:#fff" onclick="loadNbaCoachTrackRecord()">Get Results</button>
+    <button class="btn" style="background:#312e81;color:#fff" onclick="loadNbaCoachTrackRecord()">Refresh Results</button>
+    <button class="btn" style="background:#1f2937;color:#cbd5e1;margin-left:6px" onclick="document.getElementById('nbaCoachTrackPanel').style.display='none'">Close</button>
     <div id="nbaCoachTrackMsg" role="status" style="color:#fbbf24;font-size:.78rem;margin-top:8px"></div>
     <div id="nbaCoachTrackResults" style="margin-top:10px"></div>
   </div>
 </section>
 <script>
 var __nbaCoachRows=[];
-function nbaCoachPreset(q){document.getElementById('nbaCoachQuery').value=q; nbaCoachSearch(q==='alternate'?'alternate':'all');}
-async function nbaCoachSearch(forceMode){
-  var q=document.getElementById('nbaCoachQuery').value||'', mode=forceMode||(/\balternate\b|\balt\b/i.test(q)?'alternate':'all');
+function nbaCoachPreset(q){
+ var labels={
+  safest:'What are the safest NBA bets?',
+  'positive edge':'What are the best NBA Coach Edge plays?',
+  alternate:'What are the Best Alternate NBA Edge Plays? — Top 10',
+  'top points':'What are the best Points plays?',
+  'top rebounds':'What are the best Rebounds plays?',
+  'top assists':'What are the best Assists plays?',
+  'top 3-pointers':'What are the best 3-Pointers plays?',
+  'top pts+reb+ast':'What are the best PRA plays?',
+  'top pts+reb':'What are the best Pts+Reb plays?',
+  'top pts+ast':'What are the best Pts+Ast plays?',
+  'top reb+ast':'What are the best Reb+Ast plays?',
+  'top blocks':'What are the best Blocks plays?',
+  'top steals':'What are the best Steals plays?'
+ };
+ var input=document.getElementById('nbaCoachQuery');
+ if(input)input.value=labels[q]||q;
+ nbaCoachSearch(q==='alternate'?'alternate':'all',q);
+}
+async function nbaCoachSearch(forceMode,presetQuery){
+  var question=document.getElementById('nbaCoachQuery').value||'';
+  var q=presetQuery||question, mode=forceMode||(/\balternate\b|\balt\b/i.test(q)?'alternate':'all');
   var msg=document.getElementById('nbaCoachMsg'), box=document.getElementById('nbaCoachResults');
-  msg.textContent='Loading Coach Edge…'; box.innerHTML='';
+  if(!String(question).trim()){document.getElementById('nbaCoachQuery').focus();return;}
+  msg.textContent='Analyzing loaded NBA props…'; box.style.display='none';box.innerHTML='';
   var tok=localStorage.getItem('__mpa_token')||'', dp=document.getElementById('datePicker'), ds=(dp&&dp.value)||'__TODAY__';
   try{
     var r=await fetch('/api/nba/coach-edge?_tok='+encodeURIComponent(tok),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({date:ds,query:q,mode:mode,count:100})});
     var d=await r.json(); if(!r.ok) throw new Error(d.detail||'Coach Edge unavailable');
-    __nbaCoachRows=d.results||[]; msg.textContent=d.message||(__nbaCoachRows.length+' positive-edge results');
-    box.innerHTML=__nbaCoachRows.map(function(x,i){return '<article tabindex="0" role="button" class="pick-card" onclick="nbaCoachDetail('+i+')" onkeydown="if(event.key===\'Enter\'||event.key===\' \'){event.preventDefault();nbaCoachDetail('+i+')}" style="cursor:pointer;border-color:#312e81">'+
-      '<div class="pick-player">'+x.player+'</div><div class="pick-team">'+(x.team||'')+' · '+x.category+(x.alternate?' · ALTERNATE':'')+'</div>'+
-      '<div style="color:#4ade80;font-weight:900;font-size:1.1rem">+'+(x.edge*100).toFixed(1)+'% edge</div>'+
-      '<div style="color:#e2e8f0;margin-top:8px">'+x.side+' '+x.line+' @ '+x.odds+'</div>'+
-      '<div style="color:#94a3b8;font-size:.72rem;margin-top:6px">Model '+(x.model_probability*100).toFixed(1)+'% · implied '+(x.implied_probability*100).toFixed(1)+'% · '+x.source+'</div></article>';}).join('');
-  }catch(e){msg.textContent=e.message;box.innerHTML='';}
+    __nbaCoachRows=d.results||[]; msg.textContent='';
+    var questionHtml='<div class="nba-coach-question">'+_nbaEsc(question)+'</div>';
+    if(!__nbaCoachRows.length){
+      box.innerHTML=questionHtml+'<div style="margin-top:11px;color:#cbd5e1;font-size:.78rem;line-height:1.5">'+_nbaEsc(d.message||'No loaded NBA prop matched that request with a genuine sportsbook price and positive Coach Edge.')+'</div>';
+      box.style.display='block';return;
+    }
+    var rows=__nbaCoachRows.map(function(x,i){
+      return '<tr tabindex="0" onclick="nbaCoachDetail('+i+')" onkeydown="if(event.key===\'Enter\'||event.key===\' \'){event.preventDefault();nbaCoachDetail('+i+')}">'+
+       '<td>'+(i+1)+'</td><td><b style="color:#fff;text-decoration:underline;text-decoration-style:dotted;text-underline-offset:2px">'+_nbaEsc(x.player)+'</b><br><span style="color:#64748b">'+_nbaEsc(x.team||'NBA')+(x.alternate?' · ALTERNATE':'')+'</span></td>'+
+       '<td>'+_nbaEsc(x.category)+'<br><b style="color:'+(x.side==='OVER'?'#4ade80':'#f87171')+'">'+_nbaEsc(x.side)+' '+_nbaEsc(String(x.line))+'</b></td>'+
+       '<td>'+_nbaEsc((Number(x.odds)>0?'+':'')+String(x.odds))+'<br><span style="color:#64748b;font-size:.6rem">'+_nbaEsc(x.source||'Sportsbook')+'</span></td>'+
+       '<td>'+Number(x.model_probability*100).toFixed(1)+'%</td><td>'+Number(x.implied_probability*100).toFixed(1)+'%</td>'+
+       '<td style="color:#4ade80!important;font-weight:700">+'+Number(x.edge*100).toFixed(2)+' pts</td></tr>';
+    }).join('');
+    var summary='<div style="margin-top:11px;color:#e5e7eb;font-size:.76rem;line-height:1.5">'+_nbaEsc(d.message||('I checked the loaded NBA board and ranked '+__nbaCoachRows.length+' matching positive-edge plays.'))+' Probability edge is shown in percentage points, not traditional expected ROI.</div>';
+    box.innerHTML=questionHtml+summary+'<div class="nba-coach-table-wrap"><table class="nba-coach-table"><thead><tr><th>#</th><th>Player</th><th>Play</th><th>Odds</th><th>App Prob</th><th>Implied</th><th>Coach Edge</th></tr></thead><tbody>'+rows+'</tbody></table></div>';
+    box.style.display='block';
+  }catch(e){msg.textContent=e.message;box.innerHTML='';box.style.display='block';}
+}
+function openNbaCoachTrack(){
+ var panel=document.getElementById('nbaCoachTrackPanel');if(!panel)return;
+ panel.style.display='block';
+ panel.scrollIntoView({behavior:'smooth',block:'start'});
+ loadNbaCoachTrackRecord();
 }
 function nbaCoachDetail(i){
- var x=__nbaCoachRows[i], tok=localStorage.getItem('__mpa_token')||'', k='coach'+i, dp=document.getElementById('datePicker');
+ var x=__nbaCoachRows[i], k='coach'+i, dp=document.getElementById('datePicker');
+ if(!x)return;
  window.__NBA_BET_SRC__=window.__NBA_BET_SRC__||{};
  window.__NBA_BET_SRC__[k]={name:x.player,team:x.team||'',opp:'',category:x.category,side:x.side,stat_key:x.stat,stat_label:x.category,line:x.line,odds:x.odds,date:(dp&&dp.value)||'__TODAY__'};
- var w=window.open('','nba-coach-detail','width=440,height=650'); if(!w){return;}
- w.document.write('<title>Coach Edge details</title><body style="background:#0b1120;color:#e2e8f0;font:15px Arial;padding:22px"><h2 style="color:#a5b4fc">'+x.player+' — '+x.category+'</h2>'+
- '<p><b>'+x.side+' '+x.line+' @ '+x.odds+'</b><br>Source: '+x.source+'</p><p>Model probability: '+(x.model_probability*100).toFixed(1)+'%<br>Implied probability: '+(x.implied_probability*100).toFixed(1)+'%<br>Coach Edge: <b style="color:#4ade80">'+(x.edge*100).toFixed(1)+'%</b></p>'+
- '<p>Recent average: '+x.recent_average+'<br>Game log: '+(x.game_log||[]).join(', ')+'<br>Opponent history: '+x.opponent_history+'</p><p>'+x.selection_reason+'</p>'+
- '<button onclick="window.opener._nbaBetForm(\''+k+'\')" style="padding:10px;background:#4338ca;color:white;border:0;border-radius:8px">Open exact bet form</button></body>');
+ window.__NBA_COACH_BET_KEY__=k;
+ _nbaCloseCoachDetail();
+ var ov=document.createElement('div');
+ ov.id='nba-coach-detail-modal';
+ ov.setAttribute('role','dialog');
+ ov.setAttribute('aria-modal','true');
+ ov.setAttribute('aria-label','Coach Edge details for '+x.player);
+ ov.style.cssText='position:fixed;inset:0;background:rgba(2,6,23,.84);z-index:10020;display:flex;align-items:center;justify-content:center;padding:16px;backdrop-filter:blur(4px);animation:nbaCoachFadeIn .16s ease-out';
+ ov.onclick=function(e){if(e.target===ov)_nbaCloseCoachDetail();};
+ var sideColor=x.side==='OVER'?'#4ade80':'#f87171';
+ var games=(x.game_log||[]).length?(x.game_log||[]).join(', '):'No qualifying games';
+ var opponent=x.opponent_history||'No qualifying opponent history';
+ ov.innerHTML='<style>@keyframes nbaCoachFadeIn{from{opacity:0}to{opacity:1}}@keyframes nbaCoachSlideIn{from{opacity:0;transform:translateY(12px) scale(.985)}to{opacity:1;transform:translateY(0) scale(1)}}</style>'+
+ '<div style="background:linear-gradient(160deg,#111827,#0b1120);border:1px solid #4338ca;border-radius:18px;max-width:620px;width:100%;max-height:90vh;overflow:auto;box-shadow:0 24px 80px rgba(0,0,0,.68);animation:nbaCoachSlideIn .18s ease-out">'+
+ '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:14px;padding:18px 20px;border-bottom:1px solid #1e293b">'+
+ '<div><div style="color:#fff;font-size:1.15rem;font-weight:900">'+_nbaEsc(x.player)+'</div>'+
+ '<div style="color:#a5b4fc;font-size:.8rem;font-weight:800;margin-top:3px">'+_nbaEsc(x.team||'NBA')+' · '+_nbaEsc(x.category)+(x.alternate?' · GENUINE ALTERNATE':'')+'</div></div>'+
+ '<button onclick="_nbaCloseCoachDetail()" aria-label="Close Coach details" style="background:#1e293b;border:0;color:#cbd5e1;width:34px;height:34px;border-radius:9px;cursor:pointer;font-size:1.1rem;flex-shrink:0">&#215;</button></div>'+
+ '<div style="padding:18px 20px">'+
+ '<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;background:rgba(67,56,202,.12);border:1px solid rgba(129,140,248,.3);border-radius:12px;padding:13px 15px">'+
+ '<div><div style="color:'+sideColor+';font-size:1.05rem;font-weight:900">'+_nbaEsc(x.side)+' '+_nbaEsc(String(x.line))+' @ '+_nbaEsc(String(x.odds))+'</div><div style="color:#94a3b8;font-size:.72rem;margin-top:3px">'+_nbaEsc(x.source||'Sportsbook line')+'</div></div>'+
+ '<div style="text-align:right"><div style="color:#4ade80;font-size:1.2rem;font-weight:900">+'+(x.edge*100).toFixed(1)+'%</div><div style="color:#94a3b8;font-size:.65rem">COACH EDGE</div></div></div>'+
+ '<div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-top:12px">'+
+ '<div style="background:#0f172a;border-radius:10px;padding:10px"><div style="color:#64748b;font-size:.62rem">MODEL</div><div style="color:#e2e8f0;font-weight:900">'+(x.model_probability*100).toFixed(1)+'%</div></div>'+
+ '<div style="background:#0f172a;border-radius:10px;padding:10px"><div style="color:#64748b;font-size:.62rem">IMPLIED</div><div style="color:#e2e8f0;font-weight:900">'+(x.implied_probability*100).toFixed(1)+'%</div></div>'+
+ '<div style="background:#0f172a;border-radius:10px;padding:10px"><div style="color:#64748b;font-size:.62rem">RECENT AVG</div><div style="color:#e2e8f0;font-weight:900">'+_nbaEsc(String(x.recent_average==null?'—':x.recent_average))+'</div></div></div>'+
+ '<div style="margin-top:14px;background:#0f172a;border-radius:11px;padding:13px 15px"><div style="color:#c4b5fd;font-size:.7rem;font-weight:900;margin-bottom:6px">MATCHUP EVIDENCE</div>'+
+ '<div style="color:#cbd5e1;font-size:.8rem;line-height:1.55"><b style="color:#94a3b8">Game log:</b> '+_nbaEsc(games)+'<br><b style="color:#94a3b8">Opponent history:</b> '+_nbaEsc(String(opponent))+'</div></div>'+
+ '<div style="margin-top:10px;color:#cbd5e1;font-size:.78rem;line-height:1.55">'+_nbaEsc(x.selection_reason||'Positive Coach Edge based on opponent history and the exact sportsbook price.')+'</div>'+
+ '<button onclick="_nbaCoachOpenBet()" style="width:100%;margin-top:16px;padding:11px 14px;background:#4338ca;color:#fff;border:0;border-radius:10px;font-weight:900;cursor:pointer">Open exact bet form</button>'+
+ '</div></div>';
+ document.body.appendChild(ov);
+ document.body.style.overflow='hidden';
 }
+function _nbaCloseCoachDetail(){
+ var ov=document.getElementById('nba-coach-detail-modal');
+ if(ov)ov.remove();
+ document.body.style.overflow='';
+}
+function _nbaCoachOpenBet(){
+ var key=window.__NBA_COACH_BET_KEY__;
+ _nbaCloseCoachDetail();
+ if(key)_nbaBetForm(key);
+}
+document.addEventListener('keydown',function(e){
+ if(e.key==='Escape'&&document.getElementById('nba-coach-detail-modal'))_nbaCloseCoachDetail();
+});
 var _nbaCoachTrackData=null;
 async function loadNbaCoachTrackRecord(){
   var msg=document.getElementById('nbaCoachTrackMsg'),box=document.getElementById('nbaCoachTrackResults');
