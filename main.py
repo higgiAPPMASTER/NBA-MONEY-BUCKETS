@@ -98,9 +98,10 @@ ODDS_API_BASE   = "https://api.the-odds-api.com/v4"
 HISTORICAL_ODDS_MIN_DATE = "2023-05-03"
 # Historical requests are intentionally one-region and standard-market only.
 HISTORICAL_ODDS_REGION = "us"
+LIVE_ODDS_REGIONS = "us,us2,ca"
 HISTORICAL_ODDS_TIMEOUT = 55
 HISTORICAL_ODDS_CONCURRENCY = 4
-HISTORICAL_REPLAY_SCHEMA = 2
+HISTORICAL_REPLAY_SCHEMA = 4
 ODDS_MARKET_MAP = {
     "player_points":                    "PTS",
     "player_rebounds":                   "REB",
@@ -457,8 +458,13 @@ def _nba_box_lookup_raw(date_str: str):
                     stats_arr = ath.get("stats", [])
                     if not name or not stats_arr:
                         continue
-                    ps: dict = {"final": is_final, "player_id": athlete.get("id"),
-                                "team": team_abbr}
+                    headshot = athlete.get("headshot") or {}
+                    ps: dict = {
+                        "final": is_final,
+                        "player_id": athlete.get("id"),
+                        "headshot": headshot.get("href") if isinstance(headshot, dict) else "",
+                        "team": team_abbr,
+                    }
                     for sk in _NBA_BET_STAT_KEYS:
                         v = _nba_extract_stat(stats_arr, sk)
                         if v is not None:
@@ -836,7 +842,7 @@ async def get_odds_lines(today_str, alternate_only: bool = False):
             for ev in events:
                 r2 = await c.get(
                     f"{ODDS_API_BASE}/sports/{active_key}/events/{ev['id']}/odds",
-                    params={'apiKey': api_key, 'regions': 'us,us2,eu,ca',
+                    params={'apiKey': api_key, 'regions': LIVE_ODDS_REGIONS,
                             'markets': markets, 'oddsFormat': 'american'})
                 if r2.status_code != 200:
                     print(f'[OddsAPI] props {r2.status_code} for {ev.get("home_team","?")} game: {r2.text[:150]}')
@@ -1029,7 +1035,11 @@ def _nba_hist_props(payload: dict, game: dict) -> list:
                 up = _nba_hist_price_probability(sides["under"])
                 side = "OVER" if op >= up else "UNDER"
                 price = sides["over"] if side == "OVER" else sides["under"]
-                ident = (_nn(player), stat, line, game.get("event_id"))
+                # One historical pick per player/category/game. Sportsbooks can
+                # post different standard lines for the same market; treating
+                # every line as another pick inflates one player into dozens of
+                # duplicate rows and makes category boards unusable.
+                ident = (_nn(player), stat, game.get("event_id"))
                 candidate = {"player": player, "stat": stat, "line": line,
                             "over_odds": sides["over"], "under_odds": sides["under"],
                             "odds": price, "side": side, "event_id": game.get("event_id"),
@@ -1145,7 +1155,9 @@ async def _nba_historical_board(date_str: str, games: list, log: list) -> dict:
                "pick": prop["side"], "fd_line": prop["line"], "fd_odds": prop["odds"],
                "dk_line": prop["line"], "dk_over_odds": prop["over_odds"],
                "dk_under_odds": prop["under_odds"], "actual": actual,
-               "player_id": player_box.get("player_id"), "team": player_box.get("team") or "",
+               "player_id": player_box.get("player_id"),
+               "headshot": player_box.get("headshot") or "",
+               "team": player_box.get("team") or "",
                "result": result, "historical_snapshot": archived.get("snapshot"),
                "historical_replay": True, "model_edge": False,
                "matchup": f"{prop.get('away','')} @ {prop.get('home','')}"}
@@ -2203,6 +2215,37 @@ if(window.IS_ADMIN){document.body.classList.add('is-admin');_nbaUnlockDates();}e
 let top10=[], allPicksData=[], activeTopStat='ALL', activeAllStat='ALL', sideFilter=null;
 
 function pctClass(p){return p>=90?['pct-green','bar-green']:p>=80?['pct-yellow','bar-yellow']:['pct-orange','bar-orange']}
+function _nbaHistImplied(odds){
+  const n=parseFloat(String(odds==null?'':odds).replace('+',''));
+  if(!n||isNaN(n))return 0;
+  return n>0?100/(n+100):Math.abs(n)/(Math.abs(n)+100);
+}
+function _nbaNormalizeHistoricalData(data){
+  if(!data||!data.historical_replay)return data;
+  const best=new Map();
+  (data.all_picks||data.picks||[]).forEach(p=>{
+    const key=`${String(p.player||'').toLowerCase()}|${p.stat||''}|${p.event_id||p.matchup||''}`;
+    const cur=best.get(key);
+    if(!cur||_nbaHistImplied(p.odds||p.fd_odds)>_nbaHistImplied(cur.odds||cur.fd_odds))best.set(key,p);
+  });
+  const clean=Array.from(best.values()).sort((a,b)=>
+    _nbaHistImplied(b.odds||b.fd_odds)-_nbaHistImplied(a.odds||a.fd_odds));
+  const statOrder=['PTS','REB','AST','FG3M','PRA','PTS_REB','PTS_AST','REB_AST','BLK','STL'];
+  const pools={};statOrder.forEach(s=>pools[s]=clean.filter(p=>p.stat===s));
+  const balanced=[];let depth=0,added=true;
+  while(balanced.length<12&&added){
+    added=false;
+    for(const s of statOrder){
+      if(pools[s]&&pools[s][depth]){balanced.push(pools[s][depth]);added=true;if(balanced.length===12)break;}
+    }
+    depth++;
+  }
+  data.all_picks=clean;
+  data.picks=balanced;
+  data.props_picks=clean;
+  data.total=clean.length;
+  return data;
+}
 function statTag(s){
   const m={PTS:['tag-pts','Points'],REB:['tag-reb','Rebounds'],AST:['tag-ast','Assists'],FG3M:['tag-fg3m','3-Pointers'],PRA:['tag-pra','Pts+Reb+Ast'],PTS_REB:['tag-combo','Pts+Reb'],PTS_AST:['tag-combo','Pts+Ast'],REB_AST:['tag-combo','Reb+Ast'],BLK:['tag-blk','Blocks'],STL:['tag-stl','Steals']};
   const [c,l]=m[s]||['',''];
@@ -2238,7 +2281,7 @@ function applyAllFilters(){
   let filtered = activeAllStat==='ALL' ? allPicksData : allPicksData.filter(p=>p.stat===activeAllStat);
   if(sq) filtered=filtered.filter(p=>(p.player||'').toLowerCase().includes(sq));
   if(sideFilter){
-    filtered = filtered.filter(p => p.line_rec===sideFilter || p.streak_rec===sideFilter || p.alt_rec===sideFilter);
+    filtered = filtered.filter(p => p.side===sideFilter || p.line_rec===sideFilter || p.streak_rec===sideFilter || p.alt_rec===sideFilter);
     // Rank by gap: biggest +gap first for OVERs, biggest -gap first for UNDERs
     filtered = filtered.slice().sort((a,b)=>{
       const ga=a.gap==null?0:a.gap, gb=b.gap==null?0:b.gap;
@@ -2269,7 +2312,9 @@ function renderTop10Cards(picks){
     const p=stats[0];
     const cardKey=ladReg(p);
     const teamLogo=`https://a.espncdn.com/i/teamlogos/nba/500/${(p.team||'').toLowerCase()}.png`;
-    const headshot=`https://a.espncdn.com/i/headshots/nba/players/full/${p.player_id}.png`;
+    const headshot=p.headshot||(
+      p.player_id?`https://a.espncdn.com/i/headshots/nba/players/full/${p.player_id}.png`:''
+    );
     const tip=p.tipoff?new Date(p.tipoff).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',timeZoneName:'short'}):'';
     const statBlocks=stats.map(s=>{
       // VERDICT RULES:
@@ -2366,7 +2411,7 @@ function renderTop10Cards(picks){
         <img src="${teamLogo}" alt="${p.team}" style="height:28px;width:28px;object-fit:contain" onerror="this.style.display='none'"/>
       </div>
       <div style="position:relative;height:110px;background:radial-gradient(ellipse at center top,rgba(253,184,39,.15),transparent 70%),linear-gradient(180deg,#1e3a5f 0%,#0a1a2e 100%);overflow:hidden">
-        <img onclick="openLadder('${cardKey}')" src="${headshot}" alt="${pname}" style="position:absolute;bottom:-6px;left:50%;transform:translateX(-50%);height:120px;object-fit:contain;cursor:pointer" onerror="this.style.display='none'"/>
+        ${headshot?`<img onclick="openLadder('${cardKey}')" src="${headshot}" alt="${pname}" style="position:absolute;bottom:-6px;left:50%;transform:translateX(-50%);height:120px;object-fit:contain;cursor:pointer" onerror="if(this.dataset.fallback){this.style.display='none';return;}this.dataset.fallback='1';this.src='https://a.espncdn.com/i/headshots/nba/players/full/${p.player_id||''}.png'"/>`:''}
         <div onclick="openLadder('${cardKey}')" style="position:absolute;bottom:6px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,.62);color:#FDB827;font-size:.62rem;font-weight:800;padding:3px 9px;border-radius:6px;border:1px solid #FDB82766;cursor:pointer;white-space:nowrap">📊 TAP FOR GAME LOG</div>
         ${p.position?`<div style="position:absolute;top:10px;right:12px;background:rgba(0,0,0,.6);color:#fff;font-weight:800;font-size:.88rem;padding:4px 10px;border-radius:6px;border:1px solid #444">${p.position}</div>`:''}
       </div>
@@ -2400,7 +2445,7 @@ function renderAllByGame(picks){
         <span class="gg-label"> ${matchup}</span>
         <div class="gg-meta"><span class="count-pill">${gp.length} pick${gp.length!==1?'s':''}</span><span class="gg-chevron"></span></div>
       </div>
-      <div class="compact-picks" id="${gameId}">`;
+      <div class="compact-picks" id="${gameId}" style="display:none">`;
     // Sub-group by player so each player has one expandable row
     const byPlayer = {}; const playerOrder = [];
     for(const p of gp){
@@ -2716,7 +2761,7 @@ async function runPicks(force=false){
     const _adm=localStorage.getItem('__mpa_admin')||'';
     const r=await fetch('/run?_tok='+encodeURIComponent(_nbaTok)+'&admin='+encodeURIComponent(_adm),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({date:selectedDate,force:!!force})});
     if(!r.ok)throw new Error('Server error '+r.status);
-    const data=await r.json();
+    const data=_nbaNormalizeHistoricalData(await r.json());
     window.__NBA_HISTORICAL_REPLAY__=!!data.historical_replay;
     window.__NBA_HISTORICAL_SNAPSHOT__=data.historical_snapshot||'';
     renderGames(data.games);
@@ -2772,7 +2817,7 @@ async function getPicks(){
     const r=await fetch('/api/cached?target_date='+encodeURIComponent(selectedDate)+'&_tok='+encodeURIComponent(_nbaTok));
     if(r.status===404){ document.getElementById('content').innerHTML=`<div class="msg-card"><span class="ico"></span><h2>Picks Not Ready</h2><p>Today's picks aren't ready yet - check back a little later.</p></div>`; return; }
     if(!r.ok)throw new Error('Server error '+r.status);
-    const data=await r.json();
+    const data=_nbaNormalizeHistoricalData(await r.json());
     window.__NBA_HISTORICAL_REPLAY__=!!data.historical_replay;
     window.__NBA_HISTORICAL_SNAPSHOT__=data.historical_snapshot||'';
     renderGames(data.games);
@@ -2958,7 +3003,7 @@ function openPropsPlayer(idx){
 document.addEventListener('DOMContentLoaded', function(){
   if (!window.__INITIAL_PICKS__) return;
   try {
-    var data = window.__INITIAL_PICKS__;
+    var data = _nbaNormalizeHistoricalData(window.__INITIAL_PICKS__);
     var dp = document.getElementById('datePicker');
     if (dp && data.date) dp.value = data.date;
     if (data.games) renderGames(data.games);
