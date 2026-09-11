@@ -101,7 +101,7 @@ HISTORICAL_ODDS_REGION = "us"
 LIVE_ODDS_REGIONS = "us,us2,ca"
 HISTORICAL_ODDS_TIMEOUT = 55
 HISTORICAL_ODDS_CONCURRENCY = 4
-HISTORICAL_REPLAY_SCHEMA = 5
+HISTORICAL_REPLAY_SCHEMA = 6
 ODDS_MARKET_MAP = {
     "player_points":                    "PTS",
     "player_rebounds":                   "REB",
@@ -144,6 +144,7 @@ _CACHE_TTL = 6 * 3600  # 6 hours
 _NBA_ALT_WARM_INFLIGHT: Dict[str, asyncio.Task] = {}
 _NBA_GAMELOG_CACHE: Dict[tuple, List[Dict]] = {}
 _NBA_HIST_INFLIGHT: Dict[str, asyncio.Task] = {}
+_NBA_PLAYER_IDENTITY_CACHE: Dict[str, dict] = {}
 
 # ── Bet Log ───────────────────────────────────────────────────────────────────
 import threading as _nba_th
@@ -894,6 +895,9 @@ async def get_odds_lines(today_str, alternate_only: bool = False):
                                     'odds': d.get('over_odds', ''),
                                     'over_odds': d.get('over_odds', ''),
                                     'under_odds': d.get('under_odds', ''),
+                                     'bookmaker': book.get('key', ''),
+                                     'bookmaker_label': (
+                                         book.get('title') or book.get('key', '')),
                                     'home': data.get('home_team', ''),
                                     'away': data.get('away_team', ''),
                                     'source_market': market_key,
@@ -1119,6 +1123,46 @@ async def _nba_historical_odds(date_str: str, games: list):
             _NBA_HIST_INFLIGHT.pop(key, None)
 
 
+async def _nba_espn_player_identity(player_name: str, client) -> dict:
+    """Resolve an archived player when the selected box has no athlete row."""
+    cache_key = _nn(player_name)
+    if cache_key in _NBA_PLAYER_IDENTITY_CACHE:
+        return _NBA_PLAYER_IDENTITY_CACHE[cache_key]
+    identity = {}
+    try:
+        response = await client.get(
+            "https://site.api.espn.com/apis/search/v2",
+            params={"query": player_name, "limit": 10})
+        if response.status_code == 200:
+            payload = response.json()
+            contents = [
+                item
+                for group in payload.get("results", [])
+                if group.get("type") == "player"
+                for item in group.get("contents", [])
+            ]
+            match = next((
+                item for item in contents
+                if str(item.get("description") or "").upper() == "NBA"
+                and _nm(item.get("displayName", ""), player_name)
+            ), None)
+            if match:
+                found = re.search(
+                    r"(?:^|~)a:(\d+)", str(match.get("uid") or ""))
+                image = match.get("image") or {}
+                identity = {
+                    "player_id": found.group(1) if found else None,
+                    "headshot": (
+                        image.get("default", "")
+                        if isinstance(image, dict) else ""),
+                    "team_name": match.get("subtitle") or "",
+                }
+    except Exception as exc:
+        print(f"[nba_history] player identity failed for {player_name}: {exc}")
+    _NBA_PLAYER_IDENTITY_CACHE[cache_key] = identity
+    return identity
+
+
 async def _nba_historical_board(date_str: str, games: list, log: list) -> dict:
     """Build a priced, immutable replay board; never enters live tracking."""
     if date_str < HISTORICAL_ODDS_MIN_DATE:
@@ -1137,6 +1181,51 @@ async def _nba_historical_board(date_str: str, games: list, log: list) -> dict:
                 "historical_replay_schema": HISTORICAL_REPLAY_SCHEMA,
                 "props_picks": [], "props_nopick": []}
     box = _nba_box_lookup(date_str)
+    unresolved_names = sorted({
+        str(prop.get("player") or "").strip()
+        for prop in archived["props"]
+        if prop.get("player")
+        and not any(_nm(name, prop.get("player", "")) for name in box)
+    })
+    if unresolved_names:
+        identity_sem = asyncio.Semaphore(12)
+
+        async def resolve_identity(player_name, client):
+            async with identity_sem:
+                return player_name, await _nba_espn_player_identity(
+                    player_name, client)
+
+        try:
+            async with httpx.AsyncClient(timeout=8) as identity_client:
+                resolved = await asyncio.wait_for(
+                    asyncio.gather(*[
+                        resolve_identity(name, identity_client)
+                        for name in unresolved_names
+                    ]), timeout=20)
+            team_abbr_by_name = {}
+            for game in games:
+                team_abbr_by_name[_nba_hist_team_key(
+                    game.get("home_name", ""))] = game.get("home", "")
+                team_abbr_by_name[_nba_hist_team_key(
+                    game.get("away_name", ""))] = game.get("away", "")
+            for player_name, identity in resolved:
+                if not identity.get("player_id"):
+                    continue
+                team_abbr = team_abbr_by_name.get(
+                    _nba_hist_team_key(identity.get("team_name", "")), "")
+                box.setdefault(player_name.lower().strip(), {
+                    "player_id": identity["player_id"],
+                    "headshot": identity.get("headshot") or "",
+                    "team": team_abbr,
+                })
+            log.append(
+                f"Resolved ESPN identities for "
+                f"{sum(1 for _, item in resolved if item.get('player_id'))}/"
+                f"{len(unresolved_names)} archived players missing from the box")
+        except asyncio.TimeoutError:
+            log.append(
+                "Some archived player pictures could not be resolved before "
+                "the ESPN identity deadline.")
     historical_logs = {}
     if box:
         # The archived sportsbook feed identifies players but has no statistical
@@ -1488,8 +1577,9 @@ async def run_analysis(selected_date: str = None, force: bool = False) -> Dict:
 
     if historical_replay:
         # Historical dates have a completely separate path.  It deliberately
-        # does not load rosters, gamelogs, Coach/Main records, bets, or live
-        # caches: only ESPN schedule/final boxes plus archived Odds responses.
+        # does not load current rosters, Coach/Main records, bets, or live
+        # odds caches: it uses ESPN schedule/final boxes, pre-date player logs,
+        # and permanently cached archived Odds responses.
         result = await _nba_historical_board(today_str, games, log)
         _cache.update(result)
         if result.get("historical_unavailable") or result.get("odds_loaded"):
@@ -1514,14 +1604,26 @@ async def run_analysis(selected_date: str = None, force: bool = False) -> Dict:
     odds_lookup: Dict[tuple, Dict] = {}
     for prop in odds_props:
         key = (_nn(prop['player']), prop['stat'])
-        odds_lookup[key] = {'line': prop['line'], 'odds': str(prop.get('odds', ''))}
+        odds_lookup[key] = {
+            'line': prop['line'], 'odds': str(prop.get('odds', '')),
+            'over_odds': str(prop.get('over_odds', '')),
+            'under_odds': str(prop.get('under_odds', '')),
+            'bookmaker': prop.get('bookmaker', ''),
+            'bookmaker_label': prop.get('bookmaker_label', ''),
+        }
 
     # dk_lookup uses Odds API lines as the sole sportsbook source
     dk_lookup: Dict[tuple, Dict] = {}
     for prop in odds_raw:
         key = (_nn(prop['player']), prop['stat'])
         if key not in dk_lookup:
-            dk_lookup[key] = {'line': prop['line'], 'over_odds': str(prop.get('over_odds', '')), 'under_odds': str(prop.get('under_odds', ''))}
+            dk_lookup[key] = {
+                'line': prop['line'],
+                'over_odds': str(prop.get('over_odds', '')),
+                'under_odds': str(prop.get('under_odds', '')),
+                'bookmaker': prop.get('bookmaker', ''),
+                'bookmaker_label': prop.get('bookmaker_label', ''),
+            }
 
     # Map team_id -> abbreviation so we can match a player's per-game team
     # (ESPN exposes 'team.abbreviation' per gamelog event). Used to filter out
@@ -1809,7 +1911,7 @@ async def run_analysis(selected_date: str = None, force: bool = False) -> Dict:
                     if not opp_logs:
                         if historical_replay:
                             continue
-                        props_nopick.append({'player':pname,'player_id':pid,'stat':sk,'stat_label':sc['label'],'emoji':sc['emoji'],'team':cur_team,'side':side,'opp_name':opp_name,'line':line,'avg':None,'games':0,'history':'—','gap':None,'pick':None,'fd_odds':ob.get('odds',''),'dk_over_odds':dk_over,'dk_under_odds':dk_under,'matchup':matchup_str})
+                        props_nopick.append({'player':pname,'player_id':pid,'stat':sk,'stat_label':sc['label'],'emoji':sc['emoji'],'team':cur_team,'side':side,'opp_name':opp_name,'line':line,'avg':None,'games':0,'history':'—','gap':None,'pick':None,'fd_odds':ob.get('odds',''),'dk_over_odds':dk_over,'dk_under_odds':dk_under,'bookmaker':dk_ob.get('bookmaker') or ob.get('bookmaker',''),'bookmaker_label':dk_ob.get('bookmaker_label') or ob.get('bookmaker_label',''),'matchup':matchup_str})
                         continue
                     vals = [float(l[sk]) for l in opp_logs]
                     avg = round(sum(vals)/len(vals),1)
@@ -1817,7 +1919,7 @@ async def run_analysis(selected_date: str = None, force: bool = False) -> Dict:
                     gap = round(avg-line,1) if line is not None else None
                     pick = ('OVER' if replay else
                             ('OVER' if avg>line else ('UNDER' if avg<line else None)))
-                    entry = {'player':pname,'player_id':pid,'stat':sk,'stat_label':sc['label'],'emoji':sc['emoji'],'team':cur_team,'side':side,'opp_name':opp_name,'line':line,'replay_threshold':replay.get('threshold') if replay else None,'avg':avg,'games':len(vals),'history':','.join(str(int(v)) for v in vals[:8]),'gap':gap,'pick':pick,'fd_odds':None if historical_replay else ob.get('odds',''),'dk_over_odds':dk_over,'dk_under_odds':dk_under,'matchup':matchup_str,'historical_replay':historical_replay}
+                    entry = {'player':pname,'player_id':pid,'stat':sk,'stat_label':sc['label'],'emoji':sc['emoji'],'team':cur_team,'side':side,'opp_name':opp_name,'line':line,'replay_threshold':replay.get('threshold') if replay else None,'avg':avg,'games':len(vals),'history':','.join(str(int(v)) for v in vals[:8]),'gap':gap,'pick':pick,'fd_odds':None if historical_replay else ob.get('odds',''),'dk_over_odds':dk_over,'dk_under_odds':dk_under,'bookmaker':dk_ob.get('bookmaker') or ob.get('bookmaker',''),'bookmaker_label':dk_ob.get('bookmaker_label') or ob.get('bookmaker_label',''),'matchup':matchup_str,'historical_replay':historical_replay}
                     (props_picks if pick else props_nopick).append(entry)
     props_picks.sort(key=lambda x:abs(x.get('gap') or 0),reverse=True)
     log.append(f"Props: {len(props_picks)} picks")
@@ -2149,10 +2251,11 @@ footer{text-align:center;padding:32px 24px;color:#4b5563;font-size:.78rem;border
   <button class="filter-btn" data-stat="REB_AST" onclick="filterStat('REB_AST')">🔗 Reb+Ast</button>
   <button class="filter-btn" data-stat="BLK" onclick="filterStat('BLK')">🛡️ Blocks</button>
   <button class="filter-btn" data-stat="STL" onclick="filterStat('STL')">🧤 Steals</button>
-  <span style="width:1px;background:#2a2a2a;margin:2px 4px"></span>
-  <button class="filter-btn active" data-top-side="ALL" onclick="filterTopSide('ALL')" style="font-size:.72rem">All</button>
-  <button class="filter-btn" data-top-side="OVER" onclick="filterTopSide('OVER')" style="font-size:.72rem;color:#4ade80">Top 10 Over</button>
-  <button class="filter-btn" data-top-side="UNDER" onclick="filterTopSide('UNDER')" style="font-size:.72rem;color:#f87171">Top 10 Under</button>
+  <span id="topSideChooser" style="display:none;flex-basis:100%;align-items:center;gap:7px;padding-top:3px">
+    <button id="topBothBtn" class="filter-btn active" data-top-side="ALL" onclick="filterTopSide('ALL')" style="font-size:.72rem">Both</button>
+    <button id="topOverBtn" class="filter-btn" data-top-side="OVER" onclick="filterTopSide('OVER')" style="font-size:.72rem;color:#4ade80">Over Top 10</button>
+    <button id="topUnderBtn" class="filter-btn" data-top-side="UNDER" onclick="filterTopSide('UNDER')" style="font-size:.72rem;color:#f87171">Under Top 10</button>
+  </span>
 </div>
 <div id="content"></div>
 <div id="allPicksWrap" style="display:none">
@@ -2322,7 +2425,19 @@ function rankClass(i){return i===0?'rank-1':i===1?'rank-2':i===2?'rank-3':'rank-
 
 function filterStat(stat){
   activeTopStat=stat;
+  activeTopSide='ALL';
   document.querySelectorAll('#filterBar .filter-btn[data-stat]').forEach(b=>b.classList.toggle('active',b.dataset.stat===stat));
+  document.querySelectorAll('#filterBar .filter-btn[data-top-side]').forEach(b=>b.classList.toggle('active',b.dataset.topSide==='ALL'));
+  const chooser=document.getElementById('topSideChooser');
+  if(chooser) chooser.style.display=stat==='ALL'?'none':'flex';
+  if(stat!=='ALL'){
+    const names={PTS:'Points',REB:'Rebounds',AST:'Assists',FG3M:'3-Pointers',PRA:'PRA',PTS_REB:'Pts+Reb',PTS_AST:'Pts+Ast',REB_AST:'Reb+Ast',BLK:'Blocks',STL:'Steals'};
+    const name=names[stat]||stat;
+    const both=document.getElementById('topBothBtn'),over=document.getElementById('topOverBtn'),under=document.getElementById('topUnderBtn');
+    if(both) both.textContent=name+' — Both';
+    if(over) over.textContent=name+' Over Top 10';
+    if(under) under.textContent=name+' Under Top 10';
+  }
   renderTopCategory();
 }
 
@@ -2864,6 +2979,7 @@ async function runPicks(force=false){
     top10=data.picks||[];
     allPicksData=data.all_picks||[];
     activeTopStat='ALL';activeTopSide='ALL';activeAllStat='ALL';
+    var _topSideChooser=document.getElementById('topSideChooser');if(_topSideChooser)_topSideChooser.style.display='none';
     document.querySelectorAll('#filterBar .filter-btn[data-top-side]').forEach(b=>b.classList.toggle('active',b.dataset.topSide==='ALL'));
     const log=data.log||[];
     if(!top10.length && !allPicksData.length){
@@ -2921,6 +3037,7 @@ async function getPicks(){
     top10=data.picks||[];
     allPicksData=data.all_picks||[];
     activeTopStat='ALL';activeTopSide='ALL';activeAllStat='ALL';
+    var _topSideChooser=document.getElementById('topSideChooser');if(_topSideChooser)_topSideChooser.style.display='none';
     document.querySelectorAll('#filterBar .filter-btn[data-top-side]').forEach(b=>b.classList.toggle('active',b.dataset.topSide==='ALL'));
     if(top10.length){
       document.getElementById('filterBar').style.display='flex';
@@ -3108,6 +3225,7 @@ document.addEventListener('DOMContentLoaded', function(){
     top10        = data.picks || [];
     allPicksData = data.all_picks || [];
     activeTopStat = 'ALL'; activeTopSide = 'ALL'; activeAllStat = 'ALL';
+    var _topSideChooser=document.getElementById('topSideChooser');if(_topSideChooser)_topSideChooser.style.display='none';
     document.querySelectorAll('#filterBar .filter-btn[data-top-side]').forEach(b=>b.classList.toggle('active',b.dataset.topSide==='ALL'));
     if (top10.length) {
       var fb = document.getElementById('filterBar');
