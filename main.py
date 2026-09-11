@@ -101,7 +101,7 @@ HISTORICAL_ODDS_REGION = "us"
 LIVE_ODDS_REGIONS = "us,us2,ca"
 HISTORICAL_ODDS_TIMEOUT = 55
 HISTORICAL_ODDS_CONCURRENCY = 4
-HISTORICAL_REPLAY_SCHEMA = 8
+HISTORICAL_REPLAY_SCHEMA = 9
 ODDS_MARKET_MAP = {
     "player_points":                    "PTS",
     "player_rebounds":                   "REB",
@@ -1340,6 +1340,14 @@ async def _nba_historical_board(date_str: str, games: list, log: list) -> dict:
             row["opp"] = ""
             row["location"] = ""
         player_logs = historical_logs.get(str(row.get("player_id")), [])
+        recent_minutes = [
+            float(game["MIN"]) for game in player_logs[:10]
+            if game.get("MIN") is not None
+        ]
+        row["mpg"] = (round(sum(recent_minutes) / len(recent_minutes), 1)
+                      if recent_minutes else None)
+        row["rotation_priority"] = bool(
+            row["mpg"] is not None and row["mpg"] >= 24)
         opponent_logs = [
             game for game in player_logs
             if game.get("opp") == row["opp"]
@@ -1388,6 +1396,7 @@ async def _nba_historical_board(date_str: str, games: list, log: list) -> dict:
             row["result"] = None
         rows.append(row)
     rows.sort(key=lambda x: (
+        -int(x.get("rotation_priority", False)),
         -(x.get("pct") or 0), -(x.get("games") or 0),
         x.get("player", ""), x.get("stat", "")))
     qualified_rows = [row for row in rows if row.get("pick")]
@@ -1416,7 +1425,7 @@ async def _nba_historical_board(date_str: str, games: list, log: list) -> dict:
         msg += " · final ESPN actuals attached where available"
     log = log + [msg,
         "Standard lines use book consensus with balanced-price tie-breaking; alternates stay out of the main boards.",
-        "Picks rank by pre-game opponent/home-away hit rate, then sample size; sportsbook juice does not rank picks.",
+        "Starter/rotation priority uses 24+ average minutes in the last 10 pre-game appearances, then opponent/home-away hit rate and sample size; sportsbook juice does not rank picks.",
         "Historical replay uses archived sportsbook prices only; no pregame player-stat model edge is claimed."]
     return {"date": date_str, "picks": top, "all_picks": rows, "games": games,
             "log": log, "total": len(rows), "odds_loaded": bool(rows),
@@ -2474,12 +2483,16 @@ function _nbaNormalizeHistoricalData(data){
   if(!data||!data.historical_replay)return data;
   const best=new Map();
   (data.all_picks||data.picks||[]).forEach(p=>{
+    // Available quotes without a qualifying matchup signal are not picks.
+    if(!['OVER','UNDER'].includes(p.pick)||!p.games||p.pct==null)return;
     const key=`${String(p.player||'').toLowerCase()}|${p.stat||''}|${p.event_id||p.matchup||''}`;
-    const cur=best.get(key);
-    if(!cur||_nbaHistImplied(p.odds||p.fd_odds)>_nbaHistImplied(cur.odds||cur.fd_odds))best.set(key,p);
+    // The server owns standard-line selection; never replace it using juice.
+    if(!best.has(key))best.set(key,p);
   });
   const clean=Array.from(best.values()).sort((a,b)=>
-    _nbaHistImplied(b.odds||b.fd_odds)-_nbaHistImplied(a.odds||a.fd_odds));
+    Number(b.mpg!=null&&b.mpg>=24)-Number(a.mpg!=null&&a.mpg>=24) ||
+    (b.pct||0)-(a.pct||0) || (b.games||0)-(a.games||0) ||
+    String(a.player||'').localeCompare(String(b.player||'')));
   const statOrder=['PTS','REB','AST','FG3M','PRA','PTS_REB','PTS_AST','REB_AST','BLK','STL'];
   const pools={};statOrder.forEach(s=>pools[s]=clean.filter(p=>p.stat===s));
   const balanced=[];let depth=0,added=true;
@@ -2643,6 +2656,10 @@ function renderTop10Cards(picks){
       // Data lines: spell out exactly what the user sees on a bet slip
       const lines=[];
       if(s.dk_line!=null) lines.push(`<div style="font-size:.86rem;color:#ddd;margin-bottom:3px"><strong style="color:#fff">Line ${s.dk_line}</strong> ${s.stat_label}</div>`);
+      if(s.historical_replay && s.pick && s.games){
+        lines.push(`<div style="font-size:.8rem;color:#e2e8f0;margin-bottom:4px"><strong>${s.hits}/${s.games} ${s.pick} ${s.line}</strong> vs ${p.opp} · ${(p.location||'').toLowerCase()} (${s.pct}%)</div>`);
+        if(s.mpg!=null) lines.push(`<div style="font-size:.72rem;color:#94a3b8;margin-bottom:4px">Recent playing time: ${s.mpg} MPG · last 10 pre-game appearances</div>`);
+      }
       if(s.dk_line!=null && s.dk_hits!=null){
         const over=s.dk_hits, under=(s.l10_games||10)-over;
         lines.push(`<div style="font-size:.8rem;color:#aaa;margin-bottom:3px">vs line last ${s.l10_games||10} (vs ${p.opp} ${(p.location||'').toLowerCase()}): <span style="color:#4ade80;font-weight:700">${over} over</span> · <span style="color:#f87171;font-weight:700">${under} under</span></div>`);
