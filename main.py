@@ -370,12 +370,22 @@ def _nba_am_to_dec(odds) -> float:
         return 1.0
     return round(1 + o / 100, 6) if o > 0 else round(1 + 100 / abs(o), 6)
 
-def _nba_extract_stat(stats_arr: list, stat_key: str):
-    """Extract NBA stat from ESPN box score stats array (MIN,FG,3PT,FT,OREB,DREB,REB,AST,STL,BLK,TO,PF,+/-,PTS)."""
-    IDX = {"PTS": 13, "REB": 6, "AST": 7, "FG3M": 2, "BLK": 9, "STL": 8}
-    if stat_key in IDX:
+def _nba_extract_stat(stats_arr: list, stat_key: str, labels: list = None):
+    """Extract an NBA stat using ESPN's supplied labels, with legacy fallback."""
+    legacy_idx = {"PTS": 13, "REB": 6, "AST": 7, "FG3M": 2, "BLK": 9, "STL": 8}
+    aliases = {"PTS": ("PTS",), "REB": ("REB",), "AST": ("AST",),
+               "FG3M": ("3PT", "FG3M"), "BLK": ("BLK",), "STL": ("STL",)}
+    label_idx = {str(label).upper(): i for i, label in enumerate(labels or [])}
+    idx = None
+    for label in aliases.get(stat_key, ()):
+        if label in label_idx:
+            idx = label_idx[label]
+            break
+    if idx is None:
+        idx = legacy_idx.get(stat_key)
+    if idx is not None:
         try:
-            raw = stats_arr[IDX[stat_key]]
+            raw = stats_arr[idx]
             if stat_key == "FG3M" and isinstance(raw, str) and "-" in raw:
                 return float(raw.split("-")[0])
             return float(raw)
@@ -384,7 +394,7 @@ def _nba_extract_stat(stats_arr: list, stat_key: str):
     _base = {"PRA": ("PTS","REB","AST"), "PTS_REB": ("PTS","REB"),
              "PTS_AST": ("PTS","AST"), "REB_AST": ("REB","AST")}
     if stat_key in _base:
-        vals = [_nba_extract_stat(stats_arr, k) for k in _base[stat_key]]
+        vals = [_nba_extract_stat(stats_arr, k, labels) for k in _base[stat_key]]
         if all(v is not None for v in vals):
             return sum(vals)
     return None
@@ -479,8 +489,9 @@ def _nba_box_lookup_raw(date_str: str):
                         "headshot": headshot.get("href") if isinstance(headshot, dict) else "",
                         "team": team_abbr,
                     }
+                    labels = grp.get("labels") or grp.get("names") or []
                     for sk in _NBA_BET_STAT_KEYS:
-                        v = _nba_extract_stat(stats_arr, sk)
+                        v = _nba_extract_stat(stats_arr, sk, labels)
                         if v is not None:
                             ps[sk] = v
                     results[name] = ps
@@ -734,7 +745,7 @@ async def get_player_gamelogs_espn(player_id: str, season: int,
     events = gl.get('events', {})
 
     # Build eventId → stats map from seasonTypes → categories → events
-    stats_map: Dict[str, List] = {}
+    stats_map: Dict[str, Dict] = {}
     for st in gl.get('seasonTypes', []):
         # WHITELIST: only count Regular Season + Postseason. Excludes preseason,
         # summer league, NBA Cup / In-Season Tournament, exhibitions, etc.
@@ -747,18 +758,25 @@ async def get_player_gamelogs_espn(player_id: str, season: int,
             for ev in cat.get('events', []):
                 eid = ev.get('eventId')
                 if eid and ev.get('stats') and eid not in stats_map:
-                    stats_map[eid] = ev['stats']
+                    stats_map[eid] = {
+                        "stats": ev["stats"],
+                        "labels": cat.get("labels") or cat.get("names") or [],
+                    }
 
     games = []
     for eid, ev_info in events.items():
         if eid not in stats_map:
             continue
-        stats = stats_map[eid]
+        stat_entry = stats_map[eid]
+        stats = stat_entry["stats"]
+        labels = stat_entry.get("labels") or []
         if len(stats) < 14:
             continue
 
         # Skip garbage time / DNP games
-        if parse_min(stats[0]) < MIN_MINUTES:
+        min_idx = next((i for i, label in enumerate(labels)
+                        if str(label).upper() == "MIN"), 0)
+        if parse_min(stats[min_idx]) < MIN_MINUTES:
             continue
 
         opp_info = ev_info.get('opponent', {})
@@ -772,17 +790,17 @@ async def get_player_gamelogs_espn(player_id: str, season: int,
             'location':    location,
             'date':        ev_info.get('gameDate', ''),
             'player_team': player_team_abbr,
-            'MIN':         parse_min(stats[0]),
-            'PTS':         parse_stat(stats[13]),
-            'REB':         parse_stat(stats[7]),
-            'AST':         parse_stat(stats[8]),
-            'FG3M':        parse_stat(stats[3]),
-            'PRA':         parse_stat(stats[13]) + parse_stat(stats[7]) + parse_stat(stats[8]),
-            'PTS_REB':     parse_stat(stats[13]) + parse_stat(stats[7]),
-            'PTS_AST':     parse_stat(stats[13]) + parse_stat(stats[8]),
-            'REB_AST':     parse_stat(stats[7])  + parse_stat(stats[8]),
-            'BLK':         parse_stat(stats[9]),
-            'STL':         parse_stat(stats[10]),
+            'MIN':         parse_min(stats[min_idx]),
+            'PTS':         _nba_extract_stat(stats, 'PTS', labels) or 0,
+            'REB':         _nba_extract_stat(stats, 'REB', labels) or 0,
+            'AST':         _nba_extract_stat(stats, 'AST', labels) or 0,
+            'FG3M':        _nba_extract_stat(stats, 'FG3M', labels) or 0,
+            'PRA':         sum((_nba_extract_stat(stats, k, labels) or 0) for k in ('PTS','REB','AST')),
+            'PTS_REB':     sum((_nba_extract_stat(stats, k, labels) or 0) for k in ('PTS','REB')),
+            'PTS_AST':     sum((_nba_extract_stat(stats, k, labels) or 0) for k in ('PTS','AST')),
+            'REB_AST':     sum((_nba_extract_stat(stats, k, labels) or 0) for k in ('REB','AST')),
+            'BLK':         _nba_extract_stat(stats, 'BLK', labels) or 0,
+            'STL':         _nba_extract_stat(stats, 'STL', labels) or 0,
         })
     _NBA_GAMELOG_CACHE[cache_key] = games
     return games
@@ -4581,7 +4599,9 @@ def _nba_coach_rows(standard, alternate, query="", mode="all", count=100):
                 out.append({"player":name,"team":r.get("team") or signal.get("team",""),"stat":stat,
                     "category":STAT_CONFIG[stat]["label"],"side":side,"line":line,"odds":odds,
                     "model_probability":round(model,5),"implied_probability":implied,
-                    "edge":round(edge,5),"recent_average":round(sum(vals[-10:])/len(vals[-10:]),1),
+                    "edge":round(edge,5),"coach_edge":round(edge*100,2),
+                    "book":_nba_coach_source(r),
+                    "recent_average":round(sum(vals[-10:])/len(vals[-10:]),1),
                     "game_log":vals[-10:],"opponent_history":signal.get("history") or "—",
                     "source":_nba_coach_source(r),"alternate":bool(is_alt),
                     "selection_reason":"Positive Coach Edge: empirical H/A opponent log exceeds American-odds implied probability."})
@@ -4701,7 +4721,8 @@ _NBA_COACH_PRESETS = (
     ("Blocks UNDER", "blocks under", "standard"),
     ("Steals OVER", "steals over", "standard"),
     ("Steals UNDER", "steals under", "standard"),
-    ("Genuine alternate lines", "alternate", "alternate"),
+    ("Best - Alternate Plays", "best minus alternate plays", "alternate_minus"),
+    ("Best + Alternate Plays", "best plus alternate plays", "alternate_plus"),
 )
 _NBA_COACH_STAKE = 20.0
 
@@ -4750,7 +4771,8 @@ def _nba_coach_capture_pregame(date_str: str, result: dict):
     alternate = alt_doc.get("props") if isinstance(alt_doc, dict) else []
     presets = {}
     for label, query, mode in _NBA_COACH_PRESETS:
-        source_mode = "alternate" if mode == "alternate" else ("standard" if mode == "standard" else "all")
+        source_mode = (mode if mode in ("alternate", "alternate_minus", "alternate_plus")
+                       else ("standard" if mode == "standard" else "all"))
         got = _nba_coach_rows(standard, alternate, query, source_mode, 200)
         # Preserve exact server-owned side/line/price, and never record invalid
         # prices. Alternate rows must be genuine cached rows, not inferred lines.
@@ -4801,8 +4823,8 @@ def _nba_coach_grade_date(date_str, doc):
         except Exception:
             pass
         if result in ("WIN","LOSS"):
-            detail.append({k:p.get(k) for k in ("preset","player","team","category","stat","side","line","odds")}|{
-                "name":p.get("player",""),"result":result,"actual":actual,
+            detail.append({**p, "name":p.get("player",""), "result":result,
+                "actual":actual,
                 "profit":round(_nba_coach_profit(p.get("odds"),result),2)})
     return detail
 
@@ -4834,14 +4856,21 @@ def _nba_coach_update_track_ledger():
 
 def _nba_historical_coach_rows(date_str):
     """Build view-only Coach categories from a saved point-in-time replay."""
-    saved = _nba_sb_get({"app":f"eq.{_NBA_HIST_APP}",
-        "date":f"eq.{date_str}","category":f"eq.{_NBA_HIST_GRADED_CAT}",
+    snapshots = _nba_sb_get({"app":f"eq.{_NBA_HIST_APP}",
+        "date":f"eq.{date_str}","category":f"eq.{_NBA_HIST_SNAP_CAT}",
         "side":"eq.ALL","select":"detail","limit":"1"}) or []
-    if not saved:
+    if snapshots:
+        source = _nba_historical_grade_rows(
+            date_str, snapshots[0].get("detail") or [])
+        _nba_sb_upsert([{"app":_NBA_HIST_APP,"date":date_str,
+            "category":_NBA_HIST_GRADED_CAT,"side":"ALL","wins":0,
+            "losses":0,"locked":False,"detail":source}],
+            "app,date,category,side")
+    else:
         saved = _nba_sb_get({"app":f"eq.{_NBA_HIST_APP}",
-            "date":f"eq.{date_str}","category":f"eq.{_NBA_HIST_SNAP_CAT}",
+            "date":f"eq.{date_str}","category":f"eq.{_NBA_HIST_GRADED_CAT}",
             "side":"eq.ALL","select":"detail","limit":"1"}) or []
-    source = saved[0].get("detail") or [] if saved else []
+        source = saved[0].get("detail") or [] if saved else []
     candidates = []
     for row in source:
         try:
@@ -4872,7 +4901,8 @@ def _nba_historical_coach_rows(date_str):
     add("Positive Coach Edge", candidates, lambda r:r["edge"])
     add("Safest bets", candidates, lambda r:r["model_probability"])
     for label, _, _ in _NBA_COACH_PRESETS:
-        if label in ("Positive Coach Edge","Safest bets","Genuine alternate lines"):
+        if label in ("Positive Coach Edge", "Safest bets",
+                     "Best - Alternate Plays", "Best + Alternate Plays"):
             continue
         parts = label.rsplit(" ", 1)
         if len(parts) != 2:
@@ -4881,6 +4911,45 @@ def _nba_historical_coach_rows(date_str):
         add(label, [r for r in candidates if
             str(r.get("category")) == market and str(r.get("side")).upper() == side],
             lambda r:r["edge"])
+    # Alternates are intentionally absent from the standard historical
+    # snapshot. Rebuild the two approved presets only from the isolated,
+    # exact archived alternate cache that powered the Coach buttons.
+    standard_doc = _cache_get("nba", date_str) or {}
+    alternate_doc = _cache_get("nba_alternates", date_str) or {}
+    standard_rows = ((standard_doc.get("props_picks") or [])
+                     + (standard_doc.get("props_nopick") or []))
+    alternate_rows = (alternate_doc.get("props") or []
+                      if isinstance(alternate_doc, dict) else [])
+    if standard_rows and alternate_rows:
+        box = _nba_box_lookup(date_str)
+        by_name = {_nba_hist_norm_name(name): values
+                   for name, values in (box or {}).items()}
+        for label, mode, query in (
+                ("Best - Alternate Plays", "alternate_minus",
+                 "best minus alternate plays"),
+                ("Best + Alternate Plays", "alternate_plus",
+                 "best plus alternate plays")):
+            selected = _nba_coach_rows(
+                standard_rows, alternate_rows, query, mode, 10)
+            graded_alt = []
+            for pick in selected:
+                actual = (by_name.get(_nba_hist_norm_name(
+                    pick.get("player"))) or {}).get(pick.get("stat"))
+                result = None
+                if actual is not None:
+                    line = float(pick["line"])
+                    result = ("PUSH" if actual == line else
+                              ("WIN" if (actual > line)
+                               == (pick.get("side") == "OVER") else "LOSS"))
+                graded_alt.append({
+                    **pick, "name": pick.get("player", ""),
+                    "preset": label, "actual": actual,
+                    "result": result or "PENDING",
+                    "profit": (_nba_american_profit_trk(
+                        pick.get("odds"), _NBA_HIST_STAKE, result)
+                        if result else None),
+                })
+            grouped[label] = graded_alt
     return [row for rows in grouped.values() for row in rows]
 
 @app.get("/api/nba/coach-track-record")
@@ -4924,6 +4993,7 @@ async def nba_coach_track_record(request: Request, date_str: str = "",
 _NBA_HIST_APP = "nba_historical_replay"
 _NBA_HIST_SNAP_CAT = "__snapshot__"
 _NBA_HIST_GRADED_CAT = "__graded__"
+_NBA_HIST_GRADING_VERSION = 2
 _NBA_HIST_STATUS_CAT = "__month_status__"
 _NBA_HIST_STAKE = 20.0
 _NBA_HIST_LOCK = _nba_th.Lock()
@@ -4987,6 +5057,7 @@ def _nba_hist_snapshot_rows(result):
             "side": side, "line": line, "odds": odds,
             "book": p.get("book") or p.get("bookmaker") or p.get("bookmaker_label") or "",
             "snapshot": p.get("historical_snapshot") or result.get("historical_snapshot"),
+            "snapshot_version": 2,
             "mpg": p.get("mpg"), "games": p.get("games") or 0,
             "hits": p.get("hits") or 0, "pct": p.get("pct"),
             "actual": p.get("actual"), "result": p.get("result"),
@@ -4998,9 +5069,15 @@ def _nba_historical_persist_snapshot(date_str, result):
     rows = _nba_hist_snapshot_rows(result)
     if not rows:
         return False
-    return _nba_hist_sb_insert_ignore([{"app":_NBA_HIST_APP,"date":date_str,
+    existing = _nba_hist_sb_get({"app":f"eq.{_NBA_HIST_APP}",
+        "date":f"eq.{date_str}","category":f"eq.{_NBA_HIST_SNAP_CAT}",
+        "side":"eq.ALL","select":"detail","limit":"1"}) or []
+    previous = existing[0].get("detail") or [] if existing else []
+    if previous and all(row.get("snapshot_version") == 2 for row in previous):
+        return True
+    return _nba_sb_upsert([{"app":_NBA_HIST_APP,"date":date_str,
         "category":_NBA_HIST_SNAP_CAT,"side":"ALL","wins":0,"losses":0,
-        "locked":False,"detail":rows}])
+        "locked":False,"detail":rows}], "app,date,category,side")
 
 def _nba_historical_grade_rows(date_str, rows, box=None):
     box = _nba_box_lookup(date_str) if box is None else box
@@ -5011,7 +5088,8 @@ def _nba_historical_grade_rows(date_str, rows, box=None):
     for row in rows or []:
         # Terminal result/actual are immutable; recover a missing profit from
         # the immutable odds rather than turning a terminal row into pending.
-        if row.get("result") in ("WIN","LOSS","PUSH","VOID"):
+        if (row.get("result") in ("WIN","LOSS","PUSH","VOID")
+                and row.get("grading_version") == _NBA_HIST_GRADING_VERSION):
             terminal = dict(row)
             if terminal.get("profit") is None and terminal["result"] != "VOID":
                 terminal["profit"] = _nba_american_profit_trk(
@@ -5030,6 +5108,7 @@ def _nba_historical_grade_rows(date_str, rows, box=None):
             graded["profit"] = _nba_american_profit_trk(row.get("odds"), _NBA_HIST_STAKE, graded["result"])
         else:
             graded["result"], graded["profit"] = None, None
+        graded["grading_version"] = _NBA_HIST_GRADING_VERSION
         out.append(graded)
     return out
 
