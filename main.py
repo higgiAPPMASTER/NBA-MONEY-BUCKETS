@@ -4531,7 +4531,22 @@ def _nba_coach_prob(row, side, line):
         try: vals.append(float(x))
         except Exception: pass
     if not vals:
-        # Props with no opponent log are not eligible; do not manufacture a prior.
+        # Durable historical replay rows retain the exact qualifying side,
+        # line, hits, and games even when the raw comma-separated game log is
+        # unavailable after a redeploy. Reuse only that exact saved signal;
+        # never project it onto the opposite side or an alternate line.
+        try:
+            saved_side = str(row.get("side") or row.get("pick") or "").upper()
+            saved_line = float(row.get("line"))
+            games = int(row.get("games") or 0)
+            hits = int(row.get("hits") or 0)
+        except Exception:
+            saved_side, saved_line, games, hits = "", None, 0, 0
+        if (games > 0 and 0 <= hits <= games and saved_side == side
+                and saved_line is not None and abs(saved_line - float(line)) < 1e-9):
+            prob = (hits + 1.0) / (games + 2.0)
+            return max(0.01, min(0.99, prob)), []
+        # Props with no exact saved signal are not eligible; do not manufacture a prior.
         return None, []
     hits = sum(v > line if side == "OVER" else v < line for v in vals)
     # Laplace smoothing prevents a tiny 1/1 sample displaying 100%, while retaining
@@ -4611,7 +4626,9 @@ def _nba_coach_rows(standard, alternate, query="", mode="all", count=100):
                     "model_probability":round(model,5),"implied_probability":implied,
                     "edge":round(edge,5),"coach_edge":round(edge*100,2),
                     "book":_nba_coach_source(r),
-                    "recent_average":round(sum(vals[-10:])/len(vals[-10:]),1),
+                    "recent_average":(
+                        round(sum(vals[-10:])/len(vals[-10:]),1)
+                        if vals else None),
                     "game_log":vals[-10:],"opponent_history":signal.get("history") or "—",
                     "source":_nba_coach_source(r),"alternate":bool(is_alt),
                     "selection_reason":"Positive Coach Edge: empirical H/A opponent log exceeds American-odds implied probability."})
@@ -4659,6 +4676,33 @@ async def nba_coach_edge(request: Request):
     existing_alternate = _cache_get("nba_alternates", ds)
     alternate_result = None
     is_alt_mode = mode in ("alternate", "alternate_minus", "alternate_plus")
+    if is_alt_mode and ds < date.today().isoformat():
+        saved_alt = _nba_hist_sb_get({
+            "app": f"eq.{_NBA_HIST_APP}",
+            "date": f"eq.{ds}",
+            "category": f"eq.{_NBA_HIST_ALT_COACH_CAT}",
+            "side": "eq.ALL",
+            "select": "detail",
+            "limit": "1",
+        }) or []
+        saved_rows = (saved_alt[0].get("detail") or []) if saved_alt else []
+        wanted_preset = (
+            "Best - Alternate Plays" if mode == "alternate_minus"
+            else "Best + Alternate Plays" if mode == "alternate_plus"
+            else None)
+        if wanted_preset:
+            saved_rows = [
+                row for row in saved_rows
+                if row.get("preset") == wanted_preset
+            ]
+        saved_rows = saved_rows[:max(
+            1, min(int(body.get("count", 10) or 10), 10))]
+        if saved_rows:
+            return {
+                "date": ds,
+                "results": saved_rows,
+                "source": "NBA durable historical alternate Coach snapshot",
+            }
     if (is_alt_mode and ds < date.today().isoformat()
             and not (isinstance(existing_alternate, dict)
                      and existing_alternate.get("historical_alternates"))):
