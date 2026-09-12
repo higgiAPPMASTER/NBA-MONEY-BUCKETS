@@ -3919,7 +3919,7 @@ function nbaCoachPreset(q){
  };
  var input=document.getElementById('nbaCoachQuery');
  if(input)input.value=labels[q]||q;
- nbaCoachSearch(q==='alternate_minus'?'alternate_minus':(q==='alternate_plus'?'alternate_plus':'all'),q);
+ nbaCoachSearch(q==='alternate_minus'?'alternate_minus':(q==='alternate_plus'?'alternate_plus':'all'),labels[q]||q);
 }
 async function nbaCoachSearch(forceMode,presetQuery){
   var question=document.getElementById('nbaCoachQuery').value||'';
