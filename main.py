@@ -2598,30 +2598,49 @@ footer{text-align:center;padding:32px 24px;color:#4b5563;font-size:.78rem;border
 </footer>
 <!-- NBA Track Record — always visible below picks -->
 <style>
- .nba-trk-shell{border:1px solid #2563eb!important;background:linear-gradient(145deg,#071329,#0b1020)!important}
- .nba-trk-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px;margin:14px 0}
- .nba-trk-stat{background:#0f1b33;border-radius:10px;padding:10px}
+ .nba-trk-shell{border:1px solid #1e293b!important;background:#0b1121!important;border-radius:12px}
+ .nba-acc-row { background: #111827; border: 1px solid #1e293b; border-radius: 8px; margin-bottom: 8px; overflow: hidden; border-left: 4px solid #3b82f6; display: flex; flex-direction: column; }
+ .nba-acc-row.cat-Points { border-left-color: #3b82f6; }
+ .nba-acc-row.cat-Rebounds { border-left-color: #f97316; }
+ .nba-acc-row.cat-Assists { border-left-color: #fbbf24; }
+ .nba-acc-row.cat-3Pointers { border-left-color: #ef4444; }
+ .nba-acc-row.cat-PtsRebAst { border-left-color: #a855f7; }
+ .nba-acc-row.cat-PtsReb { border-left-color: #8b5cf6; }
+ .nba-acc-row.cat-PtsAst { border-left-color: #ec4899; }
+ .nba-acc-row.cat-RebAst { border-left-color: #14b8a6; }
+ .nba-acc-row.cat-Blocks { border-left-color: #22c55e; }
+ .nba-acc-row.cat-Steals { border-left-color: #06b6d4; }
+ .nba-acc-head { display: flex; justify-content: space-between; align-items: center; padding: 12px 16px; cursor: pointer; user-select: none; }
+ .nba-acc-head:hover { background: #1e293b; }
+ .nba-acc-title { display: flex; align-items: center; gap: 12px; font-size: .85rem; font-weight: 700; color:#f8fafc; }
+ .nba-acc-side { font-size: .65rem; padding: 2px 8px; border-radius: 12px; border: 1px solid rgba(255,255,255,0.2); font-weight: 700; }
+ .nba-acc-side.over { color: #60a5fa; border-color: #1d4ed8; background: rgba(29,78,216,.1); }
+ .nba-acc-side.under { color: #fcd34d; border-color: #b45309; background: rgba(180,83,9,.1); }
+ .nba-acc-stats { display: flex; gap: 16px; font-size: .8rem; color: #cbd5e1; align-items: center; font-weight: 700; }
+ .nba-acc-btn { background: #334155; color: #fff; border: none; border-radius: 4px; width: 24px; height: 24px; display: flex; align-items: center; justify-content: center; font-weight: bold; cursor: pointer; }
+ .nba-acc-body { display: none; border-top: 1px solid #1e293b; padding: 0; }
+ .nba-acc-row.open .nba-acc-body { display: block; }
+ .nba-acc-row.open .nba-acc-btn { background: #475569; transform: rotate(45deg); transition: transform 0.2s; }
+ .nba-acc-body table { width: 100%; border-collapse: collapse; font-size: .75rem; }
+ .nba-acc-body th { padding: 10px 16px; text-align: left; border-bottom: 1px solid #1e293b; color: #93c5fd; font-size: .65rem; text-transform: uppercase; }
+ .nba-acc-body td { padding: 10px 16px; border-bottom: 1px solid #1e293b; color: #e2e8f0; }
+ .nba-acc-body tr:last-child td { border-bottom: none; }
+ @media(max-width:600px){.nba-acc-body table{min-width:680px}.nba-acc-stats{gap:8px;font-size:.7rem}}
 </style>
 <div id="nba-track-section" style="max-width:960px;margin:18px auto 0;padding:0 16px 40px">
-  <div class="card nba-trk-shell" style="padding:20px 22px">
-    <div style="display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;align-items:center">
-      <div>
-        <h2 style="font-family:\'Playfair Display\',serif;font-size:1.4rem;font-weight:700;color:#fff;margin:5px 0">&#128202; NBA Track Record</h2>
+  <div class="card nba-trk-shell" style="padding:20px">
+    <div style="background:#111827;border:1px solid #1e293b;border-radius:12px;padding:16px;display:flex;align-items:center;gap:20px;flex-wrap:wrap">
+      <div style="display:flex;align-items:center;gap:12px">
+        <select id="nbaTrkDateSelect" onchange="renderNbaTrackDay()" style="background:transparent;color:#60a5fa;border:none;font-weight:900;font-size:1.05rem;outline:none;cursor:pointer"><option value="">No dates loaded</option></select>
+        <div id="nbaTrkTopPct" style="color:#10b981;font-weight:700;font-size:.85rem"></div>
       </div>
+      <div style="display:flex;align-items:center;gap:8px">
+        <label style="color:#94a3b8;font-size:.75rem">Bet size ($)</label>
+        <input type="number" id="nbaTrkBetSize" value="100.00" step="5" style="background:#0f172a;color:#fff;border:1px solid #334155;border-radius:6px;padding:4px 8px;width:75px;font-weight:700" onchange="renderNbaTrackDay()">
+      </div>
+      <div id="nbaTrkTopStats" style="display:flex;align-items:center;gap:16px;font-size:.85rem;font-weight:700;color:#fff"></div>
+      <button onclick="loadNbaTrackRecord()" style="margin-left:auto;background:transparent;color:#64748b;border:1px solid #334155;border-radius:6px;padding:4px 10px;font-size:.75rem;cursor:pointer">&#8635; Reload</button>
     </div>
-    <div style="display:flex;gap:16px;align-items:center;flex-wrap:wrap;margin-top:16px;margin-bottom:14px">
-      <div>
-        <label style="color:#cbd5e1;font-size:.72rem">Date </label>
-        <select id="nbaTrkDateSelect" onchange="_nbaTrkDayName();renderNbaTrackDay()" style="background:#0f172a;color:#fff;border:1px solid #334155;border-radius:6px;padding:6px;min-width:120px"><option value="">No dates loaded</option></select>
-        <span id="nbaTrkDayName" style="color:#34d399;font-weight:700;font-size:.9rem;margin-left:8px"></span>
-      </div>
-      <div>
-        <label style="color:#cbd5e1;font-size:.72rem">Bet size ($) </label>
-        <input type="number" id="nbaTrkBetSize" value="100.00" step="5" style="background:#0f172a;color:#fff;border:1px solid #334155;border-radius:6px;padding:6px;width:80px" onchange="renderNbaTrackDay()">
-      </div>
-      <button onclick="loadNbaTrackRecord()" style="background:#1d4ed8;color:#fff;border:none;border-radius:6px;padding:6px 14px;font-weight:700;cursor:pointer;font-size:.82rem">&#8635; Load Track Record</button>
-    </div>
-    <div id="nbaTrkSummary" class="nba-trk-grid"></div>
     <div id="nbaTrkBody" style="margin-top:16px"></div>
   </div>
 </div>
@@ -3764,20 +3783,22 @@ async function loadNbaTrackRecord(){
   }
 }
 function toggleTrkAcc(el) { el.parentElement.classList.toggle('open'); }
+function nbaTrkCatClass(cat) { return 'cat-' + String(cat||'').replace(/[^a-zA-Z0-9]/g, ''); }
 function renderNbaTrackDay(){
   var sel = document.getElementById('nbaTrkDateSelect').value;
   var out = document.getElementById('nbaTrkBody');
-  var sumEl = document.getElementById('nbaTrkSummary');
+  var topPct = document.getElementById('nbaTrkTopPct');
+  var topStats = document.getElementById('nbaTrkTopStats');
   var stake = parseFloat(document.getElementById('nbaTrkBetSize').value) || 100;
   
   if(!_nbaTrkData||!_nbaTrkData.length){
     if(out) out.innerHTML='<p style="color:#94a3b8;padding:16px">No graded picks yet. Run picks and check back after games finish.</p>';
-    if(sumEl) sumEl.innerHTML='';
+    if(topPct) topPct.innerHTML=''; if(topStats) topStats.innerHTML='';
     return;
   }
   
   var day = _nbaTrkData.find(function(d){return d.date===sel;});
-  if(!day) { if(out) out.innerHTML='<p style="color:#94a3b8;padding:16px">No data for this date.</p>'; if(sumEl) sumEl.innerHTML=''; return; }
+  if(!day) { if(out) out.innerHTML='<p style="color:#94a3b8;padding:16px">No data for this date.</p>'; if(topPct) topPct.innerHTML=''; if(topStats) topStats.innerHTML=''; return; }
   
   var cats = ["Points","Rebounds","Assists","3-Pointers","Pts+Reb+Ast","Pts+Reb","Pts+Ast","Reb+Ast","Blocks","Steals"];
   var groups = {};
@@ -3809,15 +3830,17 @@ function renderNbaTrackDay(){
     }
   });
   
-  var droi = dstaked>0 ? (dnet/dstaked*100).toFixed(1) : '—';
-  var dpct = (dw+dl)>0 ? (dw/(dw+dl)*100).toFixed(1) : '—';
-  if(sumEl) {
-    sumEl.innerHTML=[
-      ['W-L', dw+'-'+dl],
-      ['Win %', dpct+'%'],
-      ['Net', (dnet>=0?'+':'')+'$'+dnet.toFixed(2)],
-      ['ROI', droi+'% · P:'+dpend]
-    ].map(function(x){return '<div class="nba-trk-stat"><small style="color:#64748b">'+x[0]+'</small><div style="color:#fff;font-weight:900;font-size:1.05rem">'+x[1]+'</div></div>'}).join('');
+  var droi = dstaked>0 ? (dnet/dstaked*100).toFixed(1) : '0.0';
+  var dpctStr = (dw+dl)>0 ? (dw/(dw+dl)*100).toFixed(1)+'%' : '0%';
+  if (topPct) topPct.innerHTML = dw+'W/'+(dw+dl)+'L ('+dpctStr+')';
+  if (topStats) {
+    var netColor = dnet > 0 ? '#4ade80' : dnet < 0 ? '#f87171' : '#cbd5e1';
+    var roiColor = (dstaked > 0 && dnet > 0) ? '#4ade80' : (dstaked > 0 && dnet < 0) ? '#f87171' : '#cbd5e1';
+    topStats.innerHTML = 
+      '<span style="color:'+netColor+'">Net '+(dnet>=0?'+':'')+'$'+dnet.toFixed(2)+'</span>'+
+      '<span style="color:'+roiColor+'">ROI '+(dnet>=0?'+':'')+droi+'%</span>'+
+      (dpend > 0 ? '<span style="color:#fbbf24">'+dpend+' pending</span>' : '')+
+      '<span style="color:#64748b;font-weight:400;font-size:.75rem;margin-left:8px"> $'+stake.toFixed(2)+'/play · '+(dw+dl)+' priced plays</span>';
   }
   
   var html = '';
@@ -3826,26 +3849,26 @@ function renderNbaTrackDay(){
     var pct = total>0 ? (g.w/total*100).toFixed(1)+'%' : '0%';
     var color = g.net>0 ? '#4ade80' : g.net<0 ? '#f87171' : '#cbd5e1';
     var pendStr = g.pend ? ' · '+g.pend+' pending' : '';
-    html += '<div class="nba-acc-row">'+
+    html += '<div class="nba-acc-row '+nbaTrkCatClass(g.cat)+'">'+
       '<div class="nba-acc-head" onclick="toggleTrkAcc(this)">'+
-        '<div class="nba-acc-title"><span style="color:#64748b;font-weight:400;font-size:.65rem;text-transform:uppercase">Category</span> '+nbaTrkEsc(g.cat)+' <span class="nba-acc-side '+(g.side==='OVER'?'over':'under')+'">'+g.side+'</span></div>'+
+        '<div class="nba-acc-title"><span style="color:#64748b;font-weight:800;font-size:.7rem;text-transform:uppercase;letter-spacing:.1em">Category</span> '+nbaTrkEsc(g.cat)+' <span class="nba-acc-side '+(g.side==='OVER'?'over':'under')+'">'+g.side+'</span></div>'+
         '<div class="nba-acc-stats">'+
           '<span>'+g.w+'W · '+g.l+'L'+pendStr+'</span>'+
-          '<span style="color:#fcd34d;font-weight:700">'+pct+'</span>'+
-          '<span style="color:'+color+';font-weight:700;width:70px;text-align:right">'+(g.net>=0?'+':'')+'$'+g.net.toFixed(2)+'</span>'+
+          '<span style="color:#fcd34d">'+pct+'</span>'+
+          '<span style="color:'+color+';width:80px;text-align:right">'+(g.net>=0?'+':'')+'$'+g.net.toFixed(2)+'</span>'+
           '<button class="nba-acc-btn">+</button>'+
         '</div>'+
       '</div>'+
-      '<div class="nba-acc-body"><div style="overflow-x:auto"><table class="nba-trk-tbl"><thead><tr>'+
-      '<th>#</th><th>Player</th><th>Market</th><th>Side</th><th>Line</th><th>Odds</th><th>Actual</th><th>Result</th><th>P/L</th>'+
+      '<div class="nba-acc-body"><div style="overflow-x:auto"><table><thead><tr>'+
+      '<th>#</th><th>Player</th><th>Market</th><th>Pick</th><th>Odds / Book</th><th>Actual</th><th>Result</th><th>P/L</th>'+
       '</tr></thead><tbody>'+
       g.rows.map(function(b){
-        var rc=b.result==='WIN'?'#4ade80':b.result==='LOSS'?'#f87171':'#94a3b8';
+        var rc=b.result==='WIN'?'#4ade80':b.result==='LOSS'?'#f87171':'#fbbf24';
         var pc=(b.clientProfit||0)>=0?'#4ade80':'#f87171';
         return '<tr>'+
-          '<td>#'+b.rank+'</td><td>'+nbaTrkEsc(b.name)+'</td>'+
+          '<td>#'+b.rank+'</td><td>'+nbaTrkEsc(b.name)+'<br><small style="color:#94a3b8">'+nbaTrkEsc(b.team)+'</small></td>'+
           '<td>'+nbaTrkEsc(b.category)+'</td>'+
-          '<td style="color:#94a3b8">'+nbaTrkEsc(b.side)+'</td><td>'+nbaTrkEsc(b.line)+'</td>'+
+          '<td><span style="font-weight:700">'+nbaTrkEsc(b.side)+'</span> '+nbaTrkEsc(b.line)+'</td>'+
           '<td style="color:#94a3b8">'+nbaTrkEsc(b.odds)+'</td><td>'+nbaTrkEsc(b.actual)+'</td>'+
           '<td style="color:'+rc+';font-weight:700">'+nbaTrkEsc(b.result||'PENDING')+'</td>'+
           '<td style="color:'+pc+';font-weight:700">'+(b.clientProfit!=null?(b.clientProfit>=0?'+':'')+'$'+Number(b.clientProfit).toFixed(2):'—')+'</td>'+
@@ -3898,6 +3921,8 @@ NBA_COACH_HTML = r"""
 .nba-coach-presets{display:flex;gap:7px;flex-wrap:wrap;margin:12px 0 9px}
 .nba-coach-preset{background:#111827;color:#cbd5e1;border:1px solid #334155;border-radius:999px;padding:7px 11px;font-size:.69rem;font-weight:900;cursor:pointer}
 .nba-coach-preset:hover{border-color:#f59e0b;color:#fde68a}
+.nba-coach-preset.over-preset{border-color:#1d4ed8;color:#93c5fd}
+.nba-coach-preset.under-preset{border-color:#b45309;color:#fcd34d}
 .nba-coach-row{display:flex;gap:8px;margin-top:16px}
 .nba-coach-input{flex:1;min-width:0;background:#070d18;color:#fff;border:1px solid #334155;border-radius:11px;padding:12px 14px;font:inherit;font-size:.84rem;outline:none}
 .nba-coach-input:focus{border-color:#f59e0b;box-shadow:0 0 0 3px rgba(245,158,11,.1)}
@@ -3933,16 +3958,26 @@ NBA_COACH_HTML = r"""
   </div>
   <div style="margin-top:16px;font-size:.75rem;font-weight:800;color:#60a5fa;border-bottom:1px solid rgba(255,255,255,.1);padding-bottom:5px;letter-spacing:.05em;text-transform:uppercase">Player Props</div>
   <div class="nba-coach-presets">
-    <button class="nba-coach-preset" onclick="nbaCoachPreset('top points')">Points</button>
-    <button class="nba-coach-preset" onclick="nbaCoachPreset('top rebounds')">Rebounds</button>
-    <button class="nba-coach-preset" onclick="nbaCoachPreset('top assists')">Assists</button>
-    <button class="nba-coach-preset" onclick="nbaCoachPreset('top 3-pointers')">3-Pointers</button>
-    <button class="nba-coach-preset" onclick="nbaCoachPreset('top pts+reb+ast')">PRA</button>
-    <button class="nba-coach-preset" onclick="nbaCoachPreset('top pts+reb')">Pts+Reb</button>
-    <button class="nba-coach-preset" onclick="nbaCoachPreset('top pts+ast')">Pts+Ast</button>
-    <button class="nba-coach-preset" onclick="nbaCoachPreset('top reb+ast')">Reb+Ast</button>
-    <button class="nba-coach-preset" onclick="nbaCoachPreset('top blocks')">Blocks</button>
-    <button class="nba-coach-preset" onclick="nbaCoachPreset('top steals')">Steals</button>
+    <button class="nba-coach-preset over-preset" onclick="nbaCoachPreset('points over')">Points OVER</button>
+    <button class="nba-coach-preset under-preset" onclick="nbaCoachPreset('points under')">Points UNDER</button>
+    <button class="nba-coach-preset over-preset" onclick="nbaCoachPreset('rebounds over')">Rebounds OVER</button>
+    <button class="nba-coach-preset under-preset" onclick="nbaCoachPreset('rebounds under')">Rebounds UNDER</button>
+    <button class="nba-coach-preset over-preset" onclick="nbaCoachPreset('assists over')">Assists OVER</button>
+    <button class="nba-coach-preset under-preset" onclick="nbaCoachPreset('assists under')">Assists UNDER</button>
+    <button class="nba-coach-preset over-preset" onclick="nbaCoachPreset('3-pointers over')">3-Pointers OVER</button>
+    <button class="nba-coach-preset under-preset" onclick="nbaCoachPreset('3-pointers under')">3-Pointers UNDER</button>
+    <button class="nba-coach-preset over-preset" onclick="nbaCoachPreset('pra over')">PRA OVER</button>
+    <button class="nba-coach-preset under-preset" onclick="nbaCoachPreset('pra under')">PRA UNDER</button>
+    <button class="nba-coach-preset over-preset" onclick="nbaCoachPreset('pts+reb over')">Pts+Reb OVER</button>
+    <button class="nba-coach-preset under-preset" onclick="nbaCoachPreset('pts+reb under')">Pts+Reb UNDER</button>
+    <button class="nba-coach-preset over-preset" onclick="nbaCoachPreset('pts+ast over')">Pts+Ast OVER</button>
+    <button class="nba-coach-preset under-preset" onclick="nbaCoachPreset('pts+ast under')">Pts+Ast UNDER</button>
+    <button class="nba-coach-preset over-preset" onclick="nbaCoachPreset('reb+ast over')">Reb+Ast OVER</button>
+    <button class="nba-coach-preset under-preset" onclick="nbaCoachPreset('reb+ast under')">Reb+Ast UNDER</button>
+    <button class="nba-coach-preset over-preset" onclick="nbaCoachPreset('blocks over')">Blocks OVER</button>
+    <button class="nba-coach-preset under-preset" onclick="nbaCoachPreset('blocks under')">Blocks UNDER</button>
+    <button class="nba-coach-preset over-preset" onclick="nbaCoachPreset('steals over')">Steals OVER</button>
+    <button class="nba-coach-preset under-preset" onclick="nbaCoachPreset('steals under')">Steals UNDER</button>
   </div>
   <div class="nba-coach-row">
     <input id="nbaCoachQuery" class="nba-coach-input" aria-label="Coach Edge search" placeholder="Type a question..." onkeydown="if(event.key==='Enter')nbaCoachSearch()">
@@ -3968,16 +4003,26 @@ function nbaCoachPreset(q){
   'positive edge':'What are the best NBA Coach Edge plays?',
   alternate_minus:'What are the Best - Alternate NBA Plays? — Top 10',
   alternate_plus:'What are the Best + Alternate NBA Plays? — Top 10',
-  'top points':'What are the best Points plays?',
-  'top rebounds':'What are the best Rebounds plays?',
-  'top assists':'What are the best Assists plays?',
-  'top 3-pointers':'What are the best 3-Pointers plays?',
-  'top pts+reb+ast':'What are the best PRA plays?',
-  'top pts+reb':'What are the best Pts+Reb plays?',
-  'top pts+ast':'What are the best Pts+Ast plays?',
-  'top reb+ast':'What are the best Reb+Ast plays?',
-  'top blocks':'What are the best Blocks plays?',
-  'top steals':'What are the best Steals plays?'
+   'points over':'What are the Top 10 Points OVER plays?',
+   'points under':'What are the Top 10 Points UNDER plays?',
+   'rebounds over':'What are the Top 10 Rebounds OVER plays?',
+   'rebounds under':'What are the Top 10 Rebounds UNDER plays?',
+   'assists over':'What are the Top 10 Assists OVER plays?',
+   'assists under':'What are the Top 10 Assists UNDER plays?',
+   '3-pointers over':'What are the Top 10 3-Pointers OVER plays?',
+   '3-pointers under':'What are the Top 10 3-Pointers UNDER plays?',
+   'pra over':'What are the Top 10 PRA OVER plays?',
+   'pra under':'What are the Top 10 PRA UNDER plays?',
+   'pts+reb over':'What are the Top 10 Pts+Reb OVER plays?',
+   'pts+reb under':'What are the Top 10 Pts+Reb UNDER plays?',
+   'pts+ast over':'What are the Top 10 Pts+Ast OVER plays?',
+   'pts+ast under':'What are the Top 10 Pts+Ast UNDER plays?',
+   'reb+ast over':'What are the Top 10 Reb+Ast OVER plays?',
+   'reb+ast under':'What are the Top 10 Reb+Ast UNDER plays?',
+   'blocks over':'What are the Top 10 Blocks OVER plays?',
+   'blocks under':'What are the Top 10 Blocks UNDER plays?',
+   'steals over':'What are the Top 10 Steals OVER plays?',
+   'steals under':'What are the Top 10 Steals UNDER plays?'
  };
  var input=document.getElementById('nbaCoachQuery');
  if(input)input.value=labels[q]||q;
@@ -4107,41 +4152,57 @@ async function loadNbaCoachTrackRecord(){
 NBA_HISTORICAL_HTML = r"""
 <section id="nba-historical-track" class="card nba-hist-shell" style="max-width:960px;margin:22px auto;padding:20px">
  <style>
- .nba-hist-shell{border:1px solid #2563eb!important;background:linear-gradient(145deg,#071329,#0b1020)!important}
- .nba-hist-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px;margin:14px 0}
- .nba-hist-stat{background:#0f1b33;border-radius:10px;padding:10px}
- .nba-hist-table{width:100%;border-collapse:collapse;font-size:.72rem}
- .nba-hist-table th,.nba-hist-table td{padding:8px;text-align:left;border-top:1px solid #1e293b}
- .nba-hist-table th{color:#93c5fd;font-size:.62rem;text-transform:uppercase}
+ .nba-hist-shell{border:1px solid #1e293b!important;background:#0b1121!important;border-radius:12px}
  .nba-hist-admin{display:none;margin-top:12px}
- .nba-acc-row{background:#111827;border:1px solid #1e293b;border-radius:8px;margin-bottom:8px;overflow:hidden;}
- .nba-acc-head{display:flex;justify-content:space-between;align-items:center;padding:12px 16px;cursor:pointer;user-select:none;}
- .nba-acc-head:hover{background:#1e293b;}
- .nba-acc-title{display:flex;align-items:center;gap:12px;font-size:.85rem;font-weight:700;}
- .nba-acc-side{font-size:.6rem;padding:2px 6px;border-radius:4px;border:1px solid #334155;color:#94a3b8;letter-spacing:.05em;}
- .nba-acc-side.over{color:#60a5fa;border-color:#1d4ed8;background:rgba(29,78,216,.1)}
- .nba-acc-side.under{color:#fbbf24;border-color:#b45309;background:rgba(180,83,9,.1)}
- .nba-acc-stats{display:flex;gap:16px;font-size:.75rem;color:#cbd5e1;align-items:center}
- .nba-acc-btn{background:#334155;color:#fff;border:none;border-radius:4px;width:24px;height:24px;display:flex;align-items:center;justify-content:center;font-weight:bold;cursor:pointer;}
- .nba-acc-body{display:none;border-top:1px solid #1e293b;padding:0;}
- .nba-acc-row.open .nba-acc-body{display:block;}
- .nba-acc-row.open .nba-acc-btn{background:#475569;transform:rotate(45deg);transition:transform 0.2s;}
- @media(max-width:600px){.nba-hist-table{min-width:680px}.nba-acc-stats{gap:8px;font-size:.7rem}}
+ .nba-acc-row { background: #111827; border: 1px solid #1e293b; border-radius: 8px; margin-bottom: 8px; overflow: hidden; border-left: 4px solid #3b82f6; display: flex; flex-direction: column; }
+ .nba-acc-row.cat-Points { border-left-color: #3b82f6; }
+ .nba-acc-row.cat-Rebounds { border-left-color: #f97316; }
+ .nba-acc-row.cat-Assists { border-left-color: #fbbf24; }
+ .nba-acc-row.cat-3Pointers { border-left-color: #ef4444; }
+ .nba-acc-row.cat-PtsRebAst { border-left-color: #a855f7; }
+ .nba-acc-row.cat-PtsReb { border-left-color: #8b5cf6; }
+ .nba-acc-row.cat-PtsAst { border-left-color: #ec4899; }
+ .nba-acc-row.cat-RebAst { border-left-color: #14b8a6; }
+ .nba-acc-row.cat-Blocks { border-left-color: #22c55e; }
+ .nba-acc-row.cat-Steals { border-left-color: #06b6d4; }
+ .nba-acc-head { display: flex; justify-content: space-between; align-items: center; padding: 12px 16px; cursor: pointer; user-select: none; }
+ .nba-acc-head:hover { background: #1e293b; }
+ .nba-acc-title { display: flex; align-items: center; gap: 12px; font-size: .85rem; font-weight: 700; color:#f8fafc; }
+ .nba-acc-side { font-size: .65rem; padding: 2px 8px; border-radius: 12px; border: 1px solid rgba(255,255,255,0.2); font-weight: 700; }
+ .nba-acc-side.over { color: #60a5fa; border-color: #1d4ed8; background: rgba(29,78,216,.1); }
+ .nba-acc-side.under { color: #fcd34d; border-color: #b45309; background: rgba(180,83,9,.1); }
+ .nba-acc-stats { display: flex; gap: 16px; font-size: .8rem; color: #cbd5e1; align-items: center; font-weight: 700; }
+ .nba-acc-btn { background: #334155; color: #fff; border: none; border-radius: 4px; width: 24px; height: 24px; display: flex; align-items: center; justify-content: center; font-weight: bold; cursor: pointer; }
+ .nba-acc-body { display: none; border-top: 1px solid #1e293b; padding: 0; }
+ .nba-acc-row.open .nba-acc-body { display: block; }
+ .nba-acc-row.open .nba-acc-btn { background: #475569; transform: rotate(45deg); transition: transform 0.2s; }
+ .nba-acc-body table { width: 100%; border-collapse: collapse; font-size: .75rem; }
+ .nba-acc-body th { padding: 10px 16px; text-align: left; border-bottom: 1px solid #1e293b; color: #93c5fd; font-size: .65rem; text-transform: uppercase; }
+ .nba-acc-body td { padding: 10px 16px; border-bottom: 1px solid #1e293b; color: #e2e8f0; }
+ .nba-acc-body tr:last-child td { border-bottom: none; }
+ @media(max-width:600px){.nba-acc-body table{min-width:680px}.nba-acc-stats{gap:8px;font-size:.7rem}}
  </style>
  <div style="display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;align-items:center">
-  <div><div style="color:#60a5fa;font-size:.65rem;font-weight:900;letter-spacing:.12em;text-transform:uppercase">Historical replay</div><h2 style="color:#fff;margin:5px 0">NBA Historical Track Record</h2><p style="color:#94a3b8;font-size:.73rem;margin:0">Immutable qualifying replay snapshots, graded from final ESPN boxes.</p></div>
+  <div style="background:rgba(29,78,216,0.1);border:1px solid #1d4ed8;padding:8px 12px;border-radius:8px;color:#93c5fd;font-size:.75rem;font-weight:700">Historical replay only — it is not an official pre-game snapshot and is excluded from the permanent Track Record.</div>
  </div>
  <div style="display:flex;gap:16px;align-items:center;flex-wrap:wrap;margin-top:16px">
   <div><label style="color:#cbd5e1;font-size:.72rem">Month </label><select id="nbaHistMonth" onchange="nbaHistLoad()" style="background:#0f172a;color:#fff;border:1px solid #334155;border-radius:6px;padding:6px"></select></div>
-  <button class="btn" onclick="nbaHistLoad()" style="background:#1d4ed8;color:#fff">Load Track Record</button>
+  <button class="btn" onclick="nbaHistLoad()" style="background:#1d4ed8;color:#fff">Load Month</button>
  </div>
  <div id="nbaHistMsg" role="status" style="color:#fbbf24;font-size:.72rem;margin-top:8px"></div>
  <div id="nbaHistAdmin" class="nba-hist-admin"><button class="btn" onclick="nbaHistRun()" style="background:#92400e;color:#fff">Run Month</button> <span id="nbaHistProgress" style="color:#fbbf24;font-size:.7rem"></span></div>
- <div style="display:flex;gap:16px;align-items:center;flex-wrap:wrap;margin-top:16px">
-   <div><label style="color:#cbd5e1;font-size:.72rem">Replay date </label><select id="nbaHistDateSelect" onchange="nbaHistRenderAll()" style="background:#0f172a;color:#fff;border:1px solid #334155;border-radius:6px;padding:6px;min-width:140px"><option value="">No dates loaded</option></select></div>
-  <div><label style="color:#cbd5e1;font-size:.72rem">Bet size ($) </label><input type="number" id="nbaHistBetSize" value="100.00" step="5" style="background:#0f172a;color:#fff;border:1px solid #334155;border-radius:6px;padding:6px;width:80px" onchange="nbaHistRenderAll()"></div>
+ 
+ <div style="background:#111827;border:1px solid #1e293b;border-radius:12px;padding:16px;display:flex;align-items:center;gap:20px;flex-wrap:wrap;margin-top:16px">
+   <div style="display:flex;align-items:center;gap:12px">
+     <select id="nbaHistDateSelect" onchange="nbaHistRenderAll()" style="background:transparent;color:#60a5fa;border:none;font-weight:900;font-size:1.05rem;outline:none;cursor:pointer"><option value="">No dates loaded</option></select>
+     <div id="nbaHistTopPct" style="color:#10b981;font-weight:700;font-size:.85rem"></div>
+   </div>
+   <div style="display:flex;align-items:center;gap:8px">
+     <label style="color:#94a3b8;font-size:.75rem">Bet size ($)</label>
+     <input type="number" id="nbaHistBetSize" value="100.00" step="5" style="background:#0f172a;color:#fff;border:1px solid #334155;border-radius:6px;padding:4px 8px;width:75px;font-weight:700" onchange="nbaHistRenderAll()">
+   </div>
+   <div id="nbaHistTopStats" style="display:flex;align-items:center;gap:16px;font-size:.85rem;font-weight:700;color:#fff"></div>
  </div>
- <div id="nbaHistSummary" class="nba-hist-grid" aria-live="polite"></div>
  <div id="nbaHistDates" style="margin-top:16px"></div>
 </section>
 <script>
@@ -4171,47 +4232,27 @@ function nbaHistDetail(rows){
 }
 function nbaHistMonth(){return document.getElementById('nbaHistMonth').value}
 function toggleHistAcc(el) { el.parentElement.classList.toggle('open'); }
+function nbaHistCatClass(cat) { return 'cat-' + String(cat||'').replace(/[^a-zA-Z0-9]/g, ''); }
 function nbaHistRenderAll() {
   var stake = parseFloat(document.getElementById('nbaHistBetSize').value) || 100;
-  var mw=0, ml=0, mp=0, mpend=0, mnet=0, mstaked=0;
-  var selectedDate = document.getElementById('nbaHistDateSelect').value;
-  var dates = (window._nbaHistData || []).filter(function(day){return day.date===selectedDate;});
-  dates.forEach(function(day){
-    day.detail.forEach(function(x){
-      if (x.result==='WIN'||x.result==='LOSS'||x.result==='PUSH') {
-        x.clientProfit = nbaProfit(x.odds, stake, x.result);
-        if (x.result !== 'PUSH') {
-          mstaked += stake;
-        }
-        mnet += x.clientProfit;
-        if(x.result==='WIN') mw++;
-        else if(x.result==='LOSS') ml++;
-        else mp++;
-      } else {
-        x.clientProfit = null;
-        mpend++;
-      }
-    });
-  });
-  var mroi = mstaked>0 ? (mnet/mstaked*100).toFixed(1) : '—';
-  var pct = (mw+ml)>0 ? (mw/(mw+ml)*100).toFixed(1) : '—';
-  document.getElementById('nbaHistSummary').innerHTML=[
-    ['W-L', mw+'-'+ml],
-    ['Win %', pct+'%'],
-    ['Net', (mnet>=0?'+':'')+'$'+mnet.toFixed(2)],
-    ['ROI', mroi+'% · P:'+mpend]
-  ].map(function(x){return '<div class="nba-hist-stat"><small style="color:#64748b">'+x[0]+'</small><div style="color:#fff;font-weight:900;font-size:1.05rem">'+x[1]+'</div></div>'}).join('');
-  
-  nbaHistRender();
-}
-function nbaHistRender() {
   var sel = document.getElementById('nbaHistDateSelect').value;
   var out = document.getElementById('nbaHistDates');
-  var day = (window._nbaHistData||[]).find(function(d){return d.date===sel;});
-  if(!day) { out.innerHTML=''; return; }
+  var topPct = document.getElementById('nbaHistTopPct');
+  var topStats = document.getElementById('nbaHistTopStats');
+  
+  if(!window._nbaHistData || !window._nbaHistData.length) {
+    if(out) out.innerHTML='<p style="color:#94a3b8;padding:16px">No data.</p>';
+    if(topPct) topPct.innerHTML=''; if(topStats) topStats.innerHTML='';
+    return;
+  }
+  
+  var day = window._nbaHistData.find(function(d){return d.date===sel;});
+  if(!day) { if(out) out.innerHTML='<p style="color:#94a3b8;padding:16px">No data for this date.</p>'; if(topPct) topPct.innerHTML=''; if(topStats) topStats.innerHTML=''; return; }
   
   var cats = ["Points","Rebounds","Assists","3-Pointers","Pts+Reb+Ast","Pts+Reb","Pts+Ast","Reb+Ast","Blocks","Steals"];
   var groups = {};
+  var dw=0, dl=0, dp=0, dpend=0, dnet=0, dstaked=0;
+  
   day.detail.forEach(function(x){
     var cat = x.stat_label||x.category||x.stat;
     var s = (x.side||'OVER').toUpperCase();
@@ -4219,60 +4260,87 @@ function nbaHistRender() {
     if(!groups[k]) groups[k] = { cat:cat, side:s, w:0, l:0, p:0, pend:0, net:0, staked:0, rows:[] };
     var g = groups[k];
     g.rows.push(x);
-    if(x.result==='WIN') { g.w++; g.net+=x.clientProfit; g.staked+=parseFloat(document.getElementById('nbaHistBetSize').value)||100; }
-    else if(x.result==='LOSS') { g.l++; g.net+=x.clientProfit; g.staked+=parseFloat(document.getElementById('nbaHistBetSize').value)||100; }
-    else if(x.result==='PUSH') { g.p++; }
-    else g.pend++;
+    
+    if (x.result==='WIN'||x.result==='LOSS'||x.result==='PUSH') {
+      x.clientProfit = nbaProfit(x.odds, stake, x.result);
+      if (x.result !== 'PUSH') {
+        g.staked += stake;
+        dstaked += stake;
+      }
+      g.net += x.clientProfit;
+      dnet += x.clientProfit;
+      if(x.result==='WIN') { g.w++; dw++; }
+      else if(x.result==='LOSS') { g.l++; dl++; }
+      else { g.p++; dp++; }
+    } else {
+      x.clientProfit = null;
+      g.pend++;
+      dpend++;
+    }
   });
   
+  var droi = dstaked>0 ? (dnet/dstaked*100).toFixed(1) : '0.0';
+  var dpctStr = (dw+dl)>0 ? (dw/(dw+dl)*100).toFixed(1)+'%' : '0%';
+  if (topPct) topPct.innerHTML = dw+'W/'+(dw+dl)+'L ('+dpctStr+')';
+  if (topStats) {
+    var netColor = dnet > 0 ? '#4ade80' : dnet < 0 ? '#f87171' : '#cbd5e1';
+    var roiColor = (dstaked > 0 && dnet > 0) ? '#4ade80' : (dstaked > 0 && dnet < 0) ? '#f87171' : '#cbd5e1';
+    topStats.innerHTML = 
+      '<span style="color:'+netColor+'">Net '+(dnet>=0?'+':'')+'$'+dnet.toFixed(2)+'</span>'+
+      '<span style="color:'+roiColor+'">ROI '+(dnet>=0?'+':'')+droi+'%</span>'+
+      (dpend > 0 ? '<span style="color:#fbbf24">'+dpend+' pending</span>' : '')+
+      '<span style="color:#64748b;font-weight:400;font-size:.75rem;margin-left:8px"> $'+stake.toFixed(2)+'/play · '+(dw+dl)+' priced plays</span>';
+  }
+  
   var html = '';
+  function renderGroup(g) {
+    var total = g.w+g.l;
+    var pct = total>0 ? (g.w/total*100).toFixed(1)+'%' : '0%';
+    var color = g.net>0 ? '#4ade80' : g.net<0 ? '#f87171' : '#cbd5e1';
+    var pendStr = g.pend ? ' · '+g.pend+' pending' : '';
+    html += '<div class="nba-acc-row '+nbaHistCatClass(g.cat)+'">'+
+      '<div class="nba-acc-head" onclick="toggleHistAcc(this)">'+
+        '<div class="nba-acc-title"><span style="color:#64748b;font-weight:800;font-size:.7rem;text-transform:uppercase;letter-spacing:.1em">Category</span> '+nbaHistEsc(g.cat)+' <span class="nba-acc-side '+(g.side==='OVER'?'over':'under')+'">'+g.side+'</span></div>'+
+        '<div class="nba-acc-stats">'+
+          '<span>'+g.w+'W · '+g.l+'L'+pendStr+'</span>'+
+          '<span style="color:#fcd34d">'+pct+'</span>'+
+          '<span style="color:'+color+';width:80px;text-align:right">'+(g.net>=0?'+':'')+'$'+g.net.toFixed(2)+'</span>'+
+          '<button class="nba-acc-btn">+</button>'+
+        '</div>'+
+      '</div>'+
+      '<div class="nba-acc-body"><div style="overflow-x:auto"><table><thead><tr>'+
+      '<th>Player</th><th>Market</th><th>Pick</th><th>Odds / Book</th><th>Actual</th><th>Result</th><th>P/L</th><th>Evidence</th>'+
+      '</tr></thead><tbody>'+
+      g.rows.map(function(b){
+        var rc=b.result==='WIN'?'#4ade80':b.result==='LOSS'?'#f87171':'#fbbf24';
+        var pc=(b.clientProfit||0)>=0?'#4ade80':'#f87171';
+        return '<tr>'+
+          '<td>'+nbaHistEsc(b.player||b.name)+'<br><small style="color:#94a3b8">'+nbaHistEsc(b.team)+' vs '+nbaHistEsc(b.opp)+'</small></td>'+
+          '<td>'+nbaHistEsc(b.stat_label||b.category||b.stat)+'</td>'+
+          '<td><span style="font-weight:700">'+nbaHistEsc(b.side)+'</span> '+nbaHistEsc(b.line)+'</td>'+
+          '<td style="color:#94a3b8">'+nbaHistEsc(b.odds)+'<br><small>'+nbaHistEsc(b.book)+'</small></td><td>'+nbaHistEsc(b.actual)+'</td>'+
+          '<td style="color:'+rc+';font-weight:700">'+nbaHistEsc(b.result||'PENDING')+'</td>'+
+          '<td style="color:'+pc+';font-weight:700">'+(b.clientProfit!=null?(b.clientProfit>=0?'+':'')+'$'+Number(b.clientProfit).toFixed(2):'—')+'</td>'+
+          '<td>'+(b.hits!=null?nbaHistEsc(b.hits)+'/'+nbaHistEsc(b.games)+' ('+nbaHistEsc(b.pct)+'%)<br><small>'+nbaHistEsc(b.mpg)+' MPG</small>':'')+'</td>'+
+          '</tr>';
+      }).join('')+
+      '</tbody></table></div></div>'+
+    '</div>';
+  }
+  
   cats.forEach(function(c){
     ['OVER','UNDER'].forEach(function(s){
-      var g = groups[c+'|'+s];
-      if(!g) return;
-      var total = g.w+g.l;
-      var pct = total>0 ? (g.w/total*100).toFixed(1)+'%' : '0%';
-      var color = g.net>0 ? '#4ade80' : g.net<0 ? '#f87171' : '#cbd5e1';
-      var pendStr = g.pend ? ' · '+g.pend+' pending' : '';
-      html += '<div class="nba-acc-row">'+
-        '<div class="nba-acc-head" onclick="toggleHistAcc(this)">'+
-          '<div class="nba-acc-title"><span style="color:#64748b;font-weight:400;font-size:.65rem;text-transform:uppercase">Category</span> '+nbaHistEsc(g.cat)+' <span class="nba-acc-side '+(g.side==='OVER'?'over':'under')+'">'+g.side+'</span></div>'+
-          '<div class="nba-acc-stats">'+
-            '<span>'+g.w+'W · '+g.l+'L'+pendStr+'</span>'+
-            '<span style="color:#fcd34d;font-weight:700">'+pct+'</span>'+
-            '<span style="color:'+color+';font-weight:700;width:70px;text-align:right">'+(g.net>=0?'+':'')+'$'+g.net.toFixed(2)+'</span>'+
-            '<button class="nba-acc-btn">+</button>'+
-          '</div>'+
-        '</div>'+
-        '<div class="nba-acc-body">'+nbaHistDetail(g.rows)+'</div>'+
-      '</div>';
+      if(groups[c+'|'+s]) renderGroup(groups[c+'|'+s]);
     });
   });
   
   var handled = {}; cats.forEach(function(c){ handled[c]=true; });
   Object.keys(groups).forEach(function(k){
     var g = groups[k];
-    if(!handled[g.cat]) {
-      var total = g.w+g.l;
-      var pct = total>0 ? (g.w/total*100).toFixed(1)+'%' : '0%';
-      var color = g.net>0 ? '#4ade80' : g.net<0 ? '#f87171' : '#cbd5e1';
-      var pendStr = g.pend ? ' · '+g.pend+' pending' : '';
-      html += '<div class="nba-acc-row">'+
-        '<div class="nba-acc-head" onclick="toggleHistAcc(this)">'+
-          '<div class="nba-acc-title"><span style="color:#64748b;font-weight:400;font-size:.65rem;text-transform:uppercase">Category</span> '+nbaHistEsc(g.cat)+' <span class="nba-acc-side '+(g.side==='OVER'?'over':'under')+'">'+g.side+'</span></div>'+
-          '<div class="nba-acc-stats">'+
-            '<span>'+g.w+'W · '+g.l+'L'+pendStr+'</span>'+
-            '<span style="color:#fcd34d;font-weight:700">'+pct+'</span>'+
-            '<span style="color:'+color+';font-weight:700;width:70px;text-align:right">'+(g.net>=0?'+':'')+'$'+g.net.toFixed(2)+'</span>'+
-            '<button class="nba-acc-btn">+</button>'+
-          '</div>'+
-        '</div>'+
-        '<div class="nba-acc-body">'+nbaHistDetail(g.rows)+'</div>'+
-      '</div>';
-    }
+    if(!handled[g.cat]) renderGroup(g);
   });
   
-  out.innerHTML = html || '<p style="color:#94a3b8">No records for this date.</p>';
+  if(out) out.innerHTML = html || '<p style="color:#94a3b8">No records for this date.</p>';
 }
 async function nbaHistLoad(){
  var m=nbaHistMonth(),msg=document.getElementById('nbaHistMsg');msg.textContent='Loading…';
@@ -4446,6 +4514,8 @@ def _nba_coach_rows(standard, alternate, query="", mode="all", count=100):
         t in {"safest","bets","positive","edge","top","pick","picks","coach","alternate","alt","genuine","lines",
               "best","minus","plus","favorite","underdog","american","odds","plays"}
         for t in q.split())
+    if mode in ("alternate", "alternate_minus", "alternate_plus"):
+        intent_only = True
     wanted_name = re.sub(r"\b(over|under|more|less|safest|edge|alternate|alt|coach|pick|top|best|minus|plus|favorite|underdog|american|odds|plays)\b", " ", q)
     def make(src, is_alt):
         out = []
@@ -4597,16 +4667,26 @@ _NBA_COACH_DETAIL_CAT = "__coach_detail__"
 _NBA_COACH_PRESETS = (
     ("Safest bets", "safest", "all"),
     ("Positive Coach Edge", "positive edge", "all"),
-    ("Points", "top points", "standard"),
-    ("Rebounds", "top rebounds", "standard"),
-    ("Assists", "top assists", "standard"),
-    ("3-Pointers", "top 3-pointers", "standard"),
-    ("Pts+Reb+Ast", "top pts+reb+ast", "standard"),
-    ("Pts+Reb", "top pts+reb", "standard"),
-    ("Pts+Ast", "top pts+ast", "standard"),
-    ("Reb+Ast", "top reb+ast", "standard"),
-    ("Blocks", "top blocks", "standard"),
-    ("Steals", "top steals", "standard"),
+    ("Points OVER", "points over", "standard"),
+    ("Points UNDER", "points under", "standard"),
+    ("Rebounds OVER", "rebounds over", "standard"),
+    ("Rebounds UNDER", "rebounds under", "standard"),
+    ("Assists OVER", "assists over", "standard"),
+    ("Assists UNDER", "assists under", "standard"),
+    ("3-Pointers OVER", "3-pointers over", "standard"),
+    ("3-Pointers UNDER", "3-pointers under", "standard"),
+    ("Pts+Reb+Ast OVER", "pra over", "standard"),
+    ("Pts+Reb+Ast UNDER", "pra under", "standard"),
+    ("Pts+Reb OVER", "pts+reb over", "standard"),
+    ("Pts+Reb UNDER", "pts+reb under", "standard"),
+    ("Pts+Ast OVER", "pts+ast over", "standard"),
+    ("Pts+Ast UNDER", "pts+ast under", "standard"),
+    ("Reb+Ast OVER", "reb+ast over", "standard"),
+    ("Reb+Ast UNDER", "reb+ast under", "standard"),
+    ("Blocks OVER", "blocks over", "standard"),
+    ("Blocks UNDER", "blocks under", "standard"),
+    ("Steals OVER", "steals over", "standard"),
+    ("Steals UNDER", "steals under", "standard"),
     ("Genuine alternate lines", "alternate", "alternate"),
 )
 _NBA_COACH_STAKE = 20.0
