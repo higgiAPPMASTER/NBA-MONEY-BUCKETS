@@ -3541,7 +3541,7 @@ document.addEventListener('DOMContentLoaded', function(){
   } catch (e) { console.error('snapshot render failed', e); }
 });
 // ── My Bets ──────────────────────────────────────────────────────────────────
-function _nbaEsc(s){return(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+function _nbaEsc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
 function _nbaMoney(v){var n=Number(v)||0;return(n>=0?'$':'\u2212$')+Math.abs(n).toFixed(2);}
 function _nbaBetAuthQS(){
   var tok=localStorage.getItem('__mpa_token')||'';
