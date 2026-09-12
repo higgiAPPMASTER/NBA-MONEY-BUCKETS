@@ -4161,7 +4161,8 @@ async function loadNbaCoachTrackRecord(){
     var r=await fetch('/api/nba/coach-track-record?_tok='+encodeURIComponent(tok)+'&source='+encodeURIComponent(source)+'&date_str='+encodeURIComponent(ds));
     var d=await r.json(); if(!r.ok) throw new Error(d.detail||'Track Record unavailable');
     _nbaCoachTrackData=d;
-    if(msg) msg.textContent=(d.dates||[]).length?'Loaded Coach results.':'No Coach results saved for this selection.';
+    if(msg) msg.textContent=((d.dates||[]).length?'Loaded Coach results.':'No Coach results saved for this selection.')
+      +(d.alternate_error?' Alternate record: '+d.alternate_error:'');
     renderNbaCoachTrackRecord();
   }catch(e){if(msg)msg.textContent=e.message||'Error loading Coach Track Record';if(box)box.innerHTML='';}
 }
@@ -4854,7 +4855,7 @@ def _nba_coach_update_track_ledger():
             _nba_sb_upsert([{"app":_NBA_COACH_APP,"date":ds,"category":_NBA_COACH_SNAP_CAT,
                 "side":"ALL","wins":0,"losses":0,"locked":False,"detail":doc}], "app,date,category,side")
 
-def _nba_historical_coach_rows(date_str):
+def _nba_historical_coach_rows(date_str, alternate_track_rows=None):
     """Build view-only Coach categories from a saved point-in-time replay."""
     snapshots = _nba_sb_get({"app":f"eq.{_NBA_HIST_APP}",
         "date":f"eq.{date_str}","category":f"eq.{_NBA_HIST_SNAP_CAT}",
@@ -4911,46 +4912,77 @@ def _nba_historical_coach_rows(date_str):
         add(label, [r for r in candidates if
             str(r.get("category")) == market and str(r.get("side")).upper() == side],
             lambda r:r["edge"])
-    # Alternates are intentionally absent from the standard historical
-    # snapshot. Rebuild the two approved presets only from the isolated,
-    # exact archived alternate cache that powered the Coach buttons.
+    for row in alternate_track_rows or []:
+        label = row.get("preset")
+        if label in ("Best - Alternate Plays", "Best + Alternate Plays"):
+            grouped.setdefault(label, []).append(row)
+    return [row for rows in grouped.values() for row in rows]
+
+async def _nba_historical_alt_track_rows(date_str):
+    """Load or durably build the two exact historical alternate Coach lists."""
+    saved = _nba_sb_get({"app":f"eq.{_NBA_HIST_APP}",
+        "date":f"eq.{date_str}",
+        "category":f"eq.{_NBA_HIST_ALT_COACH_CAT}",
+        "side":"eq.ALL","select":"detail","limit":"1"}) or []
+    if saved and isinstance(saved[0].get("detail"), list):
+        return saved[0]["detail"], None
+
     standard_doc = _cache_get("nba", date_str) or {}
+    if not standard_doc.get("games"):
+        standard_doc = await run_analysis(date_str)
+    if not standard_doc.get("games"):
+        return [], "Historical standard replay is unavailable for this date."
+
     alternate_doc = _cache_get("nba_alternates", date_str) or {}
-    standard_rows = ((standard_doc.get("props_picks") or [])
-                     + (standard_doc.get("props_nopick") or []))
+    if not (isinstance(alternate_doc, dict)
+            and alternate_doc.get("historical_alternates")):
+        alternate_doc = await _nba_historical_alternates(
+            date_str, standard_doc.get("games") or [])
     alternate_rows = (alternate_doc.get("props") or []
                       if isinstance(alternate_doc, dict) else [])
-    if standard_rows and alternate_rows:
-        box = _nba_box_lookup(date_str)
-        by_name = {_nba_hist_norm_name(name): values
-                   for name, values in (box or {}).items()}
-        for label, mode, query in (
-                ("Best - Alternate Plays", "alternate_minus",
-                 "best minus alternate plays"),
-                ("Best + Alternate Plays", "alternate_plus",
-                 "best plus alternate plays")):
-            selected = _nba_coach_rows(
-                standard_rows, alternate_rows, query, mode, 10)
-            graded_alt = []
-            for pick in selected:
-                actual = (by_name.get(_nba_hist_norm_name(
-                    pick.get("player"))) or {}).get(pick.get("stat"))
-                result = None
-                if actual is not None:
-                    line = float(pick["line"])
-                    result = ("PUSH" if actual == line else
-                              ("WIN" if (actual > line)
-                               == (pick.get("side") == "OVER") else "LOSS"))
-                graded_alt.append({
-                    **pick, "name": pick.get("player", ""),
-                    "preset": label, "actual": actual,
-                    "result": result or "PENDING",
-                    "profit": (_nba_american_profit_trk(
-                        pick.get("odds"), _NBA_HIST_STAKE, result)
-                        if result else None),
-                })
-            grouped[label] = graded_alt
-    return [row for rows in grouped.values() for row in rows]
+    if not alternate_rows:
+        return [], ((alternate_doc.get("error") if isinstance(
+            alternate_doc, dict) else None)
+            or "Archived alternate lines are unavailable for this date.")
+
+    standard_rows = ((standard_doc.get("props_picks") or [])
+                     + (standard_doc.get("props_nopick") or []))
+    box = _nba_box_lookup(date_str)
+    by_name = {_nba_hist_norm_name(name): values
+               for name, values in (box or {}).items()}
+    detail = []
+    for label, mode, query in (
+            ("Best - Alternate Plays", "alternate_minus",
+             "best minus alternate plays"),
+            ("Best + Alternate Plays", "alternate_plus",
+             "best plus alternate plays")):
+        selected = _nba_coach_rows(
+            standard_rows, alternate_rows, query, mode, 10)
+        for pick in selected:
+            actual = (by_name.get(_nba_hist_norm_name(
+                pick.get("player"))) or {}).get(pick.get("stat"))
+            result = None
+            if actual is not None:
+                line = float(pick["line"])
+                result = ("PUSH" if actual == line else
+                          ("WIN" if (actual > line)
+                           == (pick.get("side") == "OVER") else "LOSS"))
+            detail.append({
+                **pick, "name": pick.get("player", ""),
+                "preset": label, "actual": actual,
+                "result": result or "PENDING",
+                "profit": (_nba_american_profit_trk(
+                    pick.get("odds"), _NBA_HIST_STAKE, result)
+                    if result else None),
+            })
+    if not _nba_sb_upsert([{"app":_NBA_HIST_APP,"date":date_str,
+            "category":_NBA_HIST_ALT_COACH_CAT,"side":"ALL",
+            "wins":sum(row.get("result") == "WIN" for row in detail),
+            "losses":sum(row.get("result") == "LOSS" for row in detail),
+            "locked":True,"detail":detail}],
+            "app,date,category,side"):
+        return [], "Historical alternate Coach snapshot could not be saved."
+    return detail, None
 
 @app.get("/api/nba/coach-track-record")
 async def nba_coach_track_record(request: Request, date_str: str = "",
@@ -4962,7 +4994,10 @@ async def nba_coach_track_record(request: Request, date_str: str = "",
     if not historical:
         _nba_th.Thread(target=_nba_coach_update_track_ledger, daemon=True).start()
     if historical and date_str:
-        hist_detail = _nba_historical_coach_rows(date_str)
+        alternate_track, alternate_error = (
+            await _nba_historical_alt_track_rows(date_str))
+        hist_detail = _nba_historical_coach_rows(
+            date_str, alternate_track)
         rows = [{"date":date_str,"detail":hist_detail}] if hist_detail else []
     else:
         rows = _nba_sb_get({"app":f"eq.{_NBA_COACH_APP}","category":f"eq.{_NBA_COACH_DETAIL_CAT}",
@@ -4983,9 +5018,12 @@ async def nba_coach_track_record(request: Request, date_str: str = "",
     for k,c in cats.items():
         n=c["wins"]+c["losses"]; st=n*_NBA_COACH_STAKE
         summary.append({"category":k,**c,"net_pl":round(c["net_pl"],2),"rate":round(c["wins"]/n*100,1) if n else 0,"roi":round(c["net_pl"]/st*100,1) if st else 0})
-    return {"app":_NBA_COACH_APP,"source":"historical" if historical else "official",
+    response = {"app":_NBA_COACH_APP,"source":"historical" if historical else "official",
             "dates":sorted(dates,key=lambda x:x.get("date") or "",reverse=True),
             "by_category":summary,"stake":_NBA_COACH_STAKE}
+    if historical and date_str and alternate_error:
+        response["alternate_error"] = alternate_error
+    return response
 
 # ─── Immutable NBA Historical Track Record ─────────────────────────────────────
 # This is deliberately a third ledger namespace.  The replay board is the sole
@@ -4993,6 +5031,7 @@ async def nba_coach_track_record(request: Request, date_str: str = "",
 _NBA_HIST_APP = "nba_historical_replay"
 _NBA_HIST_SNAP_CAT = "__snapshot__"
 _NBA_HIST_GRADED_CAT = "__graded__"
+_NBA_HIST_ALT_COACH_CAT = "__alternate_coach__"
 _NBA_HIST_GRADING_VERSION = 2
 _NBA_HIST_STATUS_CAT = "__month_status__"
 _NBA_HIST_STAKE = 20.0
