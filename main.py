@@ -1845,6 +1845,15 @@ async def run_analysis(selected_date: str = None, force: bool = False) -> Dict:
         # does not load current rosters, Coach/Main records, bets, or live
         # odds caches: it uses ESPN schedule/final boxes, pre-date player logs,
         # and permanently cached archived Odds responses.
+        try:
+            saved = _nba_historical_saved_board(today_str, games, log)
+        except Exception as exc:
+            saved = None
+            log.append(f"Saved historical replay unavailable: {exc}")
+        if saved:
+            _cache.update(saved)
+            _cache_set("nba", today_str, saved)
+            return saved
         result = await _nba_historical_board(today_str, games, log)
         _cache.update(result)
         if result.get("odds_loaded") and not result.get("historical_unavailable"):
@@ -5103,6 +5112,109 @@ def _nba_hist_snapshot_rows(result):
             "profit": p.get("profit"),
         })
     return out
+
+def _nba_historical_saved_board(date_str, games, log=None):
+    """Rehydrate the main replay board from its durable Supabase snapshot."""
+    snapshots = _nba_hist_sb_get({
+        "app": f"eq.{_NBA_HIST_APP}",
+        "date": f"eq.{date_str}",
+        "category": f"eq.{_NBA_HIST_SNAP_CAT}",
+        "side": "eq.ALL",
+        "select": "detail",
+        "limit": "1",
+    }) or []
+    if not snapshots:
+        return None
+    graded = _nba_hist_sb_get({
+        "app": f"eq.{_NBA_HIST_APP}",
+        "date": f"eq.{date_str}",
+        "category": f"eq.{_NBA_HIST_GRADED_CAT}",
+        "side": "eq.ALL",
+        "select": "detail",
+        "limit": "1",
+    }) or []
+    source = ((graded[0].get("detail") or []) if graded
+              else (snapshots[0].get("detail") or []))
+    rows = []
+    for saved in source:
+        side = str(saved.get("side") or "").upper()
+        stat = saved.get("stat") or ""
+        if side not in ("OVER", "UNDER") or stat not in STAT_CONFIG:
+            continue
+        pct = float(saved.get("pct") or 0)
+        row = {
+            **saved,
+            "pick": side,
+            "side": side,
+            "line": saved.get("line"),
+            "fd_line": saved.get("line"),
+            "fd_odds": saved.get("odds"),
+            "dk_line": saved.get("line"),
+            "dk_over_odds": saved.get("odds") if side == "OVER" else None,
+            "dk_under_odds": saved.get("odds") if side == "UNDER" else None,
+            "bookmaker": saved.get("book") or "",
+            "bookmaker_label": saved.get("book") or "",
+            "emoji": STAT_CONFIG[stat]["emoji"],
+            "conf": "STRONG" if pct >= 70 else "LEAN",
+            "history": f"{saved.get('hits') or 0}/{saved.get('games') or 0}",
+            "matchup": f"{saved.get('team') or ''} vs {saved.get('opp') or ''}",
+            "historical_snapshot": saved.get("snapshot"),
+            "historical_replay": True,
+        }
+        rows.append(row)
+    if not rows:
+        return None
+    rows.sort(key=lambda row: (
+        -(row.get("pct") or 0), -(row.get("games") or 0),
+        row.get("player") or "", row.get("stat") or ""))
+    by_stat = {
+        stat: [row for row in rows if row.get("stat") == stat]
+        for stat in STAT_CONFIG
+    }
+    top, seen, depth = [], set(), 0
+    while len(top) < TOP_N:
+        added = False
+        for stat in STAT_CONFIG:
+            pool = by_stat.get(stat) or []
+            if depth >= len(pool):
+                continue
+            added = True
+            candidate = pool[depth]
+            player_key = _nn(candidate.get("player", ""))
+            if player_key in seen:
+                continue
+            seen.add(player_key)
+            top.append(candidate)
+            if len(top) >= TOP_N:
+                break
+        if not added:
+            break
+        depth += 1
+    snapshot = next((row.get("snapshot") for row in rows
+                     if row.get("snapshot")), None)
+    saved_log = list(log or [])
+    saved_log.extend([
+        f"Historical Sportsbook Replay · loaded {len(rows)} qualified plays "
+        f"from the durable Supabase snapshot for {date_str}.",
+        "No new archived-odds request was made.",
+        "Final ESPN grading and exact saved lines, prices, and books were restored.",
+    ])
+    return {
+        "date": date_str,
+        "picks": top,
+        "all_picks": rows,
+        "games": games,
+        "log": saved_log,
+        "total": len(rows),
+        "odds_loaded": True,
+        "historical_replay": True,
+        "historical_snapshot": snapshot,
+        "historical_replay_schema": HISTORICAL_REPLAY_SCHEMA,
+        "props_picks": rows,
+        "props_nopick": [],
+        "saved_historical_replay": True,
+    }
+
 
 def _nba_historical_persist_snapshot(date_str, result):
     rows = _nba_hist_snapshot_rows(result)
