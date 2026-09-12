@@ -3987,9 +3987,14 @@ NBA_COACH_HTML = r"""
   <div id="nbaCoachMsg" role="status" style="color:#fbbf24;font-size:.72rem;margin-top:10px"></div>
   <div id="nbaCoachResults" class="nba-coach-answer"></div>
   <div id="nbaCoachTrackPanel" style="display:none;margin-top:22px;padding-top:16px;border-top:1px solid #1e293b">
-    <h3 style="color:#c4b5fd;font-size:.95rem">Coach Track Record</h3>
-    <p style="color:#64748b;font-size:.72rem;margin:5px 0 10px">Pregame Coach presets are captured automatically. Results are loaded only when you ask for them.</p>
-    <button class="btn" style="background:#312e81;color:#fff" onclick="loadNbaCoachTrackRecord()">Refresh Results</button>
+    <h3 style="color:#c4b5fd;font-size:1.05rem">NBA Edge Coach Track Record</h3>
+    <p style="color:#64748b;font-size:.72rem;margin:5px 0 10px">Official pre-tip Coach snapshots and isolated historical replay Coach results.</p>
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <label style="color:#94a3b8;font-size:.68rem;font-weight:800">RECORD <select id="nbaCoachTrkSource" style="background:#0f172a;color:#fff;border:1px solid #334155;border-radius:7px;padding:7px"><option value="official">Official Coach</option><option value="historical">Historical Edge Coach</option></select></label>
+      <label style="color:#94a3b8;font-size:.68rem;font-weight:800">DATE <input type="date" id="nbaCoachTrkDate" value="__TODAY__" style="background:#0f172a;color:#fff;border:1px solid #334155;border-radius:7px;padding:7px"></label>
+      <label style="color:#94a3b8;font-size:.68rem;font-weight:800">BET $ <input type="number" id="nbaCoachTrkStake" value="100.00" min=".01" step="5" oninput="renderNbaCoachTrackRecord()" style="width:92px;background:#0f172a;color:#fff;border:1px solid #334155;border-radius:7px;padding:7px"></label>
+      <button class="btn" style="background:#065f46;color:#fff" onclick="loadNbaCoachTrackRecord()">Get Results</button>
+    </div>
     <button class="btn" style="background:#1f2937;color:#cbd5e1;margin-left:6px" onclick="document.getElementById('nbaCoachTrackPanel').style.display='none'">Close</button>
     <div id="nbaCoachTrackMsg" role="status" style="color:#fbbf24;font-size:.78rem;margin-top:8px"></div>
     <div id="nbaCoachTrackResults" style="margin-top:10px"></div>
@@ -4133,18 +4138,27 @@ async function loadNbaCoachTrackRecord(){
   if(msg) msg.textContent='Loading Coach Track Record…';
   try{
     var tok=localStorage.getItem('__mpa_token')||'';
-    var r=await fetch('/api/nba/coach-track-record?_tok='+encodeURIComponent(tok));
+    var source=(document.getElementById('nbaCoachTrkSource')||{}).value||'official';
+    var ds=(document.getElementById('nbaCoachTrkDate')||{}).value||'';
+    var r=await fetch('/api/nba/coach-track-record?_tok='+encodeURIComponent(tok)+'&source='+encodeURIComponent(source)+'&date_str='+encodeURIComponent(ds));
     var d=await r.json(); if(!r.ok) throw new Error(d.detail||'Track Record unavailable');
-    _nbaCoachTrackData=d; var days=d.dates||[];
-    if(msg) msg.textContent=days.length?'Loaded '+days.length+' graded pregame slate'+(days.length===1?'':'s')+'.':'No graded Coach slates yet.';
-    if(!box) return;
-    var cats=d.by_category||[];
-    var html=cats.length?'<h4 style="color:#c4b5fd;margin:8px 0">Category summaries</h4><div style="overflow-x:auto"><table class="nba-trk-tbl"><thead><tr><th>Preset / Category</th><th>W-L</th><th>Rate</th><th>Net P/L</th><th>ROI</th></tr></thead><tbody>'+
-      cats.map(function(c){return '<tr><td>'+_nbaEsc(c.category)+'</td><td>'+c.wins+'-'+c.losses+'</td><td>'+c.rate+'%</td><td style="color:'+(c.net_pl>=0?'#4ade80':'#f87171')+'">'+(c.net_pl>=0?'+':'')+'$'+c.net_pl.toFixed(2)+'</td><td>'+c.roi+'%</td></tr>';}).join('')+'</tbody></table></div>':'';
-    days.forEach(function(day){html+='<h4 style="color:#c4b5fd;margin:16px 0 8px">'+day.date+' · '+day.wins+'W-'+day.losses+'L · '+(day.net_pl>=0?'+':'')+'$'+day.net_pl.toFixed(2)+'</h4><div style="overflow-x:auto"><table class="nba-trk-tbl"><thead><tr><th>Preset</th><th>Player</th><th>Pick</th><th>Odds</th><th>Actual</th><th>Result</th><th>P/L</th></tr></thead><tbody>'+
-      (day.detail||[]).map(function(x){return '<tr><td>'+_nbaEsc(x.preset||x.category)+'</td><td>'+_nbaEsc(x.name)+'</td><td>'+x.side+' '+x.line+'</td><td>'+x.odds+'</td><td>'+x.actual+'</td><td style="color:'+(x.result==='WIN'?'#4ade80':'#f87171')+'">'+x.result+'</td><td>'+((x.profit>=0?'+':'')+Number(x.profit||0).toFixed(2))+'</td></tr>';}).join('')+'</tbody></table></div>';});
-    box.innerHTML=html||'<p style="color:#94a3b8">No graded Coach rows yet.</p>';
+    _nbaCoachTrackData=d;
+    if(msg) msg.textContent=(d.dates||[]).length?'Loaded Coach results.':'No Coach results saved for this selection.';
+    renderNbaCoachTrackRecord();
   }catch(e){if(msg)msg.textContent=e.message||'Error loading Coach Track Record';if(box)box.innerHTML='';}
+}
+function renderNbaCoachTrackRecord(){
+ var box=document.getElementById('nbaCoachTrackResults');if(!box||!_nbaCoachTrackData)return;
+ var ds=(document.getElementById('nbaCoachTrkDate')||{}).value||'',stake=Number((document.getElementById('nbaCoachTrkStake')||{}).value)||100;
+ var rows=[];(_nbaCoachTrackData.dates||[]).forEach(function(day){if(!ds||day.date===ds)(day.detail||[]).forEach(function(x){rows.push(Object.assign({date:day.date},x));});});
+ var groups={};rows.forEach(function(x){var k=x.preset||x.category||'Coach Edge';(groups[k]||(groups[k]=[])).push(x);});
+ var html='';Object.keys(groups).forEach(function(k){var list=groups[k],w=0,l=0,p=0,pend=0,net=0,priced=0;
+   list.forEach(function(x){var r=String(x.result||'PENDING').toUpperCase();if(r==='WIN'){w++;priced++;net+=nbaProfit(x.odds,stake,r)}else if(r==='LOSS'){l++;priced++;net-=stake}else if(r==='PUSH')p++;else pend++;});
+   var rate=w+l?w/(w+l)*100:null,roi=priced?net/(priced*stake)*100:null,color=net>=0?'#4ade80':'#f87171';
+   var detail=list.map(function(x){var r=String(x.result||'PENDING').toUpperCase(),pl=(r==='WIN'||r==='LOSS')?nbaProfit(x.odds,stake,r):null;return '<tr><td>'+_nbaEsc(x.date)+'</td><td><b>'+_nbaEsc(x.name||x.player)+'</b><br><small>'+_nbaEsc(x.team||'')+'</small></td><td>'+_nbaEsc(x.category||x.stat||'')+'<br><b>'+_nbaEsc(x.side)+' '+_nbaEsc(x.line)+'</b></td><td>'+_nbaEsc(x.odds)+'<br><small>'+_nbaEsc(x.book||'')+'</small></td><td>'+_nbaEsc(x.actual)+'</td><td style=\"color:'+(r==='WIN'?'#4ade80':r==='LOSS'?'#f87171':'#fbbf24')+'\">'+r+'<br><small>'+(pl==null?'—':(pl>=0?'+$':'-$')+Math.abs(pl).toFixed(2))+'</small></td><td><small>App '+Number((x.model_probability||0)*((x.model_probability||0)<=1?100:1)).toFixed(1)+'%<br>Implied '+Number((x.implied_probability||0)*((x.implied_probability||0)<=1?100:1)).toFixed(1)+'%<br>Edge '+Number(x.coach_edge!=null?x.coach_edge:(x.edge||0)*100).toFixed(1)+' pts</small></td></tr>';}).join('');
+   html+='<details class=\"nba-acc-row\"><summary class=\"nba-acc-head\"><b>'+_nbaEsc(k)+'</b><span class=\"nba-acc-stats\">'+w+'W · '+l+'L'+(p?' · '+p+'P':'')+(pend?' · '+pend+' pending':'')+' · '+(rate==null?'—':rate.toFixed(1)+'%')+' · <b style=\"color:'+color+'\">'+(net>=0?'+$':'-$')+Math.abs(net).toFixed(2)+'</b> · '+(roi==null?'—':roi.toFixed(1)+'% ROI')+'</span></summary><div class=\"nba-acc-body\" style=\"display:block\"><div style=\"overflow-x:auto\"><table class=\"nba-trk-tbl\"><thead><tr><th>Date</th><th>Player</th><th>Play</th><th>Odds/Book</th><th>Actual</th><th>Result/P&L</th><th>Probabilities</th></tr></thead><tbody>'+detail+'</tbody></table></div></div></details>';
+ });
+ box.innerHTML=html||'<p style=\"color:#94a3b8\">No Coach rows for this date. For historical dates, run the NBA historical replay first.</p>';
 }
 </script>
 """
@@ -4818,14 +4832,72 @@ def _nba_coach_update_track_ledger():
             _nba_sb_upsert([{"app":_NBA_COACH_APP,"date":ds,"category":_NBA_COACH_SNAP_CAT,
                 "side":"ALL","wins":0,"losses":0,"locked":False,"detail":doc}], "app,date,category,side")
 
+def _nba_historical_coach_rows(date_str):
+    """Build view-only Coach categories from a saved point-in-time replay."""
+    saved = _nba_sb_get({"app":f"eq.{_NBA_HIST_APP}",
+        "date":f"eq.{date_str}","category":f"eq.{_NBA_HIST_GRADED_CAT}",
+        "side":"eq.ALL","select":"detail","limit":"1"}) or []
+    if not saved:
+        saved = _nba_sb_get({"app":f"eq.{_NBA_HIST_APP}",
+            "date":f"eq.{date_str}","category":f"eq.{_NBA_HIST_SNAP_CAT}",
+            "side":"eq.ALL","select":"detail","limit":"1"}) or []
+    source = saved[0].get("detail") or [] if saved else []
+    candidates = []
+    for row in source:
+        try:
+            implied = _nba_coach_implied(row.get("odds"))
+            model = float(row.get("pct")) / 100.0
+            edge = model - implied
+        except Exception:
+            continue
+        if implied is None or edge <= 0:
+            continue
+        candidates.append({**row, "name":row.get("player",""),
+            "model_probability":model, "implied_probability":implied,
+            "coach_edge":edge * 100, "edge":edge,
+            "category":row.get("stat_label") or row.get("stat",""),
+            "result":row.get("result") or "PENDING",
+            "profit":row.get("profit")})
+    grouped = {}
+    def add(label, rows, key):
+        seen = set()
+        for row in sorted(rows, key=key, reverse=True):
+            player = _nba_hist_norm_name(row.get("player"))
+            if not player or player in seen:
+                continue
+            seen.add(player)
+            grouped.setdefault(label, []).append({**row, "preset":label})
+            if len(grouped[label]) >= 10:
+                break
+    add("Positive Coach Edge", candidates, lambda r:r["edge"])
+    add("Safest bets", candidates, lambda r:r["model_probability"])
+    for label, _, _ in _NBA_COACH_PRESETS:
+        if label in ("Positive Coach Edge","Safest bets","Genuine alternate lines"):
+            continue
+        parts = label.rsplit(" ", 1)
+        if len(parts) != 2:
+            continue
+        market, side = parts
+        add(label, [r for r in candidates if
+            str(r.get("category")) == market and str(r.get("side")).upper() == side],
+            lambda r:r["edge"])
+    return [row for rows in grouped.values() for row in rows]
+
 @app.get("/api/nba/coach-track-record")
-async def nba_coach_track_record(request: Request):
+async def nba_coach_track_record(request: Request, date_str: str = "",
+                                 source: str = "official"):
     if not get_user(request):
         from fastapi import HTTPException
         raise HTTPException(status_code=401, detail="Subscription required — please log in via moneypicksarena.com")
-    _nba_th.Thread(target=_nba_coach_update_track_ledger, daemon=True).start()
-    rows = _nba_sb_get({"app":f"eq.{_NBA_COACH_APP}","category":f"eq.{_NBA_COACH_DETAIL_CAT}",
-                        "locked":"eq.true","select":"date,detail","limit":"365"}) or []
+    historical = source == "historical"
+    if not historical:
+        _nba_th.Thread(target=_nba_coach_update_track_ledger, daemon=True).start()
+    if historical and date_str:
+        hist_detail = _nba_historical_coach_rows(date_str)
+        rows = [{"date":date_str,"detail":hist_detail}] if hist_detail else []
+    else:
+        rows = _nba_sb_get({"app":f"eq.{_NBA_COACH_APP}","category":f"eq.{_NBA_COACH_DETAIL_CAT}",
+                            "locked":"eq.true","select":"date,detail","limit":"1000"}) or []
     dates, all_rows = [], []
     for r in rows:
         det = r.get("detail") or []
@@ -4842,7 +4914,9 @@ async def nba_coach_track_record(request: Request):
     for k,c in cats.items():
         n=c["wins"]+c["losses"]; st=n*_NBA_COACH_STAKE
         summary.append({"category":k,**c,"net_pl":round(c["net_pl"],2),"rate":round(c["wins"]/n*100,1) if n else 0,"roi":round(c["net_pl"]/st*100,1) if st else 0})
-    return {"app":_NBA_COACH_APP,"dates":sorted(dates,key=lambda x:x.get("date") or "",reverse=True),"by_category":summary,"stake":_NBA_COACH_STAKE}
+    return {"app":_NBA_COACH_APP,"source":"historical" if historical else "official",
+            "dates":sorted(dates,key=lambda x:x.get("date") or "",reverse=True),
+            "by_category":summary,"stake":_NBA_COACH_STAKE}
 
 # ─── Immutable NBA Historical Track Record ─────────────────────────────────────
 # This is deliberately a third ledger namespace.  The replay board is the sole
