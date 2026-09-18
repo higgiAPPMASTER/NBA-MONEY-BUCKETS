@@ -1968,6 +1968,48 @@ async def run_analysis(selected_date: str = None, force: bool = False) -> Dict:
     total_entries = sum(len(v) for v in logs_by_player.values())
     log.append(f"{total_entries:,} historical game entries loaded")
 
+    def _form_swing(logs, stat_key):
+        """Display-only L5 form versus the player's own current-season baseline."""
+        try:
+            as_of = date.fromisoformat(today_str)
+            season_start_year = as_of.year if as_of.month >= 10 else as_of.year - 1
+            season_start = date(season_start_year, 10, 1).isoformat()
+            season_logs = [
+                row for row in logs
+                if season_start <= str(row.get("date", ""))[:10] < today_str
+                and row.get(stat_key) is not None
+            ]
+            recent = season_logs[:5]
+            if len(recent) < 4 or len(season_logs) < 8:
+                return {}
+            recent_minutes = [float(row.get("MIN", 0) or 0) for row in recent]
+            season_minutes = [float(row.get("MIN", 0) or 0) for row in season_logs]
+            recent_mpg = sum(recent_minutes) / len(recent_minutes)
+            season_mpg = sum(season_minutes) / len(season_minutes)
+            # Avoid labeling low-minute or materially changed-role samples.
+            if recent_mpg < 15 or season_mpg <= 0:
+                return {}
+            minute_change = (recent_mpg - season_mpg) / season_mpg
+            if abs(minute_change) > 0.20:
+                return {}
+            recent_avg = sum(float(row[stat_key]) for row in recent) / len(recent)
+            baseline_avg = sum(float(row[stat_key]) for row in season_logs) / len(season_logs)
+            if baseline_avg <= 0:
+                return {}
+            change_pct = (recent_avg - baseline_avg) / baseline_avg * 100
+            badge = "HOT" if change_pct >= 15 else "COLD" if change_pct <= -15 else None
+            if not badge:
+                return {}
+            return {
+                "form_badge": badge,
+                "form_change_pct": round(change_pct, 1),
+                "form_l5_avg": round(recent_avg, 1),
+                "form_baseline_avg": round(baseline_avg, 1),
+                "form_games": len(season_logs),
+            }
+        except Exception:
+            return {}
+
     # Pattern analysis — original algorithm (find best threshold >=75%)
     log.append("Scanning matchup picks (70%+ threshold)...")
     picks = []
@@ -2031,7 +2073,8 @@ async def run_analysis(selected_date: str = None, force: bool = False) -> Dict:
                 base = result or {'threshold': 0, 'hits': 0, 'games': len(last10),
                                   'hit_rate': 0.0, 'pct': 0.0}
                 l10h = sum(1 for l in last10 if float(l[sk]) >= base['threshold']) if base['threshold'] else 0
-                picks.append({**base, 'player': pname, 'player_id': pid, 'team': h,
+                picks.append({**base, **_form_swing(all_logs_player, sk),
+                              'player': pname, 'player_id': pid, 'team': h,
                               'team_id': game['home_id'],
                               'jersey': player.get('jersey',''), 'position': player.get('position',''),
                               'tipoff': game.get('tipoff',''),
@@ -2053,6 +2096,7 @@ async def run_analysis(selected_date: str = None, force: bool = False) -> Dict:
                               'historical_replay': historical_replay,
                               'replay_threshold': result.get('threshold') if historical_replay and result else None,
                               'recent_avg': round(sum(recent_vals)/len(recent_vals), 1) if recent_vals else None,
+                               'recent_glog': [{'d': l['date'], 'v': l[sk]} for l in recent10],
                               'gap': round((sum(recent_vals)/len(recent_vals)) - dk_line, 1) if recent_vals and dk_line else None,
                               'mpg': round(sum(float(l.get('MIN',0) or 0) for l in recent10)/len(recent10), 1) if recent10 else None})
 
@@ -2095,7 +2139,8 @@ async def run_analysis(selected_date: str = None, force: bool = False) -> Dict:
                 base = result or {'threshold': 0, 'hits': 0, 'games': len(last10),
                                   'hit_rate': 0.0, 'pct': 0.0}
                 l10h = sum(1 for l in last10 if float(l[sk]) >= base['threshold']) if base['threshold'] else 0
-                picks.append({**base, 'player': pname, 'player_id': pid, 'team': a,
+                picks.append({**base, **_form_swing(all_logs_player, sk),
+                              'player': pname, 'player_id': pid, 'team': a,
                               'team_id': game['away_id'],
                               'jersey': player.get('jersey',''), 'position': player.get('position',''),
                               'tipoff': game.get('tipoff',''),
@@ -2115,6 +2160,7 @@ async def run_analysis(selected_date: str = None, force: bool = False) -> Dict:
                               'alt_rec': alt_rec, 'alt_evens': alt_evens, 'alt_odds': alt_odds,
                               'has_consistency': result is not None,
                               'recent_avg': round(sum(recent_vals)/len(recent_vals), 1) if recent_vals else None,
+                               'recent_glog': [{'d': l['date'], 'v': l[sk]} for l in recent10],
                               'gap': round((sum(recent_vals)/len(recent_vals)) - dk_line, 1) if recent_vals and dk_line else None,
                               'mpg': round(sum(float(l.get('MIN',0) or 0) for l in recent10)/len(recent10), 1) if recent10 else None})
 
@@ -2187,7 +2233,7 @@ async def run_analysis(selected_date: str = None, force: bool = False) -> Dict:
                     if not opp_logs:
                         if historical_replay:
                             continue
-                        props_nopick.append({'player':pname,'player_id':pid,'stat':sk,'stat_label':sc['label'],'emoji':sc['emoji'],'team':cur_team,'side':side,'opp_name':opp_name,'line':line,'avg':None,'games':0,'history':'—','gap':None,'pick':None,'fd_odds':ob.get('odds',''),'dk_over_odds':dk_over,'dk_under_odds':dk_under,'bookmaker':dk_ob.get('bookmaker') or ob.get('bookmaker',''),'bookmaker_label':dk_ob.get('bookmaker_label') or ob.get('bookmaker_label',''),'matchup':matchup_str})
+                        props_nopick.append({**_form_swing(logs_by_player.get(pid, []), sk),'player':pname,'player_id':pid,'stat':sk,'stat_label':sc['label'],'emoji':sc['emoji'],'team':cur_team,'side':side,'opp_name':opp_name,'line':line,'avg':None,'games':0,'history':'—','gap':None,'pick':None,'fd_odds':ob.get('odds',''),'dk_over_odds':dk_over,'dk_under_odds':dk_under,'bookmaker':dk_ob.get('bookmaker') or ob.get('bookmaker',''),'bookmaker_label':dk_ob.get('bookmaker_label') or ob.get('bookmaker_label',''),'matchup':matchup_str})
                         continue
                     vals = [float(l[sk]) for l in opp_logs]
                     avg = round(sum(vals)/len(vals),1)
@@ -2195,7 +2241,7 @@ async def run_analysis(selected_date: str = None, force: bool = False) -> Dict:
                     gap = round(avg-line,1) if line is not None else None
                     pick = ('OVER' if replay else
                             ('OVER' if avg>line else ('UNDER' if avg<line else None)))
-                    entry = {'player':pname,'player_id':pid,'stat':sk,'stat_label':sc['label'],'emoji':sc['emoji'],'team':cur_team,'side':side,'opp_name':opp_name,'line':line,'replay_threshold':replay.get('threshold') if replay else None,'avg':avg,'games':len(vals),'history':','.join(str(int(v)) for v in vals[:8]),'gap':gap,'pick':pick,'fd_odds':None if historical_replay else ob.get('odds',''),'dk_over_odds':dk_over,'dk_under_odds':dk_under,'bookmaker':dk_ob.get('bookmaker') or ob.get('bookmaker',''),'bookmaker_label':dk_ob.get('bookmaker_label') or ob.get('bookmaker_label',''),'matchup':matchup_str,'historical_replay':historical_replay}
+                    entry = {**_form_swing(logs_by_player.get(pid, []), sk),'player':pname,'player_id':pid,'stat':sk,'stat_label':sc['label'],'emoji':sc['emoji'],'team':cur_team,'side':side,'opp_name':opp_name,'line':line,'replay_threshold':replay.get('threshold') if replay else None,'avg':avg,'games':len(vals),'history':','.join(str(int(v)) for v in vals[:8]),'gap':gap,'pick':pick,'fd_odds':None if historical_replay else ob.get('odds',''),'dk_over_odds':dk_over,'dk_under_odds':dk_under,'bookmaker':dk_ob.get('bookmaker') or ob.get('bookmaker',''),'bookmaker_label':dk_ob.get('bookmaker_label') or ob.get('bookmaker_label',''),'matchup':matchup_str,'historical_replay':historical_replay}
                     (props_picks if pick else props_nopick).append(entry)
     props_picks.sort(key=lambda x:abs(x.get('gap') or 0),reverse=True)
     log.append(f"Props: {len(props_picks)} picks")
@@ -2833,6 +2879,11 @@ function renderTop10Cards(picks){
     // picks are pre-sorted by has_consistency desc, hit_rate desc, threshold desc).
     const stats=[byPlayer[pname][0]];
     const p=stats[0];
+    const formBadge=p.form_badge==='HOT'
+      ? '<span title="Last-5 production is at least 15% above this player’s season average, with stable minutes." style="background:rgba(249,115,22,.2);color:#fb923c;border:1px solid #fb923c88;padding:4px 9px;border-radius:999px;font-size:.68rem;font-weight:900">HOT</span>'
+      : p.form_badge==='COLD'
+      ? '<span title="Last-5 production is at least 15% below this player’s season average, with stable minutes." style="background:rgba(96,165,250,.18);color:#60a5fa;border:1px solid #60a5fa88;padding:4px 9px;border-radius:999px;font-size:.68rem;font-weight:900">COLD</span>'
+      : '';
     const cardKey=ladReg(p);
     const teamLogo=`https://a.espncdn.com/i/teamlogos/nba/500/${(p.team||'').toLowerCase()}.png`;
     const headshot=p.headshot||(
@@ -2883,7 +2934,12 @@ function renderTop10Cards(picks){
       if(s.dk_line!=null) lines.push(`<div style="font-size:.86rem;color:#ddd;margin-bottom:3px"><strong style="color:#fff">Line ${s.dk_line}</strong> ${s.stat_label}</div>`);
       if(s.historical_replay && s.pick && s.games){
         lines.push(`<div style="font-size:.8rem;color:#e2e8f0;margin-bottom:4px"><strong>${s.hits}/${s.games} ${s.pick} ${s.line}</strong> vs ${p.opp} · ${(p.location||'').toLowerCase()} (${s.pct}%)</div>`);
-        if(s.mpg!=null) lines.push(`<div style="font-size:.72rem;color:#94a3b8;margin-bottom:4px">Recent playing time: ${s.mpg} MPG · last 10 pre-game appearances</div>`);
+        const _recent=(s.recent_glog||[]).slice(0,10);
+        if(_recent.length){
+          lines.push(`<div style="font-size:.72rem;color:#94a3b8;margin-bottom:4px">Last ${_recent.length} ${s.stat_label} before game: <strong style="color:#e2e8f0">${_recent.map(x=>x.v).join(' · ')}</strong></div>`);
+        }else if(s.recent_avg!=null){
+          lines.push(`<div style="font-size:.72rem;color:#94a3b8;margin-bottom:4px">Pre-game L10 ${s.stat_label} average: <strong style="color:#e2e8f0">${s.recent_avg}</strong></div>`);
+        }
       }
       if(s.dk_line!=null && s.dk_hits!=null){
         const over=s.dk_hits, under=(s.l10_games||10)-over;
@@ -2934,6 +2990,7 @@ function renderTop10Cards(picks){
         <div style="display:flex;align-items:center;gap:8px">
           <div style="width:26px;height:26px;border-radius:50%;background:#FDB827;color:#000;display:flex;align-items:center;justify-content:center;font-weight:900;font-size:.82rem">${i+1}</div>
           <div style="font-size:.72rem;letter-spacing:.12em;color:#FDB827;font-weight:800">NBA · ${p.team}</div>
+          ${formBadge}
         </div>
         <img src="${teamLogo}" alt="${p.team}" style="height:28px;width:28px;object-fit:contain" onerror="this.style.display='none'"/>
       </div>
@@ -2990,7 +3047,7 @@ function renderAllByGame(picks){
         <div onclick="togglePlayer('${pid}',this)" style="display:flex;align-items:center;gap:10px;padding:10px 14px;cursor:pointer;background:#141414">
           <span style="font-size:1.1rem">${first.emoji}</span>
           <div style="flex:1;min-width:0">
-            <div style="font-weight:700;color:#fff;font-size:.88rem">${pname} <span style="color:#1e3a5f;font-size:.65rem">${first.team}${first.location==='Home'?' HOME':' AWAY'}</span></div>
+            <div style="font-weight:700;color:#fff;font-size:.88rem">${pname} <span style="color:#1e3a5f;font-size:.65rem">${first.team}${first.location==='Home'?' HOME':' AWAY'}</span> ${first.form_badge?`<span style="color:${first.form_badge==='HOT'?'#fb923c':'#60a5fa'};font-size:.62rem;font-weight:900">${first.form_badge}</span>`:''}</div>
             <div style="color:#777;font-size:.7rem;margin-top:2px">${rows.length} pick${rows.length!==1?'s':''} · ${stats}</div>
           </div>
           ${bestPct>0?`<span style="color:#fbbf24;font-weight:700;font-size:.78rem">${bestPct}%</span>`:''}
@@ -3001,6 +3058,7 @@ function renderAllByGame(picks){
         const [pc,bc]=pctClass(p.pct);
         const ladKey=ladReg(p);
         const badges = [];
+        if(p.form_badge) badges.push(`<span title="Display-only last-5 form versus season average" style="background:${p.form_badge==='HOT'?'rgba(249,115,22,.15)':'rgba(96,165,250,.15)'};color:${p.form_badge==='HOT'?'#fb923c':'#60a5fa'};padding:2px 7px;border-radius:6px;font-size:.65rem;font-weight:800;margin-right:4px">${p.form_badge}</span>`);
         if(p.has_consistency) badges.push(`<span style="background:rgba(245,158,11,.15);color:#fbbf24;padding:2px 7px;border-radius:6px;font-size:.65rem;font-weight:700;margin-right:4px">PICK ${p.pct}%</span>`);
         if(p.historical_replay && p.side) badges.push(`<span style="background:${p.side==='UNDER'?'rgba(239,68,68,.15)':'rgba(74,222,128,.15)'};color:${p.side==='UNDER'?'#f87171':'#4ade80'};padding:2px 7px;border-radius:6px;font-size:.65rem;font-weight:700;margin-right:4px">${p.side} ${p.line} · ${p.book||'Archived sportsbook'}</span>`);
         const loc=(p.location||'').toLowerCase();
@@ -3196,22 +3254,43 @@ function closeLadder(ev){
 }
 function ladKeyOf(p){return 'lad_'+((p.player_id||'')+'_'+p.stat+'_'+p.location+'_'+p.opp).replace(/[^a-z0-9]/gi,'_');}
 function ladReg(p){const k=ladKeyOf(p);window.__LAD__=window.__LAD__||{};window.__LAD__[k]=p;return k;}
-function openLadder(key){
+async function openLadder(key){
   const p=(window.__LAD__||{})[key]; if(!p) return;
   const esc=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const loc=(p.location||'').toLowerCase();
   const fmtD=s=>{try{const d=new Date(s);return (d.getMonth()+1)+'/'+d.getDate()+'/'+String(d.getFullYear()).slice(2);}catch(e){return s||'';}};
   const anchor=(p.dk_line!=null?p.dk_line:p.fd_line);
+  if(window.__NBA_HISTORICAL_REPLAY__&&p.player_id&&(!(p.glog||[]).length||!(p.recent_glog||[]).length)){
+    try{
+      const dp=document.getElementById('datePicker');
+      const tok=localStorage.getItem('__mpa_token')||'';
+      const q=new URLSearchParams({date:(dp&&dp.value)||'',player_id:String(p.player_id),
+        stat:String(p.stat||''),team:String(p.team||''),opp:String(p.opp||''),
+        location:String(p.location||''),_tok:tok});
+      const response=await fetch('/api/nba/player-pre-game-log?'+q.toString(),{cache:'no-store'});
+      if(response.ok){
+        const data=await response.json();
+        if((data.matchup||[]).length)p.glog=data.matchup;
+        if((data.recent||[]).length)p.recent_glog=data.recent;
+      }
+    }catch(e){}
+  }
   // Game log vs this opponent at this location
   const glog=p.glog||[];
+  const recent=p.recent_glog||[];
   let logHTML;
   if(glog.length){
     logHTML=glog.map(g=>`<div style="display:flex;justify-content:space-between;padding:6px 10px;border-bottom:1px solid #1a1a1a;font-size:.82rem">
       <span style="color:#999">${fmtD(g.d)}</span>
       <span style="color:#fff;font-weight:800">${esc(g.v)}</span></div>`).join('');
   } else {
-    logHTML='<div style="padding:14px;color:#666;text-align:center;font-size:.8rem">No game log vs '+esc(p.opp)+'</div>';
+    logHTML='<div style="padding:14px;color:#666;text-align:center;font-size:.8rem">No prior '+esc(p.stat_label)+' results found vs '+esc(p.opp)+' at this location</div>';
   }
+  const recentHTML=recent.length
+    ? recent.map(g=>`<div style="display:flex;justify-content:space-between;padding:6px 10px;border-bottom:1px solid #1a1a1a;font-size:.82rem">
+        <span style="color:#999">${fmtD(g.d)}</span>
+        <span style="color:#fff;font-weight:800">${esc(g.v)}</span></div>`).join('')
+    : '<div style="padding:14px;color:#666;text-align:center;font-size:.8rem">No pre-game last-10 results available</div>';
   // Ladder: book line ±3, over/under counts at each
   const lad=p.ladder||[];
   let ladHTML;
@@ -3239,13 +3318,15 @@ function openLadder(key){
     <div style="background:linear-gradient(135deg,#1e3a5f,#0a1a2e);padding:14px 16px;border-bottom:2px solid #FDB827;display:flex;justify-content:space-between;align-items:flex-start">
       <div>
         <div style="color:#fff;font-weight:900;font-size:1.02rem">${esc(p.emoji)} ${esc(p.player)}</div>
-        <div style="color:#FDB827;font-size:.76rem;font-weight:700;margin-top:2px">${esc(p.stat_label)} vs ${esc(p.opp)} ${loc} · last ${glog.length}${anchor!=null?' · line '+anchor:''}</div>
+        <div style="color:#FDB827;font-size:.76rem;font-weight:700;margin-top:2px">${esc(p.stat_label)} · ${recent.length} most recent before game${anchor!=null?' · line '+anchor:''}</div>
       </div>
       <span onclick="closeLadder()" style="color:#888;font-size:1.4rem;line-height:1;cursor:pointer;padding:0 4px">×</span>
     </div>
     <div style="padding:12px 14px">
       <div style="color:#888;font-size:.7rem;font-weight:800;letter-spacing:.08em;margin-bottom:5px">ALT LINE HIT RATES (book ±3)</div>
       <div style="background:#0a0a0a;border:1px solid #1f1f1f;border-radius:9px;overflow:hidden;margin-bottom:14px">${ladHTML}</div>
+      <div style="color:#888;font-size:.7rem;font-weight:800;letter-spacing:.08em;margin-bottom:5px">LAST ${recent.length||10} ${esc(p.stat_label)} RESULTS BEFORE GAME</div>
+      <div style="background:#0a0a0a;border:1px solid #1f1f1f;border-radius:9px;overflow:hidden;margin-bottom:14px">${recentHTML}</div>
       <div style="color:#888;font-size:.7rem;font-weight:800;letter-spacing:.08em;margin-bottom:5px">GAME LOG vs ${esc(p.opp)} (${loc})</div>
       <div style="background:#0a0a0a;border:1px solid #1f1f1f;border-radius:9px;overflow:hidden">${logHTML}</div>
     </div>
@@ -3429,7 +3510,8 @@ function propsSelectGame(matchup) {
     var sc=side==='HOME'?'#fbbf24':'#818cf8';
     return '<div class="props-player-chip" onclick="openPropsPlayer('+idx+')" style="display:flex;align-items:center;gap:8px">' +
       (photo?'<img src="'+photo+'" alt="'+name+'" style="width:36px;height:36px;border-radius:50%;object-fit:cover;object-position:top;background:#172554" onerror="this.style.display=\\'none\\'"/>':'') +
-      '<div><div style="font-weight:800;color:#fff;font-size:.88rem;font-family:Playfair Display,serif">'+name+'</div>' +
+      '<div><div style="font-weight:800;color:#fff;font-size:.88rem;font-family:Playfair Display,serif">'+name+
+      (first.form_badge?'<span title="Display-only last-5 form versus season average" style="margin-left:6px;color:'+(first.form_badge==='HOT'?'#fb923c':'#60a5fa')+';font-size:.62rem;font-weight:900">'+first.form_badge+'</span>':'')+'</div>' +
       '<div style="font-size:.7rem;color:#888;margin-top:3px">' +
         '<span style="background:'+sb+';color:'+sc+';padding:1px 5px;border-radius:3px;font-weight:700;margin-right:4px">'+side+'</span>' +
         'vs '+opp+' &middot; '+cnt+' props</div></div>' +
@@ -3458,6 +3540,8 @@ function openPropsPlayer(idx){
     var dkO=p.dk_over_odds||(sig.dk_over_odds||'');
     var dkU=p.dk_under_odds||(sig.dk_under_odds||'');
     var ba=[];
+    var form=p.form_badge||sig.form_badge||'';
+    if(form) ba.push('<span title="Display-only last-5 form versus season average" style="background:'+(form==='HOT'?'rgba(249,115,22,.15)':'rgba(96,165,250,.15)')+';color:'+(form==='HOT'?'#fb923c':'#60a5fa')+';padding:1px 5px;border-radius:3px;font-size:.6rem;font-weight:800">'+form+'</span>');
     if(sig.has_consistency) ba.push('<span style="background:rgba(245,158,11,.15);color:#fbbf24;padding:1px 5px;border-radius:3px;font-size:.6rem;font-weight:700">PAT '+sig.pct+'%</span>');
     if(sig.line_rec) ba.push('<span style="background:rgba(74,222,128,.12);color:#4ade80;padding:1px 5px;border-radius:3px;font-size:.6rem;font-weight:700">LINE '+sig.line_rec+'</span>');
     if(sig.streak_rec) ba.push('<span style="background:rgba(249,115,22,.12);color:#fb923c;padding:1px 5px;border-radius:3px;font-size:.6rem;font-weight:700">STREAK '+sig.streak_n+'</span>');
@@ -5152,6 +5236,13 @@ def _nba_hist_snapshot_rows(result):
             "snapshot_version": 2,
             "mpg": p.get("mpg"), "games": p.get("games") or 0,
             "hits": p.get("hits") or 0, "pct": p.get("pct"),
+            "form_badge": p.get("form_badge"),
+            "form_change_pct": p.get("form_change_pct"),
+            "form_l5_avg": p.get("form_l5_avg"),
+            "form_baseline_avg": p.get("form_baseline_avg"),
+            "form_games": p.get("form_games"),
+            "recent_avg": p.get("recent_avg"),
+            "recent_glog": p.get("recent_glog") or [],
             "actual": p.get("actual"), "result": p.get("result"),
             "profit": p.get("profit"),
         })
@@ -5561,6 +5652,47 @@ async def verify_token_nba(request: Request):
         raise HTTPException(status_code=401, detail="Invalid token")
     from fastapi.responses import JSONResponse
     return JSONResponse({"ok": True})
+
+
+@app.get("/api/nba/player-pre-game-log")
+async def nba_player_pre_game_log(request: Request, date: str = "",
+                                  player_id: str = "", stat: str = "",
+                                  team: str = "", opp: str = "",
+                                  location: str = ""):
+    """Read-only game-log hydration for immutable historical snapshots."""
+    from fastapi import HTTPException
+    if not get_user(request):
+        raise HTTPException(status_code=401, detail="Subscription required")
+    try:
+        replay_date = globals()["date"].fromisoformat(date)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid replay date")
+    if not player_id or stat not in STAT_CONFIG:
+        raise HTTPException(status_code=400, detail="Invalid player or market")
+    replay_season = replay_date.year + (1 if replay_date.month >= 10 else 0)
+    seasons = [replay_season - offset for offset in range(7)]
+    sem = asyncio.Semaphore(7)
+    async with httpx.AsyncClient(timeout=8) as client:
+        results = await asyncio.gather(*[
+            get_player_gamelogs_espn(player_id, season, sem, client)
+            for season in seasons
+        ], return_exceptions=True)
+    logs = sorted(
+        [game for result in results if isinstance(result, list) for game in result
+         if str(game.get("date", ""))[:10] < date],
+        key=lambda game: str(game.get("date", "")), reverse=True)
+    recent = [{"d": game.get("date"), "v": game.get(stat)}
+              for game in logs[:10] if game.get(stat) is not None]
+    team_abbr, opp_abbr = _norm_abbr(team), _norm_abbr(opp)
+    loc = "Home" if str(location).lower() == "home" else "Away"
+    matchup = [{"d": game.get("date"), "v": game.get(stat)}
+               for game in logs
+               if game.get("opp") == opp_abbr
+               and game.get("player_team") == team_abbr
+               and game.get("location") == loc
+               and game.get(stat) is not None][:10]
+    return {"date": date, "player_id": player_id, "stat": stat,
+            "recent": recent, "matchup": matchup}
 
 @app.get("/api/whoami")
 async def whoami_nba(request: Request, token: str = "", admin: str = ""):
