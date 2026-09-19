@@ -4286,12 +4286,23 @@ function _nbaPerfectParlayCommit(html){
 function setNbaPerfectParlayCategories(checked){
  document.querySelectorAll('input[name="nbaPerfectParlayCat"]:not(:disabled)').forEach(function(el){el.checked=!!checked;});
 }
+function _nbaPerfectParlayBoardRows(side){
+ var rows=[],wantedSide=side||'ALL';
+ (__nbaPerfectParlayCategories||[]).forEach(function(cat){
+  var categoryRows=(allPicksData||[]).filter(function(p){
+   return String((p&&p.stat)||'').toUpperCase()===cat.key&&
+    (wantedSide==='ALL'||_nbaTopSideOf(p)===wantedSide);
+  }).slice(0,10);
+  rows=rows.concat(categoryRows);
+ });
+ return rows;
+}
 function showNbaPerfectParlayBuilder(){
   var saved=__nbaPerfectParlaySettings||{},savedLegs=Number(saved.legs)||3;
  var options='';
   for(var i=2;i<=10;i++)options+='<option value="'+i+'"'+(i===savedLegs?' selected':'')+'>'+i+' legs</option>';
   var available={};
-  (top10||[]).forEach(function(p){var stat=String((p&&p.stat)||'').toUpperCase();if(stat)available[stat]=(available[stat]||0)+1;});
+  _nbaPerfectParlayBoardRows(saved.side||'ALL').forEach(function(p){var stat=String((p&&p.stat)||'').toUpperCase();if(stat)available[stat]=(available[stat]||0)+1;});
   var selected=(saved.categories&&saved.categories.length)?saved.categories.slice():__nbaPerfectParlayCategories.map(function(x){return x.key;});
   var categoryOptions=__nbaPerfectParlayCategories.map(function(cat){
    var count=available[cat.key]||0,checked=selected.indexOf(cat.key)>=0,disabled=!count;
@@ -4393,7 +4404,7 @@ async function buildNbaPerfectParlay(){
  if(msg)msg.textContent='Finding the strongest NBA Coach Edge legs…';
  if(box){box.style.display='none';box.innerHTML='';}
  var boardByKey={};
- (top10||[]).forEach(function(p){
+  _nbaPerfectParlayBoardRows(selectedSide).forEach(function(p){
   if(selectedCategories.indexOf(String((p&&p.stat)||'').toUpperCase())<0)return;
   var key=_nbaPerfectParlayBoardKey(p);
   if(!key||key==='|')return;
