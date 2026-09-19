@@ -4058,6 +4058,7 @@ NBA_COACH_HTML = r"""
     <div>
       <div style="color:#86efac;border:1px solid rgba(74,222,128,.35);border-radius:999px;padding:5px 9px;height:max-content;font-size:.62rem;font-weight:900;margin-top:6px;white-space:nowrap">NO INVENTED PLAYS</div>
       <button onclick="openNbaCoachTrack()" style="width:100%;margin-top:8px;background:#0e7490;color:#fff;border:0;border-radius:8px;padding:7px 10px;font-size:.68rem;font-weight:900;cursor:pointer;white-space:nowrap">Coach Track Record</button>
+      <button onclick="showNbaPerfectParlayBuilder()" style="width:100%;margin-top:8px;background:linear-gradient(135deg,#b45309,#7c3aed);color:#fff;border:1px solid rgba(251,191,36,.5);border-radius:8px;padding:8px 10px;font-size:.7rem;font-weight:950;cursor:pointer;white-space:nowrap;box-shadow:0 4px 14px rgba(124,58,237,.22)">&#10024; Perfect Parlay</button>
     </div>
   </div>
   <div style="margin-top:18px;font-size:.75rem;font-weight:800;color:#facc15;border-bottom:1px solid rgba(255,255,255,.1);padding-bottom:5px;letter-spacing:.05em;text-transform:uppercase">Core</div>
@@ -4143,6 +4144,97 @@ function nbaCoachPreset(q){
  var input=document.getElementById('nbaCoachQuery');
  if(input)input.value=labels[q]||q;
  nbaCoachSearch(q==='alternate_minus'?'alternate_minus':(q==='alternate_plus'?'alternate_plus':'all'),labels[q]||q);
+}
+function _nbaPerfectParlayCommit(html){
+ var msg=document.getElementById('nbaCoachMsg'),box=document.getElementById('nbaCoachResults');
+ if(msg)msg.textContent='';
+ if(box){box.innerHTML=html;box.style.display='block';}
+}
+function showNbaPerfectParlayBuilder(){
+ var options='';
+ for(var i=2;i<=10;i++)options+='<option value="'+i+'"'+(i===3?' selected':'')+'>'+i+' legs</option>';
+ _nbaPerfectParlayCommit(
+  '<div><div class="nba-coach-question">&#10024; Perfect Parlay</div>'+
+  '<div style="margin-top:11px;color:#cbd5e1;font-size:.78rem;line-height:1.55">Choose the number of legs. Exact 100% app-probability Coach plays are selected first when available, then the remaining spots are filled by the strongest positive Coach Edge. Only one play per player is allowed.</div>'+
+  '<div style="display:flex;align-items:end;gap:9px;flex-wrap:wrap;margin-top:14px;padding:12px;background:#0f172a;border:1px solid #334155;border-radius:10px">'+
+   '<label style="color:#94a3b8;font-size:.68rem;font-weight:800">PARLAY SIZE<br><select id="nbaPerfectParlayLegs" style="margin-top:5px;min-width:120px;background:#020617;color:#fff;border:1px solid #475569;border-radius:7px;padding:9px 10px;font-weight:800">'+options+'</select></label>'+
+   '<button onclick="buildNbaPerfectParlay()" style="background:linear-gradient(135deg,#d97706,#7c3aed);color:#fff;border:0;border-radius:8px;padding:10px 15px;font-weight:950;cursor:pointer">BUILD PERFECT PARLAY</button>'+
+  '</div></div>');
+}
+function _nbaPerfectParlayAmerican(decimalOdds){
+ var d=Number(decimalOdds);if(!isFinite(d)||d<=1)return 'N/A';
+ var american=d>=2?(d-1)*100:-100/(d-1),rounded=Math.round(american);
+ return (rounded>0?'+':'')+rounded;
+}
+async function buildNbaPerfectParlay(){
+ var select=document.getElementById('nbaPerfectParlayLegs');
+ var requested=Math.max(2,Math.min(10,parseInt((select&&select.value)||'3',10)||3));
+ var msg=document.getElementById('nbaCoachMsg'),box=document.getElementById('nbaCoachResults');
+ if(msg)msg.textContent='Finding the strongest NBA Coach Edge legs…';
+ if(box){box.style.display='none';box.innerHTML='';}
+ var tok=localStorage.getItem('__mpa_token')||'',dp=document.getElementById('datePicker'),ds=(dp&&dp.value)||'__TODAY__';
+ try{
+  var response=await fetch('/api/nba/coach-edge?_tok='+encodeURIComponent(tok),{
+   method:'POST',headers:{'Content-Type':'application/json'},
+   body:JSON.stringify({date:ds,query:'positive edge',mode:'standard',count:10})
+  });
+  var data=await response.json();
+  if(!response.ok)throw new Error(data.detail||'Coach Edge unavailable');
+  var raw=(data.results||[]).filter(function(x){
+   var odds=Number(x.odds),edge=Number(x.edge);
+   return isFinite(odds)&&odds>=-1000&&isFinite(edge)&&edge>0&&!!(x.source||x.book);
+  });
+  var byPlayer={};
+  raw.forEach(function(x){
+   var key=String(x.player||'').toLowerCase().replace(/[^a-z0-9]/g,'');
+   if(!key)return;
+   var old=byPlayer[key],xHundred=Number(x.model_probability)>=.9995;
+   var oldHundred=old&&Number(old.model_probability)>=.9995;
+   if(!old||(xHundred&&!oldHundred)||(xHundred===oldHundred&&Number(x.edge)>Number(old.edge)))
+    byPlayer[key]=x;
+  });
+  var pool=Object.keys(byPlayer).map(function(k){return byPlayer[k];});
+  pool.sort(function(a,b){
+   var ah=Number(a.model_probability)>=.9995?1:0,bh=Number(b.model_probability)>=.9995?1:0;
+   return bh-ah||Number(b.edge)-Number(a.edge)
+    ||Number(b.model_probability)-Number(a.model_probability)
+    ||String(a.player).localeCompare(String(b.player));
+  });
+  if(pool.length<requested){
+   _nbaPerfectParlayCommit('<div><div class="nba-coach-question">&#10024; Perfect Parlay · '+requested+' Legs</div><div style="margin-top:11px;color:#cbd5e1;font-size:.78rem;line-height:1.5">Only '+pool.length+' unique player'+(pool.length===1?'':'s')+' currently qualify with a genuine sportsbook price and positive Coach Edge. Choose fewer legs.</div><div style="margin-top:12px"><button onclick="showNbaPerfectParlayBuilder()" style="background:#1e293b;color:#fff;border:1px solid #475569;border-radius:7px;padding:8px 11px;font-weight:800;cursor:pointer">Choose another size</button></div></div>');
+   return;
+  }
+  var legs=pool.slice(0,requested),combined=1,hundredCount=0;
+  legs.forEach(function(x){
+   combined*=Number(_amToDec(x.odds)||1);
+   if(Number(x.model_probability)>=.9995)hundredCount++;
+  });
+  __nbaCoachRows=legs.slice();
+  var rows=legs.map(function(x,i){
+   var exact=Number(x.model_probability)>=.9995;
+   return '<tr tabindex="0" onclick="nbaCoachDetail('+i+')" onkeydown="if(event.key===\'Enter\'||event.key===\' \'){event.preventDefault();nbaCoachDetail('+i+')}">'+
+    '<td>'+(i+1)+'</td>'+
+    '<td><b style="color:#fff;text-decoration:underline;text-decoration-style:dotted;text-underline-offset:2px">'+_nbaEsc(x.player)+'</b><br><span style="color:#64748b">'+_nbaEsc(x.team||'NBA')+(exact?' · 100% APP PLAY':'')+'</span></td>'+
+    '<td>'+_nbaEsc(x.category)+'<br><b style="color:'+(x.side==='OVER'?'#4ade80':'#f87171')+'">'+_nbaEsc(x.side)+' '+_nbaEsc(String(x.line))+'</b></td>'+
+    '<td>'+_nbaEsc((Number(x.odds)>0?'+':'')+String(x.odds))+'<br><span style="color:#64748b;font-size:.6rem">'+_nbaEsc(x.source||x.book||'Sportsbook')+'</span></td>'+
+    '<td style="color:'+(exact?'#fbbf24':'#e5e7eb')+';font-weight:'+(exact?'900':'700')+'">'+Number(x.model_probability*100).toFixed(1)+'%</td>'+
+    '<td style="color:#4ade80!important;font-weight:900">+'+Number(x.edge*100).toFixed(2)+' pts</td></tr>';
+  }).join('');
+  var hundredNote=hundredCount
+   ?hundredCount+' exact 100% app-probability play'+(hundredCount===1?' was':'s were')+' prioritized.'
+   :'No exact 100% Coach play was available, so every leg was selected by highest positive Coach Edge.';
+  _nbaPerfectParlayCommit(
+   '<div><div class="nba-coach-question">&#10024; Perfect Parlay · '+requested+' Legs</div>'+
+   '<div style="display:flex;justify-content:space-between;gap:10px;align-items:center;flex-wrap:wrap;margin-top:11px;padding:10px 12px;background:linear-gradient(135deg,rgba(180,83,9,.18),rgba(124,58,237,.18));border:1px solid rgba(251,191,36,.35);border-radius:10px">'+
+    '<div style="color:#e5e7eb;font-size:.74rem;line-height:1.5">'+hundredNote+' One strongest standard-line play per player.</div>'+
+    '<div style="color:#fbbf24;font-size:.78rem;font-weight:950">COMBINED '+_nbaPerfectParlayAmerican(combined)+' · '+combined.toFixed(2)+' decimal</div>'+
+   '</div>'+
+   '<div class="nba-coach-table-wrap"><table class="nba-coach-table"><thead><tr><th>#</th><th>Player</th><th>Play</th><th>Odds</th><th>App Prob</th><th>Coach Edge</th></tr></thead><tbody>'+rows+'</tbody></table></div>'+
+   '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:12px"><button onclick="showNbaPerfectParlayBuilder()" style="background:#1e293b;color:#fff;border:1px solid #475569;border-radius:7px;padding:8px 11px;font-weight:800;cursor:pointer">Change leg count</button><span style="color:#64748b;font-size:.65rem">Model-ranked suggestion, not a guarantee. Verify lines and prices before betting.</span></div></div>');
+ }catch(e){
+  if(msg)msg.textContent='';
+  _nbaPerfectParlayCommit('<div><div class="nba-coach-question">&#10024; Perfect Parlay</div><div style="margin-top:11px;color:#f87171;font-size:.78rem">'+_nbaEsc(e.message||'Perfect Parlay unavailable.')+'</div><button onclick="showNbaPerfectParlayBuilder()" style="margin-top:12px;background:#1e293b;color:#fff;border:1px solid #475569;border-radius:7px;padding:8px 11px;font-weight:800;cursor:pointer">Try again</button></div>');
+ }
 }
 async function nbaCoachSearch(forceMode,presetQuery){
   var question=document.getElementById('nbaCoachQuery').value||'';
