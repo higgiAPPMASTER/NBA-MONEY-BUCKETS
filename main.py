@@ -2822,7 +2822,7 @@ footer{text-align:center;padding:32px 24px;color:#4b5563;font-size:.78rem;border
 // server independently re-verifies before honoring any force refresh).
 function _nbaUnlockDates(){try{var dp=document.getElementById('datePicker');if(dp){dp.removeAttribute('min');dp.removeAttribute('max');}}catch(e){}}
 if(window.IS_ADMIN){document.body.classList.add('is-admin');_nbaUnlockDates();}else{var _at=localStorage.getItem('__mpa_token')||'';var _ak=localStorage.getItem('__mpa_admin')||'';if(_at||_ak){fetch('/api/whoami?_tok='+encodeURIComponent(_at)+'&admin='+encodeURIComponent(_ak)).then(r=>r.json()).then(d=>{if(d&&d.is_admin){window.IS_ADMIN=true;document.body.classList.add('is-admin');_nbaUnlockDates();}}).catch(function(){});}}
-let top10=[], allPicksData=[], nbaPropsData=[], activeTopStat='ALL', activeTopSide='ALL', activeAllStat='ALL', sideFilter=null;
+let top10=[], allPicksData=[], nbaPropsData=[], nbaApprovedPicks=[], activeTopStat='ALL', activeTopSide='ALL', activeAllStat='ALL', sideFilter=null;
 
 function pctClass(p){return p>=90?['pct-green','bar-green']:p>=80?['pct-yellow','bar-yellow']:['pct-orange','bar-orange']}
 function _nbaHistImplied(odds){
@@ -2864,7 +2864,6 @@ function _nbaNormalizeHistoricalData(data){
   }
   data.all_picks=clean;
   data.picks=balanced;
-  data.props_picks=clean;
   data.total=clean.length;
   return data;
 }
@@ -3476,6 +3475,7 @@ async function runPicks(force=false){
     top10=data.picks||[];
     allPicksData=data.all_picks||[];
     nbaPropsData=(data.props_picks||[]).concat(data.props_nopick||[]);
+    nbaApprovedPicks=(data.historical_replay?data.props_picks:data.picks)||[];
     activeTopStat='ALL';activeTopSide='ALL';activeAllStat='ALL';
     var _topSideChooser=document.getElementById('topSideChooser');if(_topSideChooser)_topSideChooser.style.display='none';
     document.querySelectorAll('#filterBar .filter-btn[data-top-side]').forEach(b=>b.classList.toggle('active',b.dataset.topSide==='ALL'));
@@ -3536,6 +3536,7 @@ async function getPicks(){
     top10=data.picks||[];
     allPicksData=data.all_picks||[];
     nbaPropsData=(data.props_picks||[]).concat(data.props_nopick||[]);
+    nbaApprovedPicks=(data.historical_replay?data.props_picks:data.picks)||[];
     activeTopStat='ALL';activeTopSide='ALL';activeAllStat='ALL';
     var _topSideChooser=document.getElementById('topSideChooser');if(_topSideChooser)_topSideChooser.style.display='none';
     document.querySelectorAll('#filterBar .filter-btn[data-top-side]').forEach(b=>b.classList.toggle('active',b.dataset.topSide==='ALL'));
@@ -3729,6 +3730,7 @@ document.addEventListener('DOMContentLoaded', function(){
     top10        = data.picks || [];
     allPicksData = data.all_picks || [];
     nbaPropsData = (data.props_picks || []).concat(data.props_nopick || []);
+    nbaApprovedPicks = (data.historical_replay ? data.props_picks : data.picks) || [];
     activeTopStat = 'ALL'; activeTopSide = 'ALL'; activeAllStat = 'ALL';
     var _topSideChooser=document.getElementById('topSideChooser');if(_topSideChooser)_topSideChooser.style.display='none';
     document.querySelectorAll('#filterBar .filter-btn[data-top-side]').forEach(b=>b.classList.toggle('active',b.dataset.topSide==='ALL'));
@@ -4258,7 +4260,7 @@ NBA_COACH_HTML = r"""
 <script>
  var __nbaCoachRows=[],__nbaPerfectParlayPool=[],__nbaPerfectParlayLegs=[];
  var __nbaPerfectParlaySettings={legs:3,categories:[],side:'ALL',rotation:'PREFER'};
- var __nbaPerfectParlayStake=100,__nbaPerfectParlayDate='',__nbaPerfectParlayNotice='';
+ var __nbaPerfectParlayStake=100,__nbaPerfectParlayDate='',__nbaPerfectParlayNotice='',__nbaPerfectParlayBoardSource=null;
  var __nbaPerfectParlayCategories=[
   {key:'PTS',label:'Points'},{key:'REB',label:'Rebounds'},{key:'AST',label:'Assists'},
   {key:'FG3M',label:'3-Pointers'},{key:'PRA',label:'Pts + Reb + Ast'},
@@ -4306,9 +4308,14 @@ function setNbaPerfectParlayCategories(checked){
 }
 function _nbaPerfectParlayBoardRows(side){
  var rows=[],wantedSide=side||'ALL';
+ var approved={};
+ (nbaApprovedPicks||[]).forEach(function(p){
+  if(!p.historical_replay&&String(p.line_rec||p.streak_rec||'OVER').toUpperCase()!==_nbaTopSideOf(p))return;
+  var key=_nbaPerfectParlayExactKey(p);if(key)approved[key]=true;
+ });
  (__nbaPerfectParlayCategories||[]).forEach(function(cat){
   var categoryRows=(allPicksData||[]).filter(function(p){
-   return String((p&&p.stat)||'').toUpperCase()===cat.key&&
+   return approved[_nbaPerfectParlayExactKey(p)]&&String((p&&p.stat)||'').toUpperCase()===cat.key&&
     (wantedSide==='ALL'||_nbaTopSideOf(p)===wantedSide);
   }).slice(0,10);
   rows=rows.concat(categoryRows);
@@ -4323,7 +4330,7 @@ function _nbaPerfectParlayImplied(odds){
 function _nbaPerfectParlayLocalRows(boardByKey){
  var propsByKey={};
  (nbaPropsData||[]).forEach(function(p){
-  var key=_nbaPerfectParlayBoardKey(p);
+  var key=_nbaPerfectParlayExactKey(p);
   if(!key||key==='|')return;
   if(!propsByKey[key])propsByKey[key]=[];
   propsByKey[key].push(p);
@@ -4332,19 +4339,25 @@ function _nbaPerfectParlayLocalRows(boardByKey){
  return Object.keys(boardByKey).map(function(key){
   var board=boardByKey[key],side=_nbaTopSideOf(board);
   if(side!=='OVER'&&side!=='UNDER')return null;
-  var candidates=(propsByKey[key]||[]).concat([board]),chosen=null,odds=null,line=null;
+  var exactKey=_nbaPerfectParlayExactKey(board);
+  var candidates=[board].concat(propsByKey[exactKey]||[]),chosen=null,odds=null,line=null;
   for(var i=0;i<candidates.length;i++){
    var p=candidates[i]||{};
-   line=p.line!=null?p.line:(p.dk_line!=null?p.dk_line:p.fd_line);
-   odds=side==='OVER'?(p.dk_over_odds||p.over_odds||p.fd_odds||p.odds):(p.dk_under_odds||p.under_odds||p.odds);
-   if(line!=null&&odds!=null&&String(odds)!==''){chosen=p;break;}
+   if(_nbaPerfectParlayExactKey(p)!==exactKey)continue;
+   line=_nbaPerfectParlayLine(p);
+   var quoteLine=p.dk_line!=null?p.dk_line:p.line;
+   odds=Number(quoteLine)===Number(line)?(side==='OVER'?p.dk_over_odds:p.dk_under_odds):null;
+   if(odds==null&&p.line!=null&&Number(p.line)===Number(line))odds=side==='OVER'?p.over_odds:p.under_odds;
+   if(odds==null&&p.historical_replay&&Number(p.line)===Number(line))odds=p.fd_odds;
+   if(odds==null&&side==='OVER'&&p.fd_line!=null&&Number(p.fd_line)===Number(line))odds=p.fd_odds;
+   var book=p.bookmaker_label||p.book||p.bookmaker;
+   if(line!=null&&odds!=null&&String(odds)!==''&&book&&_nbaPerfectParlayImplied(odds)!=null){chosen=p;break;}
   }
   if(!chosen)return null;
   var american=Number(String(odds).replace('+','')),implied=_nbaPerfectParlayImplied(american);
-  var model=Number(board.pct);
-  if(model>1)model/=100;
+  var model=Number(board.pct)/100;
   var edge=model-(implied==null?model:implied);
-  var source=chosen.bookmaker_label||chosen.book||chosen.bookmaker||board.book||board.bookmaker_label||board.bookmaker||'Odds API';
+  var source=chosen.bookmaker_label||chosen.book||chosen.bookmaker;
   if(!isFinite(american)||american<-1000||implied==null||!isFinite(model)||model<=0||edge<=0)return null;
   return {
    player:board.player,team:board.team,stat:board.stat,
@@ -4393,6 +4406,14 @@ function _nbaPerfectParlayPlayerKey(x){return String((x&&x.player)||'').toLowerC
 function _nbaPerfectParlayBoardKey(x){
  return _nbaPerfectParlayPlayerKey(x)+'|'+String((x&&x.stat)||'').toUpperCase();
 }
+function _nbaPerfectParlayLine(p){
+ return p.historical_replay?p.line:(p.dk_line!=null?p.dk_line:p.fd_line);
+}
+function _nbaPerfectParlayExactKey(p){
+ var line=_nbaPerfectParlayLine(p),side=_nbaTopSideOf(p);
+ if(line==null||!isFinite(Number(line))||!['OVER','UNDER'].includes(side))return '';
+ return String(window.__NBA_BOARD_DATE__||'')+'|'+_nbaPerfectParlayBoardKey(p)+'|'+side+'|'+Number(line);
+}
 function _nbaPerfectParlayStarter(x){
  var mpg=Number(x&&x._board_mpg);
  return isFinite(mpg)&&mpg>=24;
@@ -4416,9 +4437,9 @@ function changeNbaPerfectParlayLeg(legIndex){
 }
 function _nbaPerfectParlayDateCurrent(){
  var dp=document.getElementById('datePicker');
- if(__nbaPerfectParlayDate&&__nbaPerfectParlayDate===String(window.__NBA_BOARD_DATE__||'')&&(!dp||dp.value===__nbaPerfectParlayDate))return true;
+ if(__nbaPerfectParlayBoardSource===allPicksData&&__nbaPerfectParlayDate&&__nbaPerfectParlayDate===String(window.__NBA_BOARD_DATE__||'')&&(!dp||dp.value===__nbaPerfectParlayDate))return true;
  var note=document.getElementById('nbaParlayNotice');
- if(note)note.textContent='The selected date changed. Load that date and build a new parlay first.';
+ if(note)note.textContent='The date or loaded board changed. Build a new parlay from the current app picks first.';
  return false;
 }
 function generateNewNbaPerfectParlay(){
@@ -4552,6 +4573,7 @@ function buildNbaPerfectParlay(){
    __nbaPerfectParlayPool=pool.slice();
    __nbaPerfectParlayLegs=pool.slice(0,requested);
    __nbaPerfectParlayDate=String(ds);
+   __nbaPerfectParlayBoardSource=allPicksData;
    __nbaPerfectParlayNotice='';
    renderNbaPerfectParlay();
  }catch(e){
@@ -5720,10 +5742,8 @@ def _nba_historical_saved_board(date_str, games, log=None):
         "select": "detail",
         "limit": "1",
     }) or []
-    source = ((graded[0].get("detail") or []) if graded
-              else (snapshots[0].get("detail") or []))
-    if any(row.get("snapshot_version") != 3 for row in source):
-        source = snapshot_rows
+    source = _nba_historical_current_rows(
+        snapshot_rows, (graded[0].get("detail") or []) if graded else [])
     rows = []
     for saved in source:
         side = str(saved.get("side") or "").upper()
@@ -5803,6 +5823,26 @@ def _nba_historical_saved_board(date_str, games, log=None):
         "props_nopick": [],
         "saved_historical_replay": True,
     }
+
+
+def _nba_historical_current_rows(snapshot_rows, graded_rows):
+    """The current snapshot owns selections; grades never introduce old picks."""
+    def identity(row):
+        return (str(row.get("player_id") or row.get("player") or ""),
+                row.get("stat"), row.get("side"), row.get("line"),
+                row.get("snapshot_version"))
+    previous = {identity(row): row for row in graded_rows or []}
+    rows = []
+    for snapshot in snapshot_rows or []:
+        graded = previous.get(identity(snapshot))
+        # Reuse only grades whose source evidence still matches this snapshot.
+        fields = ("pct", "games", "hits", "odds", "book", "snapshot", "recent_glog")
+        if graded and all(graded.get(k) == snapshot.get(k) for k in fields):
+            rows.append({**graded, **{k: v for k, v in snapshot.items()
+                                     if k not in ("actual", "result", "profit")}})
+        else:
+            rows.append(dict(snapshot))
+    return rows
 
 
 def _nba_historical_persist_snapshot(date_str, result):
@@ -6036,7 +6076,8 @@ async def nba_historical_track_record(request: Request, month: str = ""):
         ds=row.get("date","")
         if month and (not lo or not (lo.isoformat()<=ds<=hi.isoformat())): continue
         previous=graded_by_date.get(ds)
-        graded=_nba_historical_grade_rows(ds, previous if previous is not None else row.get("detail") or [])
+        graded=_nba_historical_grade_rows(
+            ds, _nba_historical_current_rows(row.get("detail") or [], previous or []))
         if previous != graded:
             if not _nba_sb_upsert([{"app":_NBA_HIST_APP,"date":ds,"category":_NBA_HIST_GRADED_CAT,
               "side":"ALL","wins":0,"losses":0,"locked":False,"detail":graded}],
