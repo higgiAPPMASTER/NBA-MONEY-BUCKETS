@@ -374,8 +374,35 @@ def _nba_extract_stat(stats_arr: list, stat_key: str, labels: list = None):
     """Extract an NBA stat using ESPN's supplied labels, with legacy fallback."""
     legacy_idx = {"PTS": 13, "REB": 6, "AST": 7, "FG3M": 2, "BLK": 9, "STL": 8}
     aliases = {"PTS": ("PTS",), "REB": ("REB",), "AST": ("AST",),
-               "FG3M": ("3PT", "FG3M"), "BLK": ("BLK",), "STL": ("STL",)}
+               "FG3M": ("3PM", "FG3M", "3PT", "3FG", "3PM-A", "3PTM-A"),
+               "BLK": ("BLK",), "STL": ("STL",)}
     label_idx = {str(label).upper(): i for i, label in enumerate(labels or [])}
+    if stat_key == "FG3M":
+        # ESPN has served game-log payloads where category labels and event values
+        # are offset, making the apparent 3PT value a percentage (52.0, 43.8,
+        # etc.). Made threes must be a small whole number. Prefer a labelled
+        # made-attempt value, then use the second made-attempt pair in the row
+        # (FG, 3PT, FT) rather than ever accepting a percentage.
+        for label in aliases["FG3M"]:
+            idx = label_idx.get(label)
+            if idx is None or idx >= len(stats_arr):
+                continue
+            raw = stats_arr[idx]
+            match = re.fullmatch(r"\s*(\d+)\s*-\s*(\d+)\s*", str(raw))
+            if match:
+                return float(match.group(1))
+            try:
+                value = float(raw)
+                if value.is_integer() and 0 <= value <= 20:
+                    return value
+            except Exception:
+                pass
+        made_attempt_pairs = []
+        for raw in stats_arr:
+            match = re.fullmatch(r"\s*(\d+)\s*-\s*(\d+)\s*", str(raw))
+            if match:
+                made_attempt_pairs.append(float(match.group(1)))
+        return made_attempt_pairs[1] if len(made_attempt_pairs) >= 2 else None
     idx = None
     for label in aliases.get(stat_key, ()):
         if label in label_idx:
@@ -398,6 +425,24 @@ def _nba_extract_stat(stats_arr: list, stat_key: str, labels: list = None):
         if all(v is not None for v in vals):
             return sum(vals)
     return None
+
+
+def _nba_fg3m_logs_sane(result: dict) -> bool:
+    """Reject cached boards containing percentages misread as made threes."""
+    for group in ("picks", "all_picks", "props_picks", "props_nopick"):
+        for row in result.get(group, []) or []:
+            if str(row.get("stat") or row.get("stat_key") or "").upper() != "FG3M":
+                continue
+            for log_key in ("glog", "recent_glog"):
+                for entry in row.get(log_key, []) or []:
+                    raw = entry.get("v") if isinstance(entry, dict) else entry
+                    try:
+                        value = float(raw)
+                    except Exception:
+                        continue
+                    if not value.is_integer() or value < 0 or value > 20:
+                        return False
+    return True
 
 _NBA_BOX_CACHE: dict = {}
 _NBA_BOX_COMPLETE_CACHE: dict = {}
@@ -1805,6 +1850,8 @@ async def run_analysis(selected_date: str = None, force: bool = False) -> Dict:
             _fc = None
         if historical_replay and _fc and _fc.get("historical_replay_schema") != HISTORICAL_REPLAY_SCHEMA:
             _fc = None
+        if _fc and not _nba_fg3m_logs_sane(_fc):
+            _fc = None
         if _fc:
             if not historical_replay:
                 _schedule_nba_alternates_warm(today_str)
@@ -1815,6 +1862,7 @@ async def run_analysis(selected_date: str = None, force: bool = False) -> Dict:
             return _fc
         if (_cache.get('date') == today_str and _cache.get('picks') is not None
                 and _cache.get('odds_loaded')
+                and _nba_fg3m_logs_sane(_cache)
                 and (not historical_replay or
                      _cache.get("historical_replay_schema") == HISTORICAL_REPLAY_SCHEMA)):
             if not historical_replay:
@@ -3286,7 +3334,12 @@ async function openLadder(key){
   const loc=(p.location||'').toLowerCase();
   const fmtD=s=>{try{const d=new Date(s);return (d.getMonth()+1)+'/'+d.getDate()+'/'+String(d.getFullYear()).slice(2);}catch(e){return s||'';}};
   const anchor=(p.dk_line!=null?p.dk_line:p.fd_line);
-  if(window.__NBA_HISTORICAL_REPLAY__&&p.player_id&&(!(p.glog||[]).length||!(p.recent_glog||[]).length)){
+  const invalidThreeLog=String(p.stat||'').toUpperCase()==='FG3M'&&
+    (p.glog||[]).concat(p.recent_glog||[]).some(g=>{
+      const v=Number(g&&g.v);
+      return !Number.isInteger(v)||v<0||v>20;
+    });
+  if(p.player_id&&(!(p.glog||[]).length||!(p.recent_glog||[]).length||invalidThreeLog)){
     try{
       const dp=document.getElementById('datePicker');
       const tok=localStorage.getItem('__mpa_token')||'';
@@ -3296,8 +3349,8 @@ async function openLadder(key){
       const response=await fetch('/api/nba/player-pre-game-log?'+q.toString(),{cache:'no-store'});
       if(response.ok){
         const data=await response.json();
-        if((data.matchup||[]).length)p.glog=data.matchup;
-        if((data.recent||[]).length)p.recent_glog=data.recent;
+        if(Array.isArray(data.matchup))p.glog=data.matchup;
+        if(Array.isArray(data.recent))p.recent_glog=data.recent;
       }
     }catch(e){}
   }
@@ -4186,7 +4239,14 @@ NBA_COACH_HTML = r"""
   </div>
 </section>
 <script>
-var __nbaCoachRows=[],__nbaPerfectParlayPool=[],__nbaPerfectParlayLegs=[];
+ var __nbaCoachRows=[],__nbaPerfectParlayPool=[],__nbaPerfectParlayLegs=[];
+ var __nbaPerfectParlaySettings={legs:3,categories:[],side:'ALL',rotation:'PREFER'};
+ var __nbaPerfectParlayCategories=[
+  {key:'PTS',label:'Points'},{key:'REB',label:'Rebounds'},{key:'AST',label:'Assists'},
+  {key:'FG3M',label:'3-Pointers'},{key:'PRA',label:'Pts + Reb + Ast'},
+  {key:'PTS_REB',label:'Pts + Reb'},{key:'PTS_AST',label:'Pts + Ast'},
+  {key:'REB_AST',label:'Reb + Ast'},{key:'BLK',label:'Blocks'},{key:'STL',label:'Steals'}
+ ];
 function nbaCoachPreset(q){
  var labels={
   safest:'What are the safest NBA bets?',
@@ -4223,16 +4283,35 @@ function _nbaPerfectParlayCommit(html){
  if(msg)msg.textContent='';
  if(box){box.innerHTML=html;box.style.display='block';}
 }
+function setNbaPerfectParlayCategories(checked){
+ document.querySelectorAll('input[name="nbaPerfectParlayCat"]:not(:disabled)').forEach(function(el){el.checked=!!checked;});
+}
 function showNbaPerfectParlayBuilder(){
+  var saved=__nbaPerfectParlaySettings||{},savedLegs=Number(saved.legs)||3;
  var options='';
- for(var i=2;i<=10;i++)options+='<option value="'+i+'"'+(i===3?' selected':'')+'>'+i+' legs</option>';
+  for(var i=2;i<=10;i++)options+='<option value="'+i+'"'+(i===savedLegs?' selected':'')+'>'+i+' legs</option>';
+  var available={};
+  (top10||[]).forEach(function(p){var stat=String((p&&p.stat)||'').toUpperCase();if(stat)available[stat]=(available[stat]||0)+1;});
+  var selected=(saved.categories&&saved.categories.length)?saved.categories.slice():__nbaPerfectParlayCategories.map(function(x){return x.key;});
+  var categoryOptions=__nbaPerfectParlayCategories.map(function(cat){
+   var count=available[cat.key]||0,checked=selected.indexOf(cat.key)>=0,disabled=!count;
+   return '<label style="display:flex;align-items:center;gap:6px;padding:7px 9px;background:'+(checked&&!disabled?'rgba(59,130,246,.14)':'#020617')+';border:1px solid '+(checked&&!disabled?'#3b82f6':'#334155')+';border-radius:7px;color:'+(disabled?'#475569':'#e2e8f0')+';font-size:.68rem;font-weight:800;cursor:'+(disabled?'not-allowed':'pointer')+'">'+
+    '<input type="checkbox" name="nbaPerfectParlayCat" value="'+cat.key+'"'+(checked&&!disabled?' checked':'')+(disabled?' disabled':'')+' style="accent-color:#3b82f6">'+
+    cat.label+' <span style="color:#64748b">('+count+')</span></label>';
+  }).join('');
+  var fieldStyle='margin-top:5px;min-width:145px;background:#020617;color:#fff;border:1px solid #475569;border-radius:7px;padding:9px 10px;font-weight:800';
  _nbaPerfectParlayCommit(
   '<div><div class="nba-coach-question">&#10024; Perfect Parlay</div>'+
-  '<div style="margin-top:11px;color:#cbd5e1;font-size:.78rem;line-height:1.55">Choose the number of legs. Exact 100% app-probability Coach plays are selected first when available, then the remaining spots are filled by the strongest positive Coach Edge. Only one play per player is allowed.</div>'+
-  '<div style="display:flex;align-items:end;gap:9px;flex-wrap:wrap;margin-top:14px;padding:12px;background:#0f172a;border:1px solid #334155;border-radius:10px">'+
-   '<label style="color:#94a3b8;font-size:.68rem;font-weight:800">PARLAY SIZE<br><select id="nbaPerfectParlayLegs" style="margin-top:5px;min-width:120px;background:#020617;color:#fff;border:1px solid #475569;border-radius:7px;padding:9px 10px;font-weight:800">'+options+'</select></label>'+
+   '<div style="margin-top:11px;color:#cbd5e1;font-size:.78rem;line-height:1.55">Choose your markets, direction, rotation preference, and number of legs. Every result still comes only from this date’s displayed app boards with a genuine standard line and positive Coach Edge.</div>'+
+   '<div style="margin-top:14px;padding:12px;background:#0f172a;border:1px solid #334155;border-radius:10px">'+
+    '<div style="display:flex;justify-content:space-between;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:7px"><div style="color:#94a3b8;font-size:.68rem;font-weight:900">CATEGORIES — SELECT ONE OR MORE</div><div style="display:flex;gap:5px"><button onclick="setNbaPerfectParlayCategories(true)" style="background:#1e293b;color:#bfdbfe;border:1px solid #334155;border-radius:6px;padding:5px 8px;font-size:.62rem;font-weight:800;cursor:pointer">Select all</button><button onclick="setNbaPerfectParlayCategories(false)" style="background:#1e293b;color:#94a3b8;border:1px solid #334155;border-radius:6px;padding:5px 8px;font-size:.62rem;font-weight:800;cursor:pointer">Clear</button></div></div>'+
+    '<div style="display:flex;flex-wrap:wrap;gap:7px">'+categoryOptions+'</div>'+
+    '<div style="display:flex;align-items:end;gap:9px;flex-wrap:wrap;margin-top:13px">'+
+     '<label style="color:#94a3b8;font-size:.68rem;font-weight:800">PARLAY SIZE<br><select id="nbaPerfectParlayLegs" style="'+fieldStyle+'">'+options+'</select></label>'+
+     '<label style="color:#94a3b8;font-size:.68rem;font-weight:800">SIDE<br><select id="nbaPerfectParlaySide" style="'+fieldStyle+'"><option value="ALL"'+(saved.side==='ALL'?' selected':'')+'>Best available</option><option value="OVER"'+(saved.side==='OVER'?' selected':'')+'>Overs only</option><option value="UNDER"'+(saved.side==='UNDER'?' selected':'')+'>Unders only</option></select></label>'+
+     '<label style="color:#94a3b8;font-size:.68rem;font-weight:800">PLAYER POOL<br><select id="nbaPerfectParlayRotation" style="'+fieldStyle+'"><option value="PREFER"'+(saved.rotation==='PREFER'?' selected':'')+'>Prefer 24+ MPG</option><option value="ONLY"'+(saved.rotation==='ONLY'?' selected':'')+'>24+ MPG only</option><option value="ANY"'+(saved.rotation==='ANY'?' selected':'')+'>Any qualifying player</option></select></label>'+
    '<button onclick="buildNbaPerfectParlay()" style="background:linear-gradient(135deg,#d97706,#7c3aed);color:#fff;border:0;border-radius:8px;padding:10px 15px;font-weight:950;cursor:pointer">BUILD PERFECT PARLAY</button>'+
-  '</div></div>');
+    '</div></div></div>');
 }
 function _nbaPerfectParlayAmerican(decimalOdds){
  var d=Number(decimalOdds);if(!isFinite(d)||d<=1)return 'N/A';
@@ -4283,20 +4362,30 @@ function renderNbaPerfectParlay(){
  var hundredNote=hundredCount
   ?hundredCount+' exact 100% app-probability play'+(hundredCount===1?' is':'s are')+' included.'
   :'No exact 100% Coach play is included; these legs use positive Coach Edge.';
+  var settings=__nbaPerfectParlaySettings||{},catLabels=__nbaPerfectParlayCategories.filter(function(cat){return (settings.categories||[]).indexOf(cat.key)>=0;}).map(function(cat){return cat.label;});
+  var filterNote=(catLabels.length===__nbaPerfectParlayCategories.length?'All categories':catLabels.join(', '))+' · '+(settings.side==='ALL'?'Best available side':settings.side+' only')+' · '+(settings.rotation==='ONLY'?'24+ MPG only':(settings.rotation==='ANY'?'Any qualifying player':'Prefer 24+ MPG'));
  _nbaPerfectParlayCommit(
   '<div><div class="nba-coach-question">&#10024; Perfect Parlay · '+requested+' Legs</div>'+
   '<div style="display:flex;justify-content:space-between;gap:10px;align-items:center;flex-wrap:wrap;margin-top:11px;padding:10px 12px;background:linear-gradient(135deg,rgba(180,83,9,.18),rgba(124,58,237,.18));border:1px solid rgba(251,191,36,.35);border-radius:10px">'+
-   '<div style="color:#e5e7eb;font-size:.74rem;line-height:1.5">'+hundredNote+' Every leg comes from this date’s displayed app boards; 24+ MPG rotation players are preferred. Use Change Leg to cycle through the remaining approved plays.</div>'+
+    '<div style="color:#e5e7eb;font-size:.74rem;line-height:1.5">'+hundredNote+' Every leg comes from this date’s displayed app boards. Use Change Leg to cycle through the remaining approved plays.<br><span style="color:#a5b4fc;font-weight:800">'+_nbaEsc(filterNote)+'</span></div>'+
    '<div style="color:#fbbf24;font-size:.78rem;font-weight:950">COMBINED '+_nbaPerfectParlayAmerican(combined)+' · '+combined.toFixed(2)+' decimal</div>'+
   '</div>'+
   '<div class="nba-coach-table-wrap"><table class="nba-coach-table" style="min-width:930px"><thead><tr><th>#</th><th>Player</th><th>Play</th><th>Odds</th><th>App Prob</th><th>Coach Edge</th><th>Change Leg</th></tr></thead><tbody>'+rows+'</tbody></table></div>'+
-  '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:12px"><button onclick="showNbaPerfectParlayBuilder()" style="background:#1e293b;color:#fff;border:1px solid #475569;border-radius:7px;padding:8px 11px;font-weight:800;cursor:pointer">Change leg count</button><span style="color:#64748b;font-size:.65rem">Model-ranked suggestion, not a guarantee. Verify lines and prices before betting.</span></div></div>');
+   '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:12px"><button onclick="showNbaPerfectParlayBuilder()" style="background:#1e293b;color:#fff;border:1px solid #475569;border-radius:7px;padding:8px 11px;font-weight:800;cursor:pointer">Edit parlay options</button><span style="color:#64748b;font-size:.65rem">Model-ranked suggestion, not a guarantee. Verify lines and prices before betting.</span></div></div>');
 }
 async function buildNbaPerfectParlay(){
  var select=document.getElementById('nbaPerfectParlayLegs');
  var requested=Math.max(2,Math.min(10,parseInt((select&&select.value)||'3',10)||3));
+ var selectedCategories=Array.prototype.slice.call(document.querySelectorAll('input[name="nbaPerfectParlayCat"]:checked')).map(function(el){return el.value;});
+ var sideEl=document.getElementById('nbaPerfectParlaySide'),rotationEl=document.getElementById('nbaPerfectParlayRotation');
+ var selectedSide=(sideEl&&sideEl.value)||'ALL',rotationMode=(rotationEl&&rotationEl.value)||'PREFER';
+ __nbaPerfectParlaySettings={legs:requested,categories:selectedCategories.slice(),side:selectedSide,rotation:rotationMode};
  var msg=document.getElementById('nbaCoachMsg'),box=document.getElementById('nbaCoachResults');
  var tok=localStorage.getItem('__mpa_token')||'',dp=document.getElementById('datePicker'),ds=(dp&&dp.value)||'__TODAY__';
+ if(!selectedCategories.length){
+  _nbaPerfectParlayCommit('<div><div class="nba-coach-question">&#10024; Perfect Parlay</div><div style="margin-top:11px;color:#fbbf24;font-size:.78rem;line-height:1.5">Select at least one category before building the parlay.</div><button onclick="showNbaPerfectParlayBuilder()" style="margin-top:12px;background:#1e293b;color:#fff;border:1px solid #475569;border-radius:7px;padding:8px 11px;font-weight:800;cursor:pointer">Edit parlay options</button></div>');
+  return;
+ }
  if(!window.__NBA_BOARD_DATE__||String(window.__NBA_BOARD_DATE__)!==String(ds)){
   _nbaPerfectParlayCommit('<div><div class="nba-coach-question">&#10024; Perfect Parlay · '+requested+' Legs</div><div style="margin-top:11px;color:#fbbf24;font-size:.78rem;line-height:1.5">Load the app picks for '+_nbaEsc(ds)+' first. Perfect Parlay only uses the displayed boards from the same selected date.</div></div>');
   return;
@@ -4305,6 +4394,7 @@ async function buildNbaPerfectParlay(){
  if(box){box.style.display='none';box.innerHTML='';}
  var boardByKey={};
  (top10||[]).forEach(function(p){
+  if(selectedCategories.indexOf(String((p&&p.stat)||'').toUpperCase())<0)return;
   var key=_nbaPerfectParlayBoardKey(p);
   if(!key||key==='|')return;
   var old=boardByKey[key];
@@ -4318,7 +4408,7 @@ async function buildNbaPerfectParlay(){
  try{
   var response=await fetch('/api/nba/coach-edge?_tok='+encodeURIComponent(tok),{
    method:'POST',headers:{'Content-Type':'application/json'},
-   body:JSON.stringify({date:ds,query:'positive edge',mode:'standard',count:10,board_keys:boardKeys})
+   body:JSON.stringify({date:ds,query:'positive edge'+(selectedSide==='ALL'?'':(' '+selectedSide.toLowerCase())),mode:'standard',count:10,board_keys:boardKeys})
   });
   var data=await response.json();
   if(!response.ok)throw new Error(data.detail||'Coach Edge unavailable');
@@ -4344,14 +4434,14 @@ async function buildNbaPerfectParlay(){
   var pool=Object.keys(byPlayer).map(function(k){return byPlayer[k];});
   pool.sort(function(a,b){
    return Number(b.model_probability)-Number(a.model_probability)
-    ||Number(_nbaPerfectParlayStarter(b))-Number(_nbaPerfectParlayStarter(a))
-    ||Number(b._board_mpg||0)-Number(a._board_mpg||0)
+     ||(rotationMode==='ANY'?0:(Number(_nbaPerfectParlayStarter(b))-Number(_nbaPerfectParlayStarter(a))))
+     ||(rotationMode==='ANY'?0:(Number(b._board_mpg||0)-Number(a._board_mpg||0)))
     ||Number(b.edge)-Number(a.edge)
     ||String(a.player).localeCompare(String(b.player));
   });
   var starters=pool.filter(_nbaPerfectParlayStarter);
   var depth=pool.filter(function(x){return !_nbaPerfectParlayStarter(x);});
-  pool=(starters.length>=requested?starters:starters.concat(depth));
+  pool=rotationMode==='ONLY'?starters:(rotationMode==='PREFER'?(starters.length>=requested?starters:starters.concat(depth)):pool);
   if(pool.length<requested){
    _nbaPerfectParlayCommit('<div><div class="nba-coach-question">&#10024; Perfect Parlay · '+requested+' Legs</div><div style="margin-top:11px;color:#cbd5e1;font-size:.78rem;line-height:1.5">Only '+pool.length+' unique player'+(pool.length===1?'':'s')+' from this date’s displayed app boards currently qualify with a genuine standard-line sportsbook price and positive Coach Edge. Choose fewer legs.</div><div style="margin-top:12px"><button onclick="showNbaPerfectParlayBuilder()" style="background:#1e293b;color:#fff;border:1px solid #475569;border-radius:7px;padding:8px 11px;font-weight:800;cursor:pointer">Choose another size</button></div></div>');
    return;
