@@ -3,6 +3,7 @@
 
 import asyncio, pathlib, time
 import json
+import math
 import os
 import hashlib
 import re
@@ -101,7 +102,7 @@ HISTORICAL_ODDS_REGION = "us"
 LIVE_ODDS_REGIONS = "us,us2,ca"
 HISTORICAL_ODDS_TIMEOUT = 55
 HISTORICAL_ODDS_CONCURRENCY = 4
-HISTORICAL_REPLAY_SCHEMA = 10
+HISTORICAL_REPLAY_SCHEMA = 11
 ODDS_MARKET_MAP = {
     "player_points":                    "PTS",
     "player_rebounds":                   "REB",
@@ -408,14 +409,15 @@ def _nba_extract_stat(stats_arr: list, stat_key: str, labels: list = None):
         if label in label_idx:
             idx = label_idx[label]
             break
-    if idx is None:
+    if idx is None and not labels:
         idx = legacy_idx.get(stat_key)
     if idx is not None:
         try:
             raw = stats_arr[idx]
             if stat_key == "FG3M" and isinstance(raw, str) and "-" in raw:
                 return float(raw.split("-")[0])
-            return float(raw)
+            value = float(raw)
+            return value if math.isfinite(value) and value >= 0 and value.is_integer() else None
         except Exception:
             return None
     _base = {"PRA": ("PTS","REB","AST"), "PTS_REB": ("PTS","REB"),
@@ -660,6 +662,8 @@ def _cache_get(app: str, date_key: str):
         if p.exists() and (_permanent_nba_replay or
                           (time.time() - p.stat().st_mtime) < _CACHE_TTL):
             data = json.loads(p.read_text(encoding="utf-8"))
+            if app == "nba" and data.get("stat_parser_version") != 3:
+                return None
             print(f"[Cache] FILE HIT {app}/{date_key}")
             return data
     except Exception as e:
@@ -668,6 +672,8 @@ def _cache_get(app: str, date_key: str):
 
 def _cache_set(app: str, date_key: str, result: dict):
     try:
+        if app == "nba":
+            result["stat_parser_version"] = 3
         _cache_path(app, date_key).write_text(
             json.dumps(result, ensure_ascii=False), encoding="utf-8")
         print(f"[Cache] FILE SET {app}/{date_key}")
@@ -805,7 +811,9 @@ async def get_player_gamelogs_espn(player_id: str, season: int,
                 if eid and ev.get('stats') and eid not in stats_map:
                     stats_map[eid] = {
                         "stats": ev["stats"],
-                        "labels": cat.get("labels") or cat.get("names") or [],
+                        "labels": (ev.get("labels") or cat.get("labels")
+                                   or gl.get("labels") or cat.get("names")
+                                   or gl.get("names") or []),
                     }
 
     games = []
@@ -815,13 +823,18 @@ async def get_player_gamelogs_espn(player_id: str, season: int,
         stat_entry = stats_map[eid]
         stats = stat_entry["stats"]
         labels = stat_entry.get("labels") or []
-        if len(stats) < 14:
+        if not labels or len(stats) != len(labels):
             continue
 
         # Skip garbage time / DNP games
         min_idx = next((i for i, label in enumerate(labels)
                         if str(label).upper() == "MIN"), 0)
         if parse_min(stats[min_idx]) < MIN_MINUTES:
+            continue
+        # Missing/misaligned provider values are not zero-stat performances.
+        base_stats = {key: _nba_extract_stat(stats, key, labels)
+                      for key in ("PTS", "REB", "AST", "FG3M", "BLK", "STL")}
+        if any(value is None for value in base_stats.values()):
             continue
 
         opp_info = ev_info.get('opponent', {})
@@ -1861,6 +1874,7 @@ async def run_analysis(selected_date: str = None, force: bool = False) -> Dict:
                 except Exception as _ce: print(f"[nba_coach_track] cached capture failed: {_ce}")
             return _fc
         if (_cache.get('date') == today_str and _cache.get('picks') is not None
+                and _cache.get("stat_parser_version") == 3
                 and _cache.get('odds_loaded')
                 and _nba_fg3m_logs_sane(_cache)
                 and (not historical_replay or
@@ -5668,7 +5682,7 @@ def _nba_hist_snapshot_rows(result):
             "side": side, "line": line, "odds": odds,
             "book": p.get("book") or p.get("bookmaker") or p.get("bookmaker_label") or "",
             "snapshot": p.get("historical_snapshot") or result.get("historical_snapshot"),
-            "snapshot_version": 2,
+            "snapshot_version": 3,
             "mpg": p.get("mpg"), "games": p.get("games") or 0,
             "hits": p.get("hits") or 0, "pct": p.get("pct"),
             "form_badge": p.get("form_badge"),
@@ -5695,6 +5709,9 @@ def _nba_historical_saved_board(date_str, games, log=None):
     }) or []
     if not snapshots:
         return None
+    snapshot_rows = snapshots[0].get("detail") or []
+    if not snapshot_rows or any(row.get("snapshot_version") != 3 for row in snapshot_rows):
+        return None
     graded = _nba_hist_sb_get({
         "app": f"eq.{_NBA_HIST_APP}",
         "date": f"eq.{date_str}",
@@ -5705,6 +5722,8 @@ def _nba_historical_saved_board(date_str, games, log=None):
     }) or []
     source = ((graded[0].get("detail") or []) if graded
               else (snapshots[0].get("detail") or []))
+    if any(row.get("snapshot_version") != 3 for row in source):
+        source = snapshot_rows
     rows = []
     for saved in source:
         side = str(saved.get("side") or "").upper()
@@ -5794,7 +5813,7 @@ def _nba_historical_persist_snapshot(date_str, result):
         "date":f"eq.{date_str}","category":f"eq.{_NBA_HIST_SNAP_CAT}",
         "side":"eq.ALL","select":"detail","limit":"1"}) or []
     previous = existing[0].get("detail") or [] if existing else []
-    if previous and all(row.get("snapshot_version") == 2 for row in previous):
+    if previous and all(row.get("snapshot_version") == 3 for row in previous):
         return True
     return _nba_sb_upsert([{"app":_NBA_HIST_APP,"date":date_str,
         "category":_NBA_HIST_SNAP_CAT,"side":"ALL","wins":0,"losses":0,
