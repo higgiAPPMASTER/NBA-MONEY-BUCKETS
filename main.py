@@ -4237,14 +4237,20 @@ function _nbaPerfectParlayAmerican(decimalOdds){
  return (rounded>0?'+':'')+rounded;
 }
 function _nbaPerfectParlayPlayerKey(x){return String((x&&x.player)||'').toLowerCase().replace(/[^a-z0-9]/g,'')}
-function changeNbaPerfectParlayLeg(legIndex,poolIndex){
- var next=__nbaPerfectParlayPool[Number(poolIndex)];
- if(!next||!__nbaPerfectParlayLegs[legIndex])return;
- var nextKey=_nbaPerfectParlayPlayerKey(next);
- var duplicate=__nbaPerfectParlayLegs.some(function(x,i){return i!==legIndex&&_nbaPerfectParlayPlayerKey(x)===nextKey});
- if(duplicate)return;
- __nbaPerfectParlayLegs[legIndex]=next;
- renderNbaPerfectParlay();
+function changeNbaPerfectParlayLeg(legIndex){
+ var legs=__nbaPerfectParlayLegs||[],pool=__nbaPerfectParlayPool||[],current=legs[legIndex];
+ if(!current||!pool.length)return;
+ var used={};
+ legs.forEach(function(x,i){if(i!==legIndex)used[_nbaPerfectParlayPlayerKey(x)]=1;});
+ var currentKey=_nbaPerfectParlayPlayerKey(current),start=pool.findIndex(function(x){return _nbaPerfectParlayPlayerKey(x)===currentKey});
+ for(var step=1;step<=pool.length;step++){
+  var next=pool[(Math.max(start,0)+step)%pool.length],nextKey=_nbaPerfectParlayPlayerKey(next);
+  if(nextKey!==currentKey&&!used[nextKey]){
+   legs[legIndex]=next;
+   renderNbaPerfectParlay();
+   return;
+  }
+ }
 }
 function renderNbaPerfectParlay(){
  var legs=__nbaPerfectParlayLegs||[],requested=legs.length;
@@ -4254,12 +4260,6 @@ function renderNbaPerfectParlay(){
  __nbaCoachRows=legs.slice();
  var rows=legs.map(function(x,i){
   var exact=Number(x.model_probability)>=.9995,currentKey=_nbaPerfectParlayPlayerKey(x);
-  var options=__nbaPerfectParlayPool.map(function(alt,pi){
-   var key=_nbaPerfectParlayPlayerKey(alt);
-   if(key!==currentKey&&used[key])return '';
-   var label=(key===currentKey?'Current: ':'')+alt.player+' · '+alt.category+' '+alt.side+' '+alt.line+' · '+(Number(alt.odds)>0?'+':'')+alt.odds;
-   return '<option value="'+pi+'"'+(key===currentKey?' selected':'')+'>'+_nbaEsc(label)+'</option>';
-  }).join('');
   var canSwap=__nbaPerfectParlayPool.some(function(alt){var key=_nbaPerfectParlayPlayerKey(alt);return key!==currentKey&&!used[key]});
   return '<tr>'+
    '<td>'+(i+1)+'</td>'+
@@ -4268,7 +4268,7 @@ function renderNbaPerfectParlay(){
    '<td>'+_nbaEsc((Number(x.odds)>0?'+':'')+String(x.odds))+'<br><span style="color:#64748b;font-size:.6rem">'+_nbaEsc(x.source||x.book||'Sportsbook')+'</span></td>'+
    '<td style="color:'+(exact?'#fbbf24':'#e5e7eb')+';font-weight:'+(exact?'900':'700')+'">'+Number(x.model_probability*100).toFixed(1)+'%</td>'+
    '<td style="color:#4ade80!important;font-weight:900">+'+Number(x.edge*100).toFixed(2)+' pts</td>'+
-   '<td onclick="event.stopPropagation()">'+(canSwap?'<select aria-label="Change '+_nbaEsc(x.player)+' leg" onchange="changeNbaPerfectParlayLeg('+i+',this.value)" style="max-width:235px;background:#111827;color:#fff;border:1px solid #7c3aed;border-radius:7px;padding:7px 8px;font-size:.65rem;font-weight:800;cursor:pointer">'+options+'</select>':'<span style="color:#64748b;font-size:.62rem">No unused alternatives</span>')+'</td></tr>';
+   '<td onclick="event.stopPropagation()" style="text-align:center">'+(canSwap?'<button aria-label="Change '+_nbaEsc(x.player)+' leg" title="Change this leg" onclick="event.stopPropagation();changeNbaPerfectParlayLeg('+i+')" style="width:32px;height:32px;display:inline-flex;align-items:center;justify-content:center;background:#1e3a8a;color:#bfdbfe;border:1px solid #3b82f6;border-radius:50%;padding:0;font-size:1rem;font-weight:900;line-height:1;cursor:pointer;box-shadow:0 2px 8px rgba(37,99,235,.25)">&#8635;</button>':'<span title="No unused qualifying alternatives" style="display:inline-flex;width:32px;height:32px;align-items:center;justify-content:center;color:#475569;border:1px solid #1e293b;border-radius:50%;font-size:.75rem">&#8212;</span>')+'</td></tr>';
  }).join('');
  var hundredNote=hundredCount
   ?hundredCount+' exact 100% app-probability play'+(hundredCount===1?' is':'s are')+' included.'
