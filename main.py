@@ -2808,7 +2808,7 @@ footer{text-align:center;padding:32px 24px;color:#4b5563;font-size:.78rem;border
 // server independently re-verifies before honoring any force refresh).
 function _nbaUnlockDates(){try{var dp=document.getElementById('datePicker');if(dp){dp.removeAttribute('min');dp.removeAttribute('max');}}catch(e){}}
 if(window.IS_ADMIN){document.body.classList.add('is-admin');_nbaUnlockDates();}else{var _at=localStorage.getItem('__mpa_token')||'';var _ak=localStorage.getItem('__mpa_admin')||'';if(_at||_ak){fetch('/api/whoami?_tok='+encodeURIComponent(_at)+'&admin='+encodeURIComponent(_ak)).then(r=>r.json()).then(d=>{if(d&&d.is_admin){window.IS_ADMIN=true;document.body.classList.add('is-admin');_nbaUnlockDates();}}).catch(function(){});}}
-let top10=[], allPicksData=[], activeTopStat='ALL', activeTopSide='ALL', activeAllStat='ALL', sideFilter=null;
+let top10=[], allPicksData=[], nbaPropsData=[], activeTopStat='ALL', activeTopSide='ALL', activeAllStat='ALL', sideFilter=null;
 
 function pctClass(p){return p>=90?['pct-green','bar-green']:p>=80?['pct-yellow','bar-yellow']:['pct-orange','bar-orange']}
 function _nbaHistImplied(odds){
@@ -3461,6 +3461,7 @@ async function runPicks(force=false){
     }
     top10=data.picks||[];
     allPicksData=data.all_picks||[];
+    nbaPropsData=(data.props_picks||[]).concat(data.props_nopick||[]);
     activeTopStat='ALL';activeTopSide='ALL';activeAllStat='ALL';
     var _topSideChooser=document.getElementById('topSideChooser');if(_topSideChooser)_topSideChooser.style.display='none';
     document.querySelectorAll('#filterBar .filter-btn[data-top-side]').forEach(b=>b.classList.toggle('active',b.dataset.topSide==='ALL'));
@@ -3520,6 +3521,7 @@ async function getPicks(){
     }
     top10=data.picks||[];
     allPicksData=data.all_picks||[];
+    nbaPropsData=(data.props_picks||[]).concat(data.props_nopick||[]);
     activeTopStat='ALL';activeTopSide='ALL';activeAllStat='ALL';
     var _topSideChooser=document.getElementById('topSideChooser');if(_topSideChooser)_topSideChooser.style.display='none';
     document.querySelectorAll('#filterBar .filter-btn[data-top-side]').forEach(b=>b.classList.toggle('active',b.dataset.topSide==='ALL'));
@@ -3712,6 +3714,7 @@ document.addEventListener('DOMContentLoaded', function(){
     if (data.games) renderGames(data.games);
     top10        = data.picks || [];
     allPicksData = data.all_picks || [];
+    nbaPropsData = (data.props_picks || []).concat(data.props_nopick || []);
     activeTopStat = 'ALL'; activeTopSide = 'ALL'; activeAllStat = 'ALL';
     var _topSideChooser=document.getElementById('topSideChooser');if(_topSideChooser)_topSideChooser.style.display='none';
     document.querySelectorAll('#filterBar .filter-btn[data-top-side]').forEach(b=>b.classList.toggle('active',b.dataset.topSide==='ALL'));
@@ -4297,6 +4300,48 @@ function _nbaPerfectParlayBoardRows(side){
  });
  return rows;
 }
+function _nbaPerfectParlayImplied(odds){
+ var o=Number(String(odds==null?'':odds).replace('+',''));
+ if(!isFinite(o)||!o||o<-1000)return null;
+ return o>0?100/(o+100):Math.abs(o)/(Math.abs(o)+100);
+}
+function _nbaPerfectParlayLocalRows(boardByKey){
+ var propsByKey={};
+ (nbaPropsData||[]).forEach(function(p){
+  var key=_nbaPerfectParlayBoardKey(p);
+  if(!key||key==='|')return;
+  if(!propsByKey[key])propsByKey[key]=[];
+  propsByKey[key].push(p);
+ });
+ var labels={};(__nbaPerfectParlayCategories||[]).forEach(function(cat){labels[cat.key]=cat.label;});
+ return Object.keys(boardByKey).map(function(key){
+  var board=boardByKey[key],side=_nbaTopSideOf(board);
+  if(side!=='OVER'&&side!=='UNDER')return null;
+  var candidates=(propsByKey[key]||[]).concat([board]),chosen=null,odds=null,line=null;
+  for(var i=0;i<candidates.length;i++){
+   var p=candidates[i]||{};
+   line=p.line!=null?p.line:(p.dk_line!=null?p.dk_line:p.fd_line);
+   odds=side==='OVER'?(p.dk_over_odds||p.over_odds||p.fd_odds||p.odds):(p.dk_under_odds||p.under_odds||p.odds);
+   if(line!=null&&odds!=null&&String(odds)!==''){chosen=p;break;}
+  }
+  if(!chosen)return null;
+  var american=Number(String(odds).replace('+','')),implied=_nbaPerfectParlayImplied(american);
+  var model=Number(board.pct);
+  if(model>1)model/=100;
+  var edge=model-(implied==null?model:implied);
+  var source=chosen.bookmaker_label||chosen.book||chosen.bookmaker||board.book||board.bookmaker_label||board.bookmaker||'Odds API';
+  if(!isFinite(american)||american<-1000||implied==null||!isFinite(model)||model<=0||edge<=0)return null;
+  return {
+   player:board.player,team:board.team,stat:board.stat,
+   category:labels[String(board.stat||'').toUpperCase()]||board.stat_label||board.stat,
+   side:side,line:Number(line),odds:american,model_probability:model,
+   implied_probability:implied,edge:edge,coach_edge:edge*100,
+   source:source,book:source,_board_mpg:board.mpg,_board_pct:Number(board.pct||0),
+   recent_average:board.recent_avg,game_log:(board.recent_glog||[]).map(function(g){return g&&g.v;}),
+   opponent_history:board.glog||[],selection_reason:'Displayed app-board probability exceeds sportsbook implied probability.'
+  };
+ }).filter(Boolean);
+}
 function showNbaPerfectParlayBuilder(){
   var saved=__nbaPerfectParlaySettings||{},savedLegs=Number(saved.legs)||3;
  var options='';
@@ -4321,8 +4366,8 @@ function showNbaPerfectParlayBuilder(){
      '<label style="color:#94a3b8;font-size:.68rem;font-weight:800">PARLAY SIZE<br><select id="nbaPerfectParlayLegs" style="'+fieldStyle+'">'+options+'</select></label>'+
      '<label style="color:#94a3b8;font-size:.68rem;font-weight:800">SIDE<br><select id="nbaPerfectParlaySide" style="'+fieldStyle+'"><option value="ALL"'+(saved.side==='ALL'?' selected':'')+'>Best available</option><option value="OVER"'+(saved.side==='OVER'?' selected':'')+'>Overs only</option><option value="UNDER"'+(saved.side==='UNDER'?' selected':'')+'>Unders only</option></select></label>'+
      '<label style="color:#94a3b8;font-size:.68rem;font-weight:800">PLAYER POOL<br><select id="nbaPerfectParlayRotation" style="'+fieldStyle+'"><option value="PREFER"'+(saved.rotation==='PREFER'?' selected':'')+'>Prefer 24+ MPG</option><option value="ONLY"'+(saved.rotation==='ONLY'?' selected':'')+'>24+ MPG only</option><option value="ANY"'+(saved.rotation==='ANY'?' selected':'')+'>Any qualifying player</option></select></label>'+
-   '<button onclick="buildNbaPerfectParlay()" style="background:linear-gradient(135deg,#d97706,#7c3aed);color:#fff;border:0;border-radius:8px;padding:10px 15px;font-weight:950;cursor:pointer">BUILD PERFECT PARLAY</button>'+
-    '</div></div></div>');
+    '<button id="nbaPerfectParlayBuildBtn" onclick="buildNbaPerfectParlay()" style="background:linear-gradient(135deg,#d97706,#7c3aed);color:#fff;border:0;border-radius:8px;padding:10px 15px;font-weight:950;cursor:pointer">BUILD PERFECT PARLAY</button>'+
+     '</div><div id="nbaPerfectParlayBuildStatus" role="status" style="display:none;margin-top:10px;padding:9px 11px;border-radius:8px;background:rgba(59,130,246,.1);border:1px solid rgba(96,165,250,.28);color:#bfdbfe;font-size:.7rem;font-weight:800">Building from the selected category boards…</div></div></div>');
 }
 function _nbaPerfectParlayAmerican(decimalOdds){
  var d=Number(decimalOdds);if(!isFinite(d)||d<=1)return 'N/A';
@@ -4384,7 +4429,7 @@ function renderNbaPerfectParlay(){
   '<div class="nba-coach-table-wrap"><table class="nba-coach-table" style="min-width:930px"><thead><tr><th>#</th><th>Player</th><th>Play</th><th>Odds</th><th>App Prob</th><th>Coach Edge</th><th>Change Leg</th></tr></thead><tbody>'+rows+'</tbody></table></div>'+
    '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:12px"><button onclick="showNbaPerfectParlayBuilder()" style="background:#1e293b;color:#fff;border:1px solid #475569;border-radius:7px;padding:8px 11px;font-weight:800;cursor:pointer">Edit parlay options</button><span style="color:#64748b;font-size:.65rem">Model-ranked suggestion, not a guarantee. Verify lines and prices before betting.</span></div></div>');
 }
-async function buildNbaPerfectParlay(){
+function buildNbaPerfectParlay(){
  var select=document.getElementById('nbaPerfectParlayLegs');
  var requested=Math.max(2,Math.min(10,parseInt((select&&select.value)||'3',10)||3));
  var selectedCategories=Array.prototype.slice.call(document.querySelectorAll('input[name="nbaPerfectParlayCat"]:checked')).map(function(el){return el.value;});
@@ -4401,8 +4446,6 @@ async function buildNbaPerfectParlay(){
   _nbaPerfectParlayCommit('<div><div class="nba-coach-question">&#10024; Perfect Parlay · '+requested+' Legs</div><div style="margin-top:11px;color:#fbbf24;font-size:.78rem;line-height:1.5">Load the app picks for '+_nbaEsc(ds)+' first. Perfect Parlay only uses the displayed boards from the same selected date.</div></div>');
   return;
  }
- if(msg)msg.textContent='Finding the strongest NBA Coach Edge legs…';
- if(box){box.style.display='none';box.innerHTML='';}
  var boardByKey={};
   _nbaPerfectParlayBoardRows(selectedSide).forEach(function(p){
   if(selectedCategories.indexOf(String((p&&p.stat)||'').toUpperCase())<0)return;
@@ -4417,20 +4460,7 @@ async function buildNbaPerfectParlay(){
   return;
  }
  try{
-  var response=await fetch('/api/nba/coach-edge?_tok='+encodeURIComponent(tok),{
-   method:'POST',headers:{'Content-Type':'application/json'},
-   body:JSON.stringify({date:ds,query:'positive edge'+(selectedSide==='ALL'?'':(' '+selectedSide.toLowerCase())),mode:'standard',count:10,board_keys:boardKeys})
-  });
-  var data=await response.json();
-  if(!response.ok)throw new Error(data.detail||'Coach Edge unavailable');
-  var raw=(data.results||[]).filter(function(x){
-   var odds=Number(x.odds),edge=Number(x.edge);
-    var boardPick=boardByKey[_nbaPerfectParlayBoardKey(x)];
-    if(!boardPick)return false;
-    x._board_mpg=boardPick.mpg;
-    x._board_pct=Number(boardPick.pct||0);
-    return isFinite(odds)&&odds>=-1000&&isFinite(edge)&&edge>0&&!!(x.source||x.book);
-  });
+  var raw=_nbaPerfectParlayLocalRows(boardByKey);
   var byPlayer={};
   raw.forEach(function(x){
    var key=String(x.player||'').toLowerCase().replace(/[^a-z0-9]/g,'');
@@ -4461,8 +4491,7 @@ async function buildNbaPerfectParlay(){
    __nbaPerfectParlayLegs=pool.slice(0,requested);
    renderNbaPerfectParlay();
  }catch(e){
-  if(msg)msg.textContent='';
-  _nbaPerfectParlayCommit('<div><div class="nba-coach-question">&#10024; Perfect Parlay</div><div style="margin-top:11px;color:#f87171;font-size:.78rem">'+_nbaEsc(e.message||'Perfect Parlay unavailable.')+'</div><button onclick="showNbaPerfectParlayBuilder()" style="margin-top:12px;background:#1e293b;color:#fff;border:1px solid #475569;border-radius:7px;padding:8px 11px;font-weight:800;cursor:pointer">Try again</button></div>');
+  _nbaPerfectParlayCommit('<div><div class="nba-coach-question">&#10024; Perfect Parlay</div><div style="margin-top:11px;color:#f87171;font-size:.78rem">'+_nbaEsc(e.message||'Perfect Parlay unavailable.')+'</div><button onclick="showNbaPerfectParlayBuilder()" style="margin-top:12px;background:#1e293b;color:#fff;border:1px solid #475569;border-radius:7px;padding:8px 11px;font-weight:800;cursor:pointer">Edit parlay options</button></div>');
  }
 }
 async function nbaCoachSearch(forceMode,presetQuery){
