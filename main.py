@@ -4244,6 +4244,7 @@ NBA_COACH_HTML = r"""
 <script>
  var __nbaCoachRows=[],__nbaPerfectParlayPool=[],__nbaPerfectParlayLegs=[];
  var __nbaPerfectParlaySettings={legs:3,categories:[],side:'ALL',rotation:'PREFER'};
+ var __nbaPerfectParlayStake=100,__nbaPerfectParlayDate='',__nbaPerfectParlayNotice='';
  var __nbaPerfectParlayCategories=[
   {key:'PTS',label:'Points'},{key:'REB',label:'Rebounds'},{key:'AST',label:'Assists'},
   {key:'FG3M',label:'3-Pointers'},{key:'PRA',label:'Pts + Reb + Ast'},
@@ -4383,6 +4384,7 @@ function _nbaPerfectParlayStarter(x){
  return isFinite(mpg)&&mpg>=24;
 }
 function changeNbaPerfectParlayLeg(legIndex){
+ if(!_nbaPerfectParlayDateCurrent())return;
  var legs=__nbaPerfectParlayLegs||[],pool=__nbaPerfectParlayPool||[],current=legs[legIndex];
  if(!current||!pool.length)return;
  var used={};
@@ -4392,17 +4394,57 @@ function changeNbaPerfectParlayLeg(legIndex){
   var next=pool[(Math.max(start,0)+step)%pool.length],nextKey=_nbaPerfectParlayPlayerKey(next);
   if(nextKey!==currentKey&&!used[nextKey]){
    legs[legIndex]=next;
+   __nbaPerfectParlayNotice='Leg replaced. Odds and estimated payout updated.';
    renderNbaPerfectParlay();
    return;
   }
  }
+}
+function _nbaPerfectParlayDateCurrent(){
+ var dp=document.getElementById('datePicker');
+ if(__nbaPerfectParlayDate&&__nbaPerfectParlayDate===String(window.__NBA_BOARD_DATE__||'')&&(!dp||dp.value===__nbaPerfectParlayDate))return true;
+ var note=document.getElementById('nbaParlayNotice');
+ if(note)note.textContent='The selected date changed. Load that date and build a new parlay first.';
+ return false;
+}
+function generateNewNbaPerfectParlay(){
+ if(!_nbaPerfectParlayDateCurrent())return;
+ var legs=__nbaPerfectParlayLegs||[],pool=__nbaPerfectParlayPool||[],used={};
+ legs.forEach(function(x){used[_nbaPerfectParlayPlayerKey(x)]=true;});
+ var fresh=pool.filter(function(x){return !used[_nbaPerfectParlayPlayerKey(x)];});
+ if(!fresh.length){
+  __nbaPerfectParlayNotice='No other qualifying players in this pool. Edit your categories, side, or leg count for more options.';
+  renderNbaPerfectParlay();return;
+ }
+ var next=fresh.slice(0,legs.length);
+ // Keep only the minimum necessary overlap if the approved pool is small.
+ var kept=legs.slice(1).concat(legs.slice(0,1));
+ next=next.concat(kept.slice(0,legs.length-next.length));
+ var replacements=Math.min(fresh.length,legs.length);
+ __nbaPerfectParlayLegs=next;
+ __nbaPerfectParlayNotice=replacements===legs.length?'New parlay: every player replaced. Same filters, same approved pool.':
+  replacements+' new player'+(replacements===1?'':'s')+' included; '+(legs.length-replacements)+' retained because this pool has only '+pool.length+' qualifying players.';
+ renderNbaPerfectParlay();
+}
+function updateNbaPerfectParlayStake(input){
+ var stake=Number(input.value),valid=input.value.trim()!==''&&isFinite(stake)&&stake>0;
+ input.setCustomValidity(valid?'':'Enter a stake greater than zero.');
+ var combined=1;
+ (__nbaPerfectParlayLegs||[]).forEach(function(x){combined*=Number(_amToDec(x.odds)||1);});
+ if(valid)__nbaPerfectParlayStake=stake;
+ var profit=document.getElementById('nbaParlayProfit'),total=document.getElementById('nbaParlayReturn');
+ if(profit)profit.textContent=valid?'$'+(stake*(combined-1)).toFixed(2):'—';
+ if(total)total.textContent=valid?'$'+(stake*combined).toFixed(2):'—';
 }
 function renderNbaPerfectParlay(){
  var legs=__nbaPerfectParlayLegs||[],requested=legs.length;
  if(!requested)return;
  var combined=1,hundredCount=0,used={};
  legs.forEach(function(x){combined*=Number(_amToDec(x.odds)||1);if(Number(x.model_probability)>=.9995)hundredCount++;used[_nbaPerfectParlayPlayerKey(x)]=1;});
- var exampleStake=100,exampleProfit=exampleStake*(combined-1),exampleReturn=exampleStake*combined;
+ var exampleStake=__nbaPerfectParlayStake,exampleProfit=exampleStake*(combined-1),exampleReturn=exampleStake*combined;
+ var freshCount=__nbaPerfectParlayPool.filter(function(x){return !used[_nbaPerfectParlayPlayerKey(x)];}).length;
+ var actionStyle='border-radius:8px;padding:11px 15px;font-weight:900;cursor:pointer;';
+ var newButton='<button onclick="generateNewNbaPerfectParlay()" '+(!freshCount?'disabled ':'')+'style="'+actionStyle+'background:linear-gradient(135deg,#d97706,#7c3aed);color:#fff;border:1px solid #a78bfa;'+(!freshCount?'opacity:.5;cursor:not-allowed;':'')+'">&#8635; Generate New</button>';
  __nbaCoachRows=legs.slice();
  var rows=legs.map(function(x,i){
   var exact=Number(x.model_probability)>=.9995,currentKey=_nbaPerfectParlayPlayerKey(x);
@@ -4422,14 +4464,18 @@ function renderNbaPerfectParlay(){
   var settings=__nbaPerfectParlaySettings||{},catLabels=__nbaPerfectParlayCategories.filter(function(cat){return (settings.categories||[]).indexOf(cat.key)>=0;}).map(function(cat){return cat.label;});
   var filterNote=(catLabels.length===__nbaPerfectParlayCategories.length?'All categories':catLabels.join(', '))+' · '+(settings.side==='ALL'?'Best available side':settings.side+' only')+' · '+(settings.rotation==='ONLY'?'24+ MPG only':(settings.rotation==='ANY'?'Any qualifying player':'Prefer 24+ MPG'));
  _nbaPerfectParlayCommit(
-  '<div><div class="nba-coach-question">&#10024; Perfect Parlay · '+requested+' Legs</div>'+
+  '<div><div style="display:flex;gap:12px;justify-content:space-between;align-items:center;flex-wrap:wrap"><div class="nba-coach-question">&#10024; Perfect Parlay · '+requested+' Legs</div>'+newButton+'</div>'+
   '<div style="display:flex;justify-content:space-between;gap:10px;align-items:center;flex-wrap:wrap;margin-top:11px;padding:10px 12px;background:linear-gradient(135deg,rgba(180,83,9,.18),rgba(124,58,237,.18));border:1px solid rgba(251,191,36,.35);border-radius:10px">'+
     '<div style="color:#e5e7eb;font-size:.74rem;line-height:1.5">'+hundredNote+' Every leg comes from this date’s displayed app boards. Use Change Leg to cycle through the remaining approved plays.<br><span style="color:#a5b4fc;font-weight:800">'+_nbaEsc(filterNote)+'</span></div>'+
-    '<div style="text-align:right"><div style="color:#fbbf24;font-size:.78rem;font-weight:950">COMBINED '+_nbaPerfectParlayAmerican(combined)+' · '+combined.toFixed(2)+' decimal</div>'+
-    '<div style="margin-top:4px;color:#4ade80;font-size:.75rem;font-weight:950">$100 BET → $'+exampleProfit.toFixed(2)+' PROFIT · $'+exampleReturn.toFixed(2)+' TOTAL RETURN</div></div>'+
+    '<div style="display:flex;flex-wrap:wrap;gap:18px;align-items:center;width:100%;padding-top:12px;border-top:1px solid #475569">'+
+    '<div><div style="color:#94a3b8;font-size:.65rem">COMBINED ODDS</div><b style="color:#fbbf24;font-size:1.3rem">'+_nbaPerfectParlayAmerican(combined)+'</b><div style="color:#94a3b8;font-size:.65rem">'+combined.toFixed(2)+' decimal</div></div>'+
+    '<label style="color:#cbd5e1;font-size:.7rem">BET AMOUNT ($)<br><input aria-label="Parlay stake in dollars" type="number" min="0.01" step="0.01" value="'+exampleStake+'" oninput="updateNbaPerfectParlayStake(this)" style="margin-top:5px;width:105px;padding:9px;background:#020617;border:1px solid #64748b;border-radius:7px;color:white;font-size:1rem"></label>'+
+    '<div><div style="color:#94a3b8;font-size:.65rem">POTENTIAL PROFIT</div><b id="nbaParlayProfit" style="color:#4ade80;font-size:1.3rem">$'+exampleProfit.toFixed(2)+'</b></div>'+
+    '<div><div style="color:#94a3b8;font-size:.65rem">TOTAL RETURN · INCLUDES STAKE</div><b id="nbaParlayReturn" style="color:#fff;font-size:1.3rem">$'+exampleReturn.toFixed(2)+'</b></div></div>'+
   '</div>'+
+  '<div id="nbaParlayNotice" role="status" aria-live="polite" style="margin:10px 0;color:#cbd5e1;font-size:.72rem">'+_nbaEsc(__nbaPerfectParlayNotice||(__nbaPerfectParlayPool.length+' qualifying players · '+freshCount+' unused alternatives. Generate New keeps your current filters.'))+'</div>'+
   '<div class="nba-coach-table-wrap"><table class="nba-coach-table" style="min-width:930px"><thead><tr><th>#</th><th>Player</th><th>Play</th><th>Odds</th><th>App Prob</th><th>Coach Edge</th><th>Change Leg</th></tr></thead><tbody>'+rows+'</tbody></table></div>'+
-   '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:12px"><button onclick="showNbaPerfectParlayBuilder()" style="background:#1e293b;color:#fff;border:1px solid #475569;border-radius:7px;padding:8px 11px;font-weight:800;cursor:pointer">Edit parlay options</button><span style="color:#64748b;font-size:.65rem">Model-ranked suggestion, not a guarantee. Verify lines and prices before betting.</span></div></div>');
+   '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:12px">'+newButton+'<button onclick="showNbaPerfectParlayBuilder()" style="background:#1e293b;color:#fff;border:1px solid #475569;'+actionStyle+'">Edit parlay options</button></div><div style="margin-top:10px;color:#94a3b8;font-size:.65rem;line-height:1.5">Estimated payout if every leg wins. Prices may come from different books; your sportsbook may offer a different combined price. App percentages are not guarantees.</div></div>');
 }
 function buildNbaPerfectParlay(){
  var select=document.getElementById('nbaPerfectParlayLegs');
@@ -4491,6 +4537,8 @@ function buildNbaPerfectParlay(){
   }
    __nbaPerfectParlayPool=pool.slice();
    __nbaPerfectParlayLegs=pool.slice(0,requested);
+   __nbaPerfectParlayDate=String(ds);
+   __nbaPerfectParlayNotice='';
    renderNbaPerfectParlay();
  }catch(e){
   _nbaPerfectParlayCommit('<div><div class="nba-coach-question">&#10024; Perfect Parlay</div><div style="margin-top:11px;color:#f87171;font-size:.78rem">'+_nbaEsc(e.message||'Perfect Parlay unavailable.')+'</div><button onclick="showNbaPerfectParlayBuilder()" style="margin-top:12px;background:#1e293b;color:#fff;border:1px solid #475569;border-radius:7px;padding:8px 11px;font-weight:800;cursor:pointer">Edit parlay options</button></div>');
