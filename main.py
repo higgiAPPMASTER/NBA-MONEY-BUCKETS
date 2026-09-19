@@ -4402,6 +4402,7 @@ function renderNbaPerfectParlay(){
  if(!requested)return;
  var combined=1,hundredCount=0,used={};
  legs.forEach(function(x){combined*=Number(_amToDec(x.odds)||1);if(Number(x.model_probability)>=.9995)hundredCount++;used[_nbaPerfectParlayPlayerKey(x)]=1;});
+ var exampleStake=100,exampleProfit=exampleStake*(combined-1),exampleReturn=exampleStake*combined;
  __nbaCoachRows=legs.slice();
  var rows=legs.map(function(x,i){
   var exact=Number(x.model_probability)>=.9995,currentKey=_nbaPerfectParlayPlayerKey(x);
@@ -4424,7 +4425,8 @@ function renderNbaPerfectParlay(){
   '<div><div class="nba-coach-question">&#10024; Perfect Parlay · '+requested+' Legs</div>'+
   '<div style="display:flex;justify-content:space-between;gap:10px;align-items:center;flex-wrap:wrap;margin-top:11px;padding:10px 12px;background:linear-gradient(135deg,rgba(180,83,9,.18),rgba(124,58,237,.18));border:1px solid rgba(251,191,36,.35);border-radius:10px">'+
     '<div style="color:#e5e7eb;font-size:.74rem;line-height:1.5">'+hundredNote+' Every leg comes from this date’s displayed app boards. Use Change Leg to cycle through the remaining approved plays.<br><span style="color:#a5b4fc;font-weight:800">'+_nbaEsc(filterNote)+'</span></div>'+
-   '<div style="color:#fbbf24;font-size:.78rem;font-weight:950">COMBINED '+_nbaPerfectParlayAmerican(combined)+' · '+combined.toFixed(2)+' decimal</div>'+
+    '<div style="text-align:right"><div style="color:#fbbf24;font-size:.78rem;font-weight:950">COMBINED '+_nbaPerfectParlayAmerican(combined)+' · '+combined.toFixed(2)+' decimal</div>'+
+    '<div style="margin-top:4px;color:#4ade80;font-size:.75rem;font-weight:950">$100 BET → $'+exampleProfit.toFixed(2)+' PROFIT · $'+exampleReturn.toFixed(2)+' TOTAL RETURN</div></div>'+
   '</div>'+
   '<div class="nba-coach-table-wrap"><table class="nba-coach-table" style="min-width:930px"><thead><tr><th>#</th><th>Player</th><th>Play</th><th>Odds</th><th>App Prob</th><th>Coach Edge</th><th>Change Leg</th></tr></thead><tbody>'+rows+'</tbody></table></div>'+
    '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:12px"><button onclick="showNbaPerfectParlayBuilder()" style="background:#1e293b;color:#fff;border:1px solid #475569;border-radius:7px;padding:8px 11px;font-weight:800;cursor:pointer">Edit parlay options</button><span style="color:#64748b;font-size:.65rem">Model-ranked suggestion, not a guarantee. Verify lines and prices before betting.</span></div></div>');
