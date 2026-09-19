@@ -3396,6 +3396,7 @@ async function runPicks(force=false){
     const r=await fetch('/run?_tok='+encodeURIComponent(_nbaTok)+'&admin='+encodeURIComponent(_adm),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({date:selectedDate,force:!!force})});
     if(!r.ok)throw new Error('Server error '+r.status);
     const data=_nbaNormalizeHistoricalData(await r.json());
+    window.__NBA_BOARD_DATE__=data.date||selectedDate;
     window.__NBA_HISTORICAL_REPLAY__=!!data.historical_replay;
     window.__NBA_HISTORICAL_SNAPSHOT__=data.historical_snapshot||'';
     renderGames(data.games);
@@ -3454,6 +3455,7 @@ async function getPicks(){
     if(r.status===404){ document.getElementById('content').innerHTML=`<div class="msg-card"><span class="ico"></span><h2>Picks Not Ready</h2><p>Today's picks aren't ready yet - check back a little later.</p></div>`; return; }
     if(!r.ok)throw new Error('Server error '+r.status);
     const data=_nbaNormalizeHistoricalData(await r.json());
+    window.__NBA_BOARD_DATE__=data.date||selectedDate;
     window.__NBA_HISTORICAL_REPLAY__=!!data.historical_replay;
     window.__NBA_HISTORICAL_SNAPSHOT__=data.historical_snapshot||'';
     renderGames(data.games);
@@ -3651,6 +3653,7 @@ document.addEventListener('DOMContentLoaded', function(){
   if (!window.__INITIAL_PICKS__) return;
   try {
     var data = _nbaNormalizeHistoricalData(window.__INITIAL_PICKS__);
+    window.__NBA_BOARD_DATE__=data.date||'';
     var dp = document.getElementById('datePicker');
     if (dp && data.date) dp.value = data.date;
     if (data.games) renderGames(data.games);
@@ -4237,6 +4240,13 @@ function _nbaPerfectParlayAmerican(decimalOdds){
  return (rounded>0?'+':'')+rounded;
 }
 function _nbaPerfectParlayPlayerKey(x){return String((x&&x.player)||'').toLowerCase().replace(/[^a-z0-9]/g,'')}
+function _nbaPerfectParlayBoardKey(x){
+ return _nbaPerfectParlayPlayerKey(x)+'|'+String((x&&x.stat)||'').toUpperCase();
+}
+function _nbaPerfectParlayStarter(x){
+ var mpg=Number(x&&x._board_mpg);
+ return isFinite(mpg)&&mpg>=24;
+}
 function changeNbaPerfectParlayLeg(legIndex){
  var legs=__nbaPerfectParlayLegs||[],pool=__nbaPerfectParlayPool||[],current=legs[legIndex];
  if(!current||!pool.length)return;
@@ -4276,7 +4286,7 @@ function renderNbaPerfectParlay(){
  _nbaPerfectParlayCommit(
   '<div><div class="nba-coach-question">&#10024; Perfect Parlay · '+requested+' Legs</div>'+
   '<div style="display:flex;justify-content:space-between;gap:10px;align-items:center;flex-wrap:wrap;margin-top:11px;padding:10px 12px;background:linear-gradient(135deg,rgba(180,83,9,.18),rgba(124,58,237,.18));border:1px solid rgba(251,191,36,.35);border-radius:10px">'+
-   '<div style="color:#e5e7eb;font-size:.74rem;line-height:1.5">'+hundredNote+' Use Change Leg to replace any play with an unused qualifying player.</div>'+
+   '<div style="color:#e5e7eb;font-size:.74rem;line-height:1.5">'+hundredNote+' Every leg comes from this date’s displayed app boards; 24+ MPG rotation players are preferred. Use Change Leg to cycle through the remaining approved plays.</div>'+
    '<div style="color:#fbbf24;font-size:.78rem;font-weight:950">COMBINED '+_nbaPerfectParlayAmerican(combined)+' · '+combined.toFixed(2)+' decimal</div>'+
   '</div>'+
   '<div class="nba-coach-table-wrap"><table class="nba-coach-table" style="min-width:930px"><thead><tr><th>#</th><th>Player</th><th>Play</th><th>Odds</th><th>App Prob</th><th>Coach Edge</th><th>Change Leg</th></tr></thead><tbody>'+rows+'</tbody></table></div>'+
@@ -4286,38 +4296,64 @@ async function buildNbaPerfectParlay(){
  var select=document.getElementById('nbaPerfectParlayLegs');
  var requested=Math.max(2,Math.min(10,parseInt((select&&select.value)||'3',10)||3));
  var msg=document.getElementById('nbaCoachMsg'),box=document.getElementById('nbaCoachResults');
+ var tok=localStorage.getItem('__mpa_token')||'',dp=document.getElementById('datePicker'),ds=(dp&&dp.value)||'__TODAY__';
+ if(!window.__NBA_BOARD_DATE__||String(window.__NBA_BOARD_DATE__)!==String(ds)){
+  _nbaPerfectParlayCommit('<div><div class="nba-coach-question">&#10024; Perfect Parlay · '+requested+' Legs</div><div style="margin-top:11px;color:#fbbf24;font-size:.78rem;line-height:1.5">Load the app picks for '+_nbaEsc(ds)+' first. Perfect Parlay only uses the displayed boards from the same selected date.</div></div>');
+  return;
+ }
  if(msg)msg.textContent='Finding the strongest NBA Coach Edge legs…';
  if(box){box.style.display='none';box.innerHTML='';}
- var tok=localStorage.getItem('__mpa_token')||'',dp=document.getElementById('datePicker'),ds=(dp&&dp.value)||'__TODAY__';
+ var boardByKey={};
+ (top10||[]).forEach(function(p){
+  var key=_nbaPerfectParlayBoardKey(p);
+  if(!key||key==='|')return;
+  var old=boardByKey[key];
+  if(!old||Number(p.pct||0)>Number(old.pct||0))boardByKey[key]=p;
+ });
+ var boardKeys=Object.keys(boardByKey);
+ if(!boardKeys.length){
+  _nbaPerfectParlayCommit('<div><div class="nba-coach-question">&#10024; Perfect Parlay · '+requested+' Legs</div><div style="margin-top:11px;color:#fbbf24;font-size:.78rem;line-height:1.5">This date has no displayed app-board picks available for Perfect Parlay.</div></div>');
+  return;
+ }
  try{
   var response=await fetch('/api/nba/coach-edge?_tok='+encodeURIComponent(tok),{
    method:'POST',headers:{'Content-Type':'application/json'},
-   body:JSON.stringify({date:ds,query:'positive edge',mode:'standard',count:10})
+   body:JSON.stringify({date:ds,query:'positive edge',mode:'standard',count:10,board_keys:boardKeys})
   });
   var data=await response.json();
   if(!response.ok)throw new Error(data.detail||'Coach Edge unavailable');
   var raw=(data.results||[]).filter(function(x){
    var odds=Number(x.odds),edge=Number(x.edge);
-   return isFinite(odds)&&odds>=-1000&&isFinite(edge)&&edge>0&&!!(x.source||x.book);
+    var boardPick=boardByKey[_nbaPerfectParlayBoardKey(x)];
+    if(!boardPick)return false;
+    x._board_mpg=boardPick.mpg;
+    x._board_pct=Number(boardPick.pct||0);
+    return isFinite(odds)&&odds>=-1000&&isFinite(edge)&&edge>0&&!!(x.source||x.book);
   });
   var byPlayer={};
   raw.forEach(function(x){
    var key=String(x.player||'').toLowerCase().replace(/[^a-z0-9]/g,'');
    if(!key)return;
-   var old=byPlayer[key],xHundred=Number(x.model_probability)>=.9995;
-   var oldHundred=old&&Number(old.model_probability)>=.9995;
-   if(!old||(xHundred&&!oldHundred)||(xHundred===oldHundred&&Number(x.edge)>Number(old.edge)))
+   var old=byPlayer[key];
+   if(!old
+      ||Number(x.model_probability)>Number(old.model_probability)
+      ||(Number(x.model_probability)===Number(old.model_probability)&&_nbaPerfectParlayStarter(x)&&!_nbaPerfectParlayStarter(old))
+      ||(Number(x.model_probability)===Number(old.model_probability)&&_nbaPerfectParlayStarter(x)===_nbaPerfectParlayStarter(old)&&Number(x.edge)>Number(old.edge)))
     byPlayer[key]=x;
   });
   var pool=Object.keys(byPlayer).map(function(k){return byPlayer[k];});
   pool.sort(function(a,b){
-   var ah=Number(a.model_probability)>=.9995?1:0,bh=Number(b.model_probability)>=.9995?1:0;
-   return bh-ah||Number(b.edge)-Number(a.edge)
-    ||Number(b.model_probability)-Number(a.model_probability)
+   return Number(b.model_probability)-Number(a.model_probability)
+    ||Number(_nbaPerfectParlayStarter(b))-Number(_nbaPerfectParlayStarter(a))
+    ||Number(b._board_mpg||0)-Number(a._board_mpg||0)
+    ||Number(b.edge)-Number(a.edge)
     ||String(a.player).localeCompare(String(b.player));
   });
+  var starters=pool.filter(_nbaPerfectParlayStarter);
+  var depth=pool.filter(function(x){return !_nbaPerfectParlayStarter(x);});
+  pool=(starters.length>=requested?starters:starters.concat(depth));
   if(pool.length<requested){
-   _nbaPerfectParlayCommit('<div><div class="nba-coach-question">&#10024; Perfect Parlay · '+requested+' Legs</div><div style="margin-top:11px;color:#cbd5e1;font-size:.78rem;line-height:1.5">Only '+pool.length+' unique player'+(pool.length===1?'':'s')+' currently qualify with a genuine sportsbook price and positive Coach Edge. Choose fewer legs.</div><div style="margin-top:12px"><button onclick="showNbaPerfectParlayBuilder()" style="background:#1e293b;color:#fff;border:1px solid #475569;border-radius:7px;padding:8px 11px;font-weight:800;cursor:pointer">Choose another size</button></div></div>');
+   _nbaPerfectParlayCommit('<div><div class="nba-coach-question">&#10024; Perfect Parlay · '+requested+' Legs</div><div style="margin-top:11px;color:#cbd5e1;font-size:.78rem;line-height:1.5">Only '+pool.length+' unique player'+(pool.length===1?'':'s')+' from this date’s displayed app boards currently qualify with a genuine standard-line sportsbook price and positive Coach Edge. Choose fewer legs.</div><div style="margin-top:12px"><button onclick="showNbaPerfectParlayBuilder()" style="background:#1e293b;color:#fff;border:1px solid #475569;border-radius:7px;padding:8px 11px;font-weight:800;cursor:pointer">Choose another size</button></div></div>');
    return;
   }
    __nbaPerfectParlayPool=pool.slice();
@@ -5014,6 +5050,20 @@ async def nba_coach_edge(request: Request):
                   else None) or "NBA alternate lines are unavailable for this date."
         raise HTTPException(status_code=404, detail=detail)
     standard_rows = (standard.get("props_picks") or []) + (standard.get("props_nopick") or [])
+    requested_board_keys = body.get("board_keys")
+    if isinstance(requested_board_keys, list):
+        allowed_board_keys = {
+            str(key) for key in requested_board_keys
+            if isinstance(key, str) and "|" in key
+        }
+        standard_rows = [
+            row for row in standard_rows
+            if (
+                re.sub(r"[^a-z0-9]+", "",
+                       str(row.get("player") or row.get("name") or "").lower())
+                + "|" + str(row.get("stat") or row.get("stat_key") or "").upper()
+            ) in allowed_board_keys
+        ]
     qcount = re.search(r"\b(?:top|show|count|first)?\s*(\d{1,3})\s*(?:picks?|results?)?\b", str(body.get("query","")), re.I)
     requested_count = min(10, int(qcount.group(1))) if qcount else min(10, int(body.get("count", 10) or 10))
     rows = _nba_coach_rows(standard_rows, alternate, body.get("query",""), mode, requested_count)
