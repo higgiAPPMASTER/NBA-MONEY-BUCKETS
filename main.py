@@ -162,6 +162,67 @@ _NBA_TRK_TOP  = 10
 _NBA_SNAP_CAT = "__picks__"
 _NBA_TRK_LOCK = _nba_th.Lock()
 
+def _nba_season_type(event, scoreboard=None):
+    """Read explicit ESPN season metadata; never infer it from the date."""
+    event = event if isinstance(event, dict) else {}
+    scoreboard = scoreboard if isinstance(scoreboard, dict) else {}
+    sources = [event.get("season"), event.get("seasonType"), scoreboard.get("season")]
+    for league in scoreboard.get("leagues") or []:
+        if isinstance(league, dict):
+            sources.append(league.get("season"))
+    for source in sources:
+        value = source.get("type") if isinstance(source, dict) else source
+        if isinstance(value, dict):
+            value = value.get("id")
+        if value is None or isinstance(value, bool):
+            continue
+        try:
+            return int(value) if int(value) in (1, 2, 3) else None
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _nba_official_board(result):
+    games = result.get("games") or [] if isinstance(result, dict) else []
+    return bool(games) and all(
+        isinstance(game, dict) and game.get("season_type") in (2, 3)
+        for game in games)
+
+
+def _nba_apply_season_scope(result):
+    """Annotate display boards without changing any selected play."""
+    out = dict(result)
+    games = out.get("games") or []
+    types = [g.get("season_type") for g in games if isinstance(g, dict)]
+    out["preseason"] = 1 in types
+    out["seasonScopeVerified"] = bool(games) and len(types) == len(games) and all(
+        value in (1, 2, 3) for value in types)
+    out["officialCaptureAllowed"] = _nba_official_board(out)
+    return out
+
+
+async def _nba_refresh_season_scope(date_str, result):
+    """Give old cached boards verified labels, without regenerating picks."""
+    out = dict(result)
+    games = out.get("games") or []
+    if games and any(g.get("season_type") not in (1, 2, 3) for g in games):
+        try:
+            schedule = await get_today_games(date_str)
+            by_id = {g["event_id"]: g for g in schedule if g.get("event_id")}
+            by_matchup = {(g.get("away"), g.get("home"), g.get("tipoff")): g
+                          for g in schedule}
+            out["games"] = [
+                {**g, "season_type": (
+                    by_id.get(g.get("event_id")) or
+                    by_matchup.get((g.get("away"), g.get("home"), g.get("tipoff"))) or {}
+                ).get("season_type")}
+                for g in games]
+        except Exception as exc:
+            print(f"[nba_season] season metadata unavailable for {date_str}: {exc}")
+    return _nba_apply_season_scope(out)
+
+
 def _nba_sb_get(params: dict) -> list:
     if not _NBA_SB_URL: return []
     h = {"apikey":_NBA_SB_KEY,"Authorization":f"Bearer {_NBA_SB_KEY}","Accept":"application/json"}
@@ -184,25 +245,82 @@ def _nba_sb_upsert(rows: list, on_conflict: str=None) -> bool:
         print(f"[nba_track] sb_upsert: {e}"); return False
 
 def _nba_save_picks_snapshot(date_str: str, result: dict):
-    """Freeze today's top picks to Supabase as one __picks__ row for later grading."""
-    top_picks = result.get("picks") or []
-    if not top_picks: return
+    """Save category/side Top 10 plus all remaining standard qualifying plays."""
+    if (not _nba_official_board(result) or result.get("historical_replay")
+            or not _nba_coach_complete_pregame(date_str, result)):
+        return
+    # Never broaden/reclassify an older saved board or rewrite settled data.
+    with _NBA_TRK_LOCK:
+        existing_rows = _nba_hist_sb_get({"app":f"eq.{_NBA_TRK_APP}",
+                                        "category":f"eq.{_NBA_SNAP_CAT}",
+                                        "side":"eq.ALL","date":f"eq.{date_str}",
+                                        "select":"detail","limit":"1"})
+        existing = (existing_rows[0].get("detail") or []) if existing_rows else []
+        if existing and any(p.get("capture_scope") != "category_side_top10" for p in existing):
+            return
+        locked = _nba_hist_sb_get({"app":f"eq.{_NBA_TRK_APP}",
+                             "category":"eq.__ledger__","date":f"eq.{date_str}",
+                             "locked":"eq.true","select":"date","limit":"1"})
+        if locked:
+            return
+        flat = _nba_snapshot_standard_rows(result)
+        if not flat:
+            return
+        ok = _nba_sb_upsert(
+            [{"app":_NBA_TRK_APP,"date":date_str,"category":_NBA_SNAP_CAT,
+              "side":"ALL","wins":0,"losses":0,"locked":False,"detail":flat}],
+            "app,date,category,side")
+    print(f"[nba_track] snapshot {'saved' if ok else 'FAILED'}: {len(flat)} picks -> {date_str}")
+
+
+def _nba_snapshot_standard_rows(result: dict) -> list:
+    """Use the category OVER/UNDER buttons' source, order and side verdict."""
     flat = []
-    for rank, p in enumerate(top_picks, 1):
+    ranks, seen = {}, set()
+    for p in result.get("all_picks") or []:
         sk   = p.get("stat","")
-        side = (p.get("line_rec") or p.get("streak_rec") or "OVER").upper()
-        line = p.get("dk_line") or p.get("fd_line") or p.get("threshold") or 0
-        odds = (p.get("dk_over_odds") if side=="OVER" else p.get("dk_under_odds")) or p.get("fd_odds","")
+        if p.get("has_consistency"):
+            side = "OVER"
+        else:
+            votes = [p.get(k) for k in ("line_rec", "streak_rec", "alt_rec")]
+            over, under = votes.count("OVER"), votes.count("UNDER")
+            side = "OVER" if over > under else "UNDER" if under > over else None
+        if not sk or side is None:
+            continue
+        # Exact standard line and side price only; never borrow opposite odds
+        # or an alternate recommendation's price.
+        line = p.get("dk_line")
+        odds = p.get("dk_over_odds" if side == "OVER" else "dk_under_odds")
+        book = p.get("dk_book")
+        if line is None:
+            line = p.get("fd_line")
+            odds = p.get("fd_over_odds" if side == "OVER" else "fd_under_odds")
+            book = p.get("fd_book")
+        key = (str(p.get("player","")).lower().strip(), p.get("team"), sk, side, str(line))
+        if key in seen:
+            continue
+        seen.add(key)
+        group = (sk, side)
+        ranks[group] = ranks.get(group, 0) + 1
+        rank = ranks[group]
+        if not _nba_trk_priced(odds):
+            odds = None
         flat.append({"name":p.get("player",""),"team":p.get("team",""),
                      "category":_NBA_STAT_LABEL.get(sk,sk),"stat_key":sk,
-                     "side":side,"line":line,"odds":odds or "",
+                     "side":side,"line":line,"odds":odds,"book":book or "",
                      "rank":rank,"is_overflow":rank>_NBA_TRK_TOP,
+                     "capture_scope":"category_side_top10",
+                     "tipoff":p.get("tipoff"),
                      "score":p.get("hit_rate") or 0})
-    ok = _nba_sb_upsert(
-        [{"app":_NBA_TRK_APP,"date":date_str,"category":_NBA_SNAP_CAT,
-          "side":"ALL","wins":0,"losses":0,"locked":False,"detail":flat}],
-        "app,date,category,side")
-    print(f"[nba_track] snapshot {'saved' if ok else 'FAILED'}: {len(flat)} picks -> {date_str}")
+    return flat
+
+
+def _nba_trk_priced(odds) -> bool:
+    try:
+        value = float(str(odds).replace("+", ""))
+        return math.isfinite(value) and (value > 0 or -1000 <= value <= -100)
+    except (TypeError, ValueError):
+        return False
 
 def _nba_load_picks_snapshot(date_str: str) -> list:
     rows = _nba_sb_get({"app":f"eq.{_NBA_TRK_APP}","category":f"eq.{_NBA_SNAP_CAT}",
@@ -228,7 +346,8 @@ def _nba_american_profit_trk(odds, stake: float, result: str) -> float:
 
 def _nba_grade_date(date_str: str, snap: list) -> dict:
     from collections import defaultdict as _dd
-    box      = _nba_box_lookup(date_str)
+    box      = {name: stats for name, stats in _nba_box_lookup(date_str).items()
+                if stats.get("season_type") in (2, 3)}
     any_game = bool(box)
     all_final= any_game and all(v.get("final",False) for v in box.values())
     main_rows, ovf_rows = [], []
@@ -248,12 +367,14 @@ def _nba_grade_date(date_str: str, snap: list) -> dict:
                     if actual==fl: result_val="PUSH"
                     elif side=="OVER": result_val="WIN" if actual>fl else "LOSS"
                     else: result_val="WIN" if actual<fl else "LOSS"
-                    if result_val and odds is not None:
+                    if result_val and _nba_trk_priced(odds):
                         profit = _nba_american_profit_trk(odds, _NBA_TRK_STAKE, result_val)
                 except Exception: pass
         row = {"name":p.get("name",""),"team":p.get("team",""),
                "category":p.get("category","?"),"side":side,"stat_key":sk,
                "line":line_raw,"odds":odds,"rank":p.get("rank",999),
+               "book":p.get("book",""),"is_overflow":bool(p.get("is_overflow")),
+               "capture_scope":p.get("capture_scope"),
                "result":result_val,"actual":actual,"profit":profit}
         if not p.get("is_overflow"):
             main_rows.append(row)
@@ -273,9 +394,10 @@ def _nba_aggregate_graded(graded: dict) -> dict:
 def _nba_detail_graded(graded: dict) -> list:
     out = []
     for row in graded.get("main",[]) + graded.get("overflow",[]):
-        if row.get("result") not in ("WIN","LOSS") or row.get("odds") is None: continue
+        if row.get("result") not in ("WIN","LOSS","PUSH"): continue
         out.append({k:row.get(k) for k in
-                    ("name","team","category","side","stat_key","line","odds","rank","result","actual","profit")})
+                    ("name","team","category","side","stat_key","line","odds","book","rank",
+                     "is_overflow","capture_scope","result","actual","profit")})
     return out
 
 def _nba_update_track_ledger():
@@ -313,7 +435,12 @@ def _nba_update_track_ledger():
             print(f"[nba_track] locked {len(upserts)//2} dates")
 
 def _nba_trk_bg(date_str: str, result: dict):
-    _nba_save_picks_snapshot(date_str, result)
+    if not _nba_official_board(result):
+        return
+    try:
+        _nba_save_picks_snapshot(date_str, result)
+    except Exception as exc:
+        print(f"[nba_track] snapshot NOT saved for {date_str}: {exc}")
     _nba_th.Thread(target=_nba_update_track_ledger, daemon=True).start()
 
 _nba_th.Thread(target=_nba_update_track_ledger, daemon=True).start()
@@ -486,7 +613,8 @@ def _nba_box_lookup_raw(date_str: str):
             f"https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?dates={d}",
             timeout=15)
         sb.raise_for_status()
-        events = sb.json().get("events", [])
+        scoreboard = sb.json()
+        events = scoreboard.get("events", [])
     except Exception as e:
         # ESPN intermittently rejects a connection; retry with the same normal
         # client policy (never the Mozilla UA, which causes a known 403).
@@ -495,12 +623,14 @@ def _nba_box_lookup_raw(date_str: str):
                 f"https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?dates={d}",
                 timeout=15)
             sb.raise_for_status()
-            events = sb.json().get("events", [])
+            scoreboard = sb.json()
+            events = scoreboard.get("events", [])
         except Exception as retry_error:
             print(f"[nba_box] scoreboard failed {date_str}: {retry_error}")
             return results, False
     complete = True
     for ev in events:
+        season_type = _nba_season_type(ev, scoreboard)
         is_final = ev.get("status", {}).get("type", {}).get("completed", False)
         if not is_final:
             complete = False
@@ -532,6 +662,7 @@ def _nba_box_lookup_raw(date_str: str):
                     headshot = athlete.get("headshot") or {}
                     ps: dict = {
                         "final": is_final,
+                        "season_type": season_type,
                         "player_id": athlete.get("id"),
                         "headshot": headshot.get("href") if isinstance(headshot, dict) else "",
                         "team": team_abbr,
@@ -743,6 +874,7 @@ async def get_today_games(date_str: str = None) -> List[Dict]:
             continue
         games.append({
             'event_id':   str(event.get('id', '')),
+            'season_type': _nba_season_type(event, data),
             'home':      _norm_abbr(home['team']['abbreviation']),
             'away':      _norm_abbr(away['team']['abbreviation']),
             'home_id':   home['team']['id'],
@@ -1866,6 +1998,7 @@ async def run_analysis(selected_date: str = None, force: bool = False) -> Dict:
         if _fc and not _nba_fg3m_logs_sane(_fc):
             _fc = None
         if _fc:
+            _fc = await _nba_refresh_season_scope(today_str, _fc)
             if not historical_replay:
                 _schedule_nba_alternates_warm(today_str)
             _cache.update(_fc)
@@ -1879,6 +2012,7 @@ async def run_analysis(selected_date: str = None, force: bool = False) -> Dict:
                 and _nba_fg3m_logs_sane(_cache)
                 and (not historical_replay or
                      _cache.get("historical_replay_schema") == HISTORICAL_REPLAY_SCHEMA)):
+            _cache.update(await _nba_refresh_season_scope(today_str, _cache))
             if not historical_replay:
                 _schedule_nba_alternates_warm(today_str)
                 try: _nba_coach_capture_pregame(today_str, _cache)
@@ -1913,10 +2047,12 @@ async def run_analysis(selected_date: str = None, force: bool = False) -> Dict:
             saved = None
             log.append(f"Saved historical replay unavailable: {exc}")
         if saved:
+            saved = _nba_apply_season_scope({**saved, "games": games})
             _cache.update(saved)
             _cache_set("nba", today_str, saved)
             return saved
         result = await _nba_historical_board(today_str, games, log)
+        result = _nba_apply_season_scope({**result, "games": games})
         _cache.update(result)
         if result.get("odds_loaded") and not result.get("historical_unavailable"):
             _cache_set("nba", today_str, result)
@@ -2149,6 +2285,9 @@ async def run_analysis(selected_date: str = None, force: bool = False) -> Dict:
                               'matchup': f"{a_name} @ {h_name}",
                               'l10_hits': l10h, 'l10_games': len(last10),
                               'fd_line': fd_line, 'fd_odds': fd_odds,
+                              'fd_over_odds': sb.get('over_odds'), 'fd_under_odds': sb.get('under_odds'),
+                              'fd_book': sb.get('bookmaker_label') or sb.get('bookmaker'),
+                              'dk_book': dk_ob.get('bookmaker_label') or dk_ob.get('bookmaker'),
                               'l10_sb_hits': l10_sb_hits,
                               'dk_line': dk_line, 'dk_over_odds': dk_over_odds, 'dk_under_odds': dk_under_odds, 'dk_hits': dk_hits,
                               'line_rec': line_rec, 'line_rec_pct': line_rec_pct, 'line_rec_hits': line_rec_hits,
@@ -2215,6 +2354,9 @@ async def run_analysis(selected_date: str = None, force: bool = False) -> Dict:
                               'matchup': f"{a_name} @ {h_name}",
                               'l10_hits': l10h, 'l10_games': len(last10),
                               'fd_line': fd_line, 'fd_odds': fd_odds,
+                              'fd_over_odds': sb.get('over_odds'), 'fd_under_odds': sb.get('under_odds'),
+                              'fd_book': sb.get('bookmaker_label') or sb.get('bookmaker'),
+                              'dk_book': dk_ob.get('bookmaker_label') or dk_ob.get('bookmaker'),
                               'l10_sb_hits': l10_sb_hits,
                               'dk_line': dk_line, 'dk_over_odds': dk_over_odds, 'dk_under_odds': dk_under_odds, 'dk_hits': dk_hits,
                               'line_rec': line_rec, 'line_rec_pct': line_rec_pct, 'line_rec_hits': line_rec_hits,
@@ -2308,6 +2450,7 @@ async def run_analysis(selected_date: str = None, force: bool = False) -> Dict:
     props_picks.sort(key=lambda x:abs(x.get('gap') or 0),reverse=True)
     log.append(f"Props: {len(props_picks)} picks")
     result = {'date':today_str,'picks':top_picks,'all_picks':picks,'games':games,'log':log,'total':len(picks),'odds_loaded':odds_loaded,'historical_replay':historical_replay,'props_picks':props_picks,'props_nopick':props_nopick}
+    result = _nba_apply_season_scope(result)
     _cache.update(result)
     # Only cache if we actually got prop lines from the Odds API.
     # Otherwise the empty result gets pinned for 6h even after sportsbooks post lines.
@@ -2595,7 +2738,7 @@ footer{text-align:center;padding:32px 24px;color:#4b5563;font-size:.78rem;border
 </head>
 <body>
 <div class="bg-glow"></div>
-<nav style="display:flex;justify-content:space-between;align-items:center"><div class="logo">Money <span>Picks</span> Arena</div><div style="display:flex;gap:8px;align-items:center"><button onclick="document.getElementById(\'nba-track-section\').scrollIntoView({behavior:\'smooth\',block:\'start\'})" style="background:#4338ca;color:#fff;border:none;border-radius:10px;padding:9px 16px;font-weight:800;font-size:.82rem;cursor:pointer;white-space:nowrap">&#128202; Track Record</button><button class="admin-only" onclick="openNbaMyBets()" style="background:#4338ca;color:#fff;border:none;border-radius:10px;padding:9px 16px;font-weight:800;font-size:.82rem;cursor:pointer;white-space:nowrap">&#128176; My Bets</button></div></nav>
+<nav style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px"><div class="logo">Money <span>Picks</span> Arena</div><div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><button onclick="document.getElementById(\'nba-track-section\').scrollIntoView({behavior:\'smooth\',block:\'start\'})" style="background:#4338ca;color:#fff;border:none;border-radius:10px;padding:9px 16px;font-weight:800;font-size:.82rem;cursor:pointer;white-space:nowrap">&#128202; Track Record</button><button onclick="openNbaOverflowRecord()" style="background:#0e7490;color:#fff;border:none;border-radius:10px;padding:9px 16px;font-weight:800;font-size:.82rem;cursor:pointer;white-space:nowrap">Overflow Record</button><button class="admin-only" onclick="openNbaMyBets()" style="background:#4338ca;color:#fff;border:none;border-radius:10px;padding:9px 16px;font-weight:800;font-size:.82rem;cursor:pointer;white-space:nowrap">&#128176; My Bets</button></div></nav>
 <div class="page">
 <div class="app-hdr">
   <h1>NBA <span>Money Buckets</span></h1>
@@ -2622,6 +2765,7 @@ footer{text-align:center;padding:32px 24px;color:#4b5563;font-size:.78rem;border
   </div>
   <div id="parlayResult" style="margin-top:16px;text-align:left"></div>
 </div>
+<div id="nbaSeasonNotice" style="display:none;margin:0 0 12px;padding:10px 12px;border:1px solid #854d0e;border-radius:8px;color:#fde68a;font-size:.78rem"></div>
 <div class="games-bar" id="gamesBar"></div>
 <div id="filterBar" style="display:none" class="filter-bar">
   <button class="filter-btn active" data-stat="ALL" onclick="filterStat('ALL')">All Stats</button>
@@ -2791,7 +2935,7 @@ footer{text-align:center;padding:32px 24px;color:#4b5563;font-size:.78rem;border
   <div class="card nba-trk-shell" style="padding:14px">
     <div class="nba-record-hero">
       <div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start;flex-wrap:wrap">
-        <div><div class="nba-record-kicker">NBA Performance Center</div><h2 class="nba-record-title">&#127942; Official Track Record</h2><div class="nba-record-sub">Frozen pre-tip picks, graded after final scores. Accuracy, profit and ROI use genuine saved sportsbook prices.</div></div>
+        <div><div class="nba-record-kicker">NBA Performance Center · Main</div><h2 class="nba-record-title">&#127942; Official Track Record</h2><div class="nba-record-sub">Main selections only. Future captures: each market/side Top 10. Earlier dates retain their saved Main selections. Overflow and Coach are excluded; only genuine prices count toward profit and ROI.</div></div>
         <div class="nba-record-badge">&#9679; OFFICIAL PRE-GAME RECORD</div>
       </div>
       <div class="nba-record-tools">
@@ -2803,6 +2947,24 @@ footer{text-align:center;padding:32px 24px;color:#4b5563;font-size:.78rem;border
     </div>
     <div id="nbaTrkTopPct" style="display:none"></div><div id="nbaTrkTopStats" style="display:none"></div>
     <div id="nbaTrkBody"></div>
+  </div>
+</div>
+<div id="nba-overflow-track-section" style="display:none;max-width:1040px;margin:24px auto 0;padding:0 16px 40px">
+  <div class="card nba-trk-shell" style="padding:14px">
+    <div class="nba-record-hero">
+      <div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start;flex-wrap:wrap">
+        <div><div class="nba-record-kicker" style="color:#22d3ee">NBA Performance Center · Overflow</div><h2 class="nba-record-title">Overflow Track Record</h2><div class="nba-record-sub">Future captures: every qualifying standard-line play ranked 11+ within its market and OVER/UNDER side. Earlier dates show only their originally saved overflow rows. Main, Coach and preseason results stay separate.</div></div>
+        <button class="nba-view-btn" onclick="document.getElementById('nba-overflow-track-section').style.display='none'">Close</button>
+      </div>
+      <div class="nba-record-tools">
+        <label><span class="nba-record-label">Slate date</span><select id="nbaOvfDateSelect" class="nba-record-control" onchange="renderNbaTrackDay('overflow')"><option value="">No saved dates</option></select></label>
+        <label><span class="nba-record-label">Flat bet amount</span><input type="number" id="nbaOvfBetSize" class="nba-record-control" value="100.00" min="1" step="5" style="width:110px" oninput="renderNbaTrackDay('overflow')"></label>
+        <button onclick="loadNbaTrackRecord('overflow')" class="nba-view-btn">&#8635; Refresh results</button>
+        <div class="nba-view-tabs"><button id="nbaOvfCatBtn" class="nba-view-btn active" onclick="setNbaTrkView('category','overflow')">By Category</button><button id="nbaOvfFullBtn" class="nba-view-btn" onclick="setNbaTrkView('full','overflow')">Full List</button></div>
+      </div>
+    </div>
+    <div id="nbaOvfTopPct" style="display:none"></div><div id="nbaOvfTopStats" style="display:none"></div>
+    <div id="nbaOvfBody"></div>
   </div>
 </div>
 <script>
@@ -3435,10 +3597,23 @@ function toggleGroup(id,hdr){
   if(ch)ch.style.transform=hidden?'':'rotate(-90deg)';
 }
 function renderGames(games){
-  if(!games||!games.length)return;
-  var gb=document.getElementById('gamesBar');gb.style.display='flex';
+  var gb=document.getElementById('gamesBar'),notice=document.getElementById('nbaSeasonNotice');
+  if(!games||!games.length){
+    if(gb){gb.innerHTML='';gb.style.display='none';}
+    if(notice){notice.textContent='';notice.style.display='none';}
+    return;
+  }
+  var preseason=games.some(g=>Number(g.season_type)===1);
+  var verified=games.every(g=>[1,2,3].includes(Number(g.season_type)));
+  if(notice){
+    notice.style.display=(preseason||!verified)?'block':'none';
+    notice.textContent=preseason
+      ?'PRESEASON — Experimental picks. Not included in Main, Overflow or Coach records. Minutes and rotations may change.'
+      :!verified?'SEASON TYPE UNVERIFIED — View-only picks; not included in Main, Overflow or Coach records.':'';
+  }
+  gb.style.display='flex';
   gb.innerHTML=games.map(g=>
-    `<div class="game-chip"><b>${g.away}</b><span class="sep">@</span><b>${g.home}</b></div>`
+    `<div class="game-chip"><b>${g.away}</b><span class="sep">@</span><b>${g.home}</b>${Number(g.season_type)===1?'<small style="color:#fbbf24;font-weight:800;margin-left:6px">PRESEASON</small>':![2,3].includes(Number(g.season_type))?'<small style="color:#fbbf24;margin-left:6px">UNVERIFIED</small>':''}</div>`
   ).join('');
 }
 
@@ -3950,12 +4125,22 @@ function downloadNbaMyBetsCSV(){
 // ── NBA Track Record ──────────────────────────────────────────────────────────
 var _nbaTrkData=null;
 var _nbaTrkView='category';
-function setNbaTrkView(view){
-  _nbaTrkView=view==='full'?'full':'category';
-  var c=document.getElementById('nbaTrkCatBtn'),f=document.getElementById('nbaTrkFullBtn');
-  if(c)c.classList.toggle('active',_nbaTrkView==='category');
-  if(f)f.classList.toggle('active',_nbaTrkView==='full');
-  renderNbaTrackDay();
+var _nbaOvfData=null;
+var _nbaOvfView='category';
+function openNbaOverflowRecord(){
+  var section=document.getElementById('nba-overflow-track-section');
+  section.style.display='block';
+  section.scrollIntoView({behavior:'smooth',block:'start'});
+  if(_nbaOvfData===null)loadNbaTrackRecord('overflow');
+}
+function setNbaTrkView(view,record){
+  var ovf=record==='overflow',prefix=ovf?'nbaOvf':'nbaTrk';
+  view=view==='full'?'full':'category';
+  if(ovf)_nbaOvfView=view;else _nbaTrkView=view;
+  var c=document.getElementById(prefix+'CatBtn'),f=document.getElementById(prefix+'FullBtn');
+  if(c)c.classList.toggle('active',view==='category');
+  if(f)f.classList.toggle('active',view==='full');
+  renderNbaTrackDay(record);
 }
 function _nbaRecordEmpty(title,copy){
   return '<div class="nba-record-empty"><div class="nba-record-empty-icon">&#9635;</div><div class="nba-record-empty-title">'+nbaTrkEsc(title)+'</div><div class="nba-record-empty-copy">'+nbaTrkEsc(copy)+'</div></div>';
@@ -3974,18 +4159,20 @@ function _nbaRecordSummary(w,l,pending,net,staked,stake){
 function _nbaRecordFullList(rows,stake,historical){
   var body=(rows||[]).map(function(b,i){
     var res=String(b.result||'PENDING').toUpperCase(),rc=res==='WIN'?'#4ade80':res==='LOSS'?'#f87171':'#fbbf24';
-    var pl=(res==='WIN'||res==='LOSS'||res==='PUSH')?nbaProfit(b.odds,stake,res):null,pc=(pl||0)>=0?'#4ade80':'#f87171';
+    var priced=_nbaTrkPriced(b.odds);
+    var pl=priced&&(res==='WIN'||res==='LOSS'||res==='PUSH')?nbaProfit(b.odds,stake,res):null,pc=(pl||0)>=0?'#4ade80':'#f87171';
     var name=b.name||b.player,cat=b.category||b.stat_label||b.stat||b.stat_key;
     return '<tr><td>'+(b.rank!=null?'#'+nbaTrkEsc(b.rank):(i+1))+'</td><td><b>'+nbaTrkEsc(name)+'</b><br><small style="color:#64748b">'+nbaTrkEsc(b.team||'')+(b.opp?' vs '+nbaTrkEsc(b.opp):'')+'</small></td>'+
       '<td>'+nbaTrkEsc(cat)+'</td><td><b style="color:'+(String(b.side).toUpperCase()==='OVER'?'#4ade80':'#fbbf24')+'">'+nbaTrkEsc(b.side)+' '+nbaTrkEsc(b.line)+'</b></td>'+
-      '<td>'+nbaTrkEsc(b.odds)+'<br><small style="color:#64748b">'+nbaTrkEsc(b.book||'')+'</small></td><td>'+nbaTrkEsc(b.actual)+'</td>'+
+      '<td>'+nbaTrkEsc(b.odds)+'<br><small style="color:#64748b">'+nbaTrkEsc(b.book||'')+'</small></td><td>'+(priced?'$'+stake.toFixed(2):'—')+'</td><td>'+nbaTrkEsc(b.actual)+'</td>'+
       '<td style="color:'+rc+';font-weight:900">'+res+'</td><td style="color:'+pc+';font-weight:900">'+(pl==null?'—':(pl>=0?'+':'−')+'$'+Math.abs(pl).toFixed(2))+'</td>'+
       (historical?'<td>'+nbaTrkEsc(b.hits)+'/'+nbaTrkEsc(b.games)+'<br><small style="color:#64748b">'+nbaTrkEsc(b.pct)+'% · '+nbaTrkEsc(b.mpg)+' MPG</small></td>':'')+'</tr>';
   }).join('');
-  return '<div class="nba-full-wrap"><table class="nba-full-table"><thead><tr><th>#</th><th>Player</th><th>Market</th><th>Pick</th><th>Odds / Book</th><th>Actual</th><th>Result</th><th>P/L</th>'+(historical?'<th>Evidence</th>':'')+'</tr></thead><tbody>'+body+'</tbody></table></div>';
+  return '<div class="nba-full-wrap"><table class="nba-full-table"><thead><tr><th>#</th><th>Player</th><th>Market</th><th>Pick</th><th>Odds / Book</th><th>Stake</th><th>Actual</th><th>Result</th><th>P/L</th>'+(historical?'<th>Evidence</th>':'')+'</tr></thead><tbody>'+body+'</tbody></table></div>';
 }
-function _nbaTrkDayName(){
-  var dp=document.getElementById('nbaTrkDateSelect'),dn=document.getElementById('nbaTrkDayName');
+function _nbaTrkDayName(record){
+  var prefix=record==='overflow'?'nbaOvf':'nbaTrk';
+  var dp=document.getElementById(prefix+'DateSelect'),dn=document.getElementById(prefix+'DayName');
   if(!dp||!dn) return;
   try{var days=['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
     if(dp.value) dn.textContent=days[new Date(dp.value+'T12:00:00').getDay()];}catch(e){dn.textContent='';}
@@ -4001,50 +4188,59 @@ function nbaProfit(odds, stake, res) {
   return 0;
 }
 function nbaTrkEsc(x){return String(x==null?'—':x).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
-async function loadNbaTrackRecord(){
-  var body=document.getElementById('nbaTrkBody');
+function _nbaTrkPriced(odds){
+  var o=Number(String(odds==null?'':odds).replace('+',''));
+  return Number.isFinite(o)&&(o>0||(o>=-1000&&o<=-100));
+}
+async function loadNbaTrackRecord(record){
+  var ovf=record==='overflow',prefix=ovf?'nbaOvf':'nbaTrk';
+  var body=document.getElementById(prefix+'Body');
     if(body) body.innerHTML=_nbaRecordEmpty('Loading official results','Fetching the latest graded pre-game snapshots.');
   try{
-    var r=await fetch('/api/track-record');
+    var r=await fetch(ovf?'/api/overflow-track-record':'/api/track-record');
     if(!r.ok) throw new Error(await r.text());
     var d=await r.json();
-    _nbaTrkData=d.dates||[];
+    var data=d.dates||[];
+    if(ovf)_nbaOvfData=data;else _nbaTrkData=data;
     
-    var ds = document.getElementById('nbaTrkDateSelect');
+    var ds = document.getElementById(prefix+'DateSelect');
     if(ds){
+      var previousDate=ds.value;
       ds.innerHTML = '';
-      if(_nbaTrkData.length === 0) {
+      if(data.length === 0) {
         var o = document.createElement('option'); o.value = ''; o.textContent = 'No saved dates'; ds.appendChild(o);
       } else {
-        _nbaTrkData.forEach(function(x){
+        data.forEach(function(x){
           var o = document.createElement('option'); o.value = x.date; o.textContent = x.date; ds.appendChild(o);
         });
-        ds.value = _nbaTrkData[0].date;
+        ds.value = data.some(function(x){return x.date===previousDate;})?previousDate:data[0].date;
       }
-      _nbaTrkDayName();
+      _nbaTrkDayName(record);
     }
     
-    renderNbaTrackDay();
+    renderNbaTrackDay(record);
   }catch(e){
     if(body) body.innerHTML=_nbaRecordEmpty('Track Record unavailable',e.message||'The official record could not be loaded.');
   }
 }
 function toggleTrkAcc(el) { el.parentElement.classList.toggle('open'); }
 function nbaTrkCatClass(cat) { return 'cat-' + String(cat||'').replace(/[^a-zA-Z0-9]/g, ''); }
-function renderNbaTrackDay(){
-  var sel = document.getElementById('nbaTrkDateSelect').value;
-  var out = document.getElementById('nbaTrkBody');
-  var topPct = document.getElementById('nbaTrkTopPct');
-  var topStats = document.getElementById('nbaTrkTopStats');
-  var stake = parseFloat(document.getElementById('nbaTrkBetSize').value) || 100;
+function renderNbaTrackDay(record){
+  var ovf=record==='overflow',prefix=ovf?'nbaOvf':'nbaTrk';
+  var data=ovf?_nbaOvfData:_nbaTrkData,view=ovf?_nbaOvfView:_nbaTrkView;
+  var sel = document.getElementById(prefix+'DateSelect').value;
+  var out = document.getElementById(prefix+'Body');
+  var topPct = document.getElementById(prefix+'TopPct');
+  var topStats = document.getElementById(prefix+'TopStats');
+  var stake = Math.max(1,parseFloat(document.getElementById(prefix+'BetSize').value) || 100);
   
-  if(!_nbaTrkData||!_nbaTrkData.length){
-    if(out) out.innerHTML=_nbaRecordEmpty('No official results yet','Pre-game snapshots will appear here after their games finish and the picks are graded.');
+  if(!data||!data.length){
+    if(out) out.innerHTML=_nbaRecordEmpty(ovf?'No saved overflow results yet':'No official results yet',ovf?'This record only contains saved overflow selections. New eligible pre-tip runs capture every qualifying play after each market/side Top 10; older dates are not backfilled.':'Pre-game snapshots will appear here after their games finish and the picks are graded.');
     if(topPct) topPct.innerHTML=''; if(topStats) topStats.innerHTML='';
     return;
   }
   
-  var day = _nbaTrkData.find(function(d){return d.date===sel;});
+  var day = data.find(function(d){return d.date===sel;});
   if(!day) { if(out) out.innerHTML=_nbaRecordEmpty('No record for this date','Choose another saved slate from the date menu.'); if(topPct) topPct.innerHTML=''; if(topStats) topStats.innerHTML=''; return; }
   
   var cats = ["Points","Rebounds","Assists","3-Pointers","Pts+Reb+Ast","Pts+Reb","Pts+Ast","Reb+Ast","Blocks","Steals"];
@@ -4060,8 +4256,9 @@ function renderNbaTrackDay(){
     g.rows.push(x);
     
     if (x.result==='WIN'||x.result==='LOSS'||x.result==='PUSH') {
-      x.clientProfit = nbaProfit(x.odds, stake, x.result);
-      if (x.result !== 'PUSH') {
+      var priced=_nbaTrkPriced(x.odds);
+      x.clientProfit = priced?nbaProfit(x.odds, stake, x.result):null;
+      if (priced && x.result !== 'PUSH') {
         g.staked += stake;
         dstaked += stake;
       }
@@ -4079,7 +4276,7 @@ function renderNbaTrackDay(){
   
   var droi = dstaked>0 ? (dnet/dstaked*100).toFixed(1) : '0.0';
   var dpctStr = (dw+dl)>0 ? (dw/(dw+dl)*100).toFixed(1)+'%' : '0%';
-  if (topPct) topPct.innerHTML = dw+'W/'+(dw+dl)+'L ('+dpctStr+')';
+  if (topPct) topPct.innerHTML = dw+'W/'+dl+'L ('+dpctStr+')';
   if (topStats) {
     var netColor = dnet > 0 ? '#4ade80' : dnet < 0 ? '#f87171' : '#cbd5e1';
     var roiColor = (dstaked > 0 && dnet > 0) ? '#4ade80' : (dstaked > 0 && dnet < 0) ? '#f87171' : '#cbd5e1';
@@ -4091,7 +4288,7 @@ function renderNbaTrackDay(){
   }
   
   var html = _nbaRecordSummary(dw,dl,dpend,dnet,dstaked,stake);
-  if(_nbaTrkView==='full'){
+  if(view==='full'){
     html+=_nbaRecordFullList(day.detail||[],stake,false);
     if(out)out.innerHTML=html;
     return;
@@ -4112,7 +4309,7 @@ function renderNbaTrackDay(){
         '</div>'+
       '</div>'+
       '<div class="nba-acc-body"><div style="overflow-x:auto"><table><thead><tr>'+
-      '<th>#</th><th>Player</th><th>Market</th><th>Pick</th><th>Odds / Book</th><th>Actual</th><th>Result</th><th>P/L</th>'+
+      '<th>#</th><th>Player</th><th>Market</th><th>Pick</th><th>Odds / Book</th><th>Stake</th><th>Actual</th><th>Result</th><th>P/L</th>'+
       '</tr></thead><tbody>'+
       g.rows.map(function(b){
         var rc=b.result==='WIN'?'#4ade80':b.result==='LOSS'?'#f87171':'#fbbf24';
@@ -4121,7 +4318,7 @@ function renderNbaTrackDay(){
           '<td>#'+b.rank+'</td><td>'+nbaTrkEsc(b.name)+'<br><small style="color:#94a3b8">'+nbaTrkEsc(b.team)+'</small></td>'+
           '<td>'+nbaTrkEsc(b.category)+'</td>'+
           '<td><span style="font-weight:700">'+nbaTrkEsc(b.side)+'</span> '+nbaTrkEsc(b.line)+'</td>'+
-          '<td style="color:#94a3b8">'+nbaTrkEsc(b.odds)+'</td><td>'+nbaTrkEsc(b.actual)+'</td>'+
+          '<td style="color:#94a3b8">'+nbaTrkEsc(b.odds)+'<br><small>'+nbaTrkEsc(b.book||'')+'</small></td><td>'+(_nbaTrkPriced(b.odds)?'$'+stake.toFixed(2):'—')+'</td><td>'+nbaTrkEsc(b.actual)+'</td>'+
           '<td style="color:'+rc+';font-weight:700">'+nbaTrkEsc(b.result||'PENDING')+'</td>'+
           '<td style="color:'+pc+';font-weight:700">'+(b.clientProfit!=null?(b.clientProfit>=0?'+':'')+'$'+Number(b.clientProfit).toFixed(2):'—')+'</td>'+
           '</tr>';
@@ -5358,6 +5555,8 @@ def _nba_coach_complete_pregame(date_str, result):
     """Reject partial/error boards and any run after the slate has started."""
     if not isinstance(result, dict) or result.get("date") != date_str:
         return False
+    if not _nba_official_board(result):
+        return False
     if not result.get("games") or not result.get("odds_loaded"):
         return False
     if result.get("log") and any(str(x).lower().startswith("error") for x in result["log"]):
@@ -5417,7 +5616,8 @@ def _nba_coach_profit(odds, result):
     return _nba_american_profit_trk(odds, _NBA_COACH_STAKE, result)
 
 def _nba_coach_grade_date(date_str, doc):
-    box = _nba_box_lookup(date_str)
+    box = {name: stats for name, stats in _nba_box_lookup(date_str).items()
+           if stats.get("season_type") in (2, 3)}
     if not box:
         return None
     detail = []
@@ -6304,7 +6504,7 @@ async def cached_nba(request: Request, target_date: str = None):
             and data.get("historical_replay_schema") != HISTORICAL_REPLAY_SCHEMA):
         data = None
     if data:
-        return data
+        return await _nba_refresh_season_scope(key, data)
     raise HTTPException(status_code=404, detail="No saved picks for this date.")
 
 @app.get("/clear-cache")
@@ -6314,43 +6514,84 @@ async def clear_cache(request: Request):
     _cache_clear('nba')   # wipe disk-cached picks file too
     return {"status": "cleared"}
 
-@app.get("/api/track-record")
-async def nba_track_record():
-    """NBA Track Record — all graded picks by date, $20/play."""
-    from fastapi.responses import JSONResponse as _JR
-    _nba_th.Thread(target=_nba_update_track_ledger, daemon=True).start()
-    det_rows = _nba_sb_get({"app":f"eq.{_NBA_TRK_APP}","category":"eq.__detail__",
+def _nba_track_record_response(overflow: bool = False) -> dict:
+    """Split saved selections at read time; never migrate settled ledger rows."""
+    det_rows = _nba_hist_sb_get({"app":f"eq.{_NBA_TRK_APP}","category":"eq.__detail__",
                             "locked":"eq.true","select":"date,detail","limit":"365"})
     detail_by_date = {r["date"]:(r.get("detail") or []) for r in (det_rows or [])}
     dates = sorted(detail_by_date.keys(), reverse=True)
     result = []
     for d in dates:
-        det = detail_by_date[d]
-        decided = [r for r in det if r.get("result") in ("WIN","LOSS") and r.get("odds") is not None]
+        det = []
+        for saved in detail_by_date[d]:
+            is_overflow = bool(saved.get("is_overflow")) or saved.get("category") == "NBA Overflow"
+            if is_overflow != overflow:
+                continue
+            row = dict(saved)
+            if overflow:
+                row["category"] = _NBA_STAT_LABEL.get(
+                    row.get("stat_key"), row.get("stat_key") or "Market unavailable")
+            row["is_overflow"] = is_overflow
+            row["stake"] = _NBA_TRK_STAKE if _nba_trk_priced(row.get("odds")) else None
+            if row["stake"] is None:
+                row["odds"] = None
+                row["profit"] = None
+            det.append(row)
+        if not det:
+            continue
+        decided = [r for r in det if r.get("result") in ("WIN","LOSS")]
+        priced = [r for r in decided if _nba_trk_priced(r.get("odds"))]
         wins   = sum(1 for r in decided if r["result"]=="WIN")
         losses = len(decided)-wins
-        net_pl = round(sum(r.get("profit") or 0 for r in decided),2)
-        staked = len(decided)*_NBA_TRK_STAKE
+        net_pl = round(sum(_nba_american_profit_trk(r["odds"], _NBA_TRK_STAKE, r["result"])
+                           for r in priced),2)
+        staked = len(priced)*_NBA_TRK_STAKE
         roi    = round(net_pl/staked*100,1) if staked else None
         cats: dict = {}
         for r in decided:
             cat = r.get("category","?")
-            e = cats.setdefault(cat,{"wins":0,"losses":0,"pl":0.0,"staked":0.0})
+            side = r.get("side") or "OVER"
+            e = cats.setdefault((cat,side),{"wins":0,"losses":0,"pl":0.0,"staked":0.0})
             if r["result"]=="WIN": e["wins"]+=1
             else: e["losses"]+=1
-            e["pl"]    = round(e["pl"]+(r.get("profit") or 0),2)
-            e["staked"]+=_NBA_TRK_STAKE
+            if _nba_trk_priced(r.get("odds")):
+                e["pl"] = round(e["pl"] + _nba_american_profit_trk(
+                    r["odds"], _NBA_TRK_STAKE, r["result"]),2)
+                e["staked"] += _NBA_TRK_STAKE
         by_cat=[]
-        for cat,e in cats.items():
+        for (cat,side),e in cats.items():
             total=e["wins"]+e["losses"]
-            by_cat.append({"category":cat,"wins":e["wins"],"losses":e["losses"],
+            by_cat.append({"category":cat,"side":side,"wins":e["wins"],"losses":e["losses"],
                            "net_pl":e["pl"],
                            "roi":round(e["pl"]/e["staked"]*100,1) if e["staked"] else None,
                            "rate":round(e["wins"]/total*100,1) if total else None})
         by_cat.sort(key=lambda x:(x.get("roi") or -999),reverse=True)
         result.append({"date":d,"wins":wins,"losses":losses,
-                       "net_pl":net_pl,"roi":roi,"by_cat":by_cat,"detail":det})
-    return _JR({"dates":result,"stake":_NBA_TRK_STAKE})
+                       "net_pl":net_pl,"roi":roi,"staked":staked,
+                       "priced_plays":len(priced),"by_cat":by_cat,"detail":det})
+    return {"dates":result,"stake":_NBA_TRK_STAKE,
+            "record":"overflow" if overflow else "main"}
+
+
+@app.get("/api/track-record")
+async def nba_track_record():
+    """Ordinary Main only; overflow never contributes to these totals."""
+    from fastapi.responses import JSONResponse as _JR
+    _nba_th.Thread(target=_nba_update_track_ledger, daemon=True).start()
+    try:
+        return _JR(_nba_track_record_response(False))
+    except RuntimeError:
+        return _JR({"detail":"Saved NBA Main record is unavailable. Please retry."}, status_code=503)
+
+
+@app.get("/api/overflow-track-record")
+async def nba_overflow_track_record():
+    """Read saved overflow grades with original markets; no grading on open."""
+    from fastapi.responses import JSONResponse as _JR
+    try:
+        return _JR(_nba_track_record_response(True))
+    except RuntimeError:
+        return _JR({"detail":"Saved NBA Overflow record is unavailable. Please retry."}, status_code=503)
 
 @app.get("/health")
 async def health():
