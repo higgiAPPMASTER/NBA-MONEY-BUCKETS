@@ -2636,6 +2636,16 @@ input[type=date]::-webkit-calendar-picker-indicator{filter:invert(1);opacity:.7;
 .btn-run:disabled{background:#2a2a2a;color:#4b5563;cursor:not-allowed;transform:none;box-shadow:none}
 .admin-only{display:none !important}
 body.is-admin .admin-only{display:inline-block !important}
+.nba-menu{position:relative}
+.nba-nav-btn{background:#1d4ed8;color:#fff;border:1px solid #3b82f6;border-radius:10px;padding:9px 16px;font-weight:800;font-size:.82rem;cursor:pointer;white-space:nowrap}
+.nba-nav-btn:hover{filter:brightness(1.12)}
+.nba-menu-list{display:none;position:absolute;right:0;top:calc(100% + 8px);z-index:120;min-width:240px;max-height:75vh;overflow:auto;background:#0b1220;border:1px solid #334155;border-radius:12px;padding:6px;box-shadow:0 18px 40px rgba(0,0,0,.55)}
+.nba-menu-list.open{display:block}
+.nba-menu-item{display:flex;align-items:center;gap:10px;width:100%;background:transparent;border:0;border-left:4px solid var(--c);border-radius:6px;color:#f1f5f9;font-size:.86rem;font-weight:800;text-align:left;padding:10px 12px;margin:2px 0;cursor:pointer}
+.nba-menu-item:hover,.nba-menu-item:focus{background:#1e293b;outline:none}
+body.is-admin .nba-menu-item.admin-only{display:flex !important}
+.nba-menu-head{color:#fbbf24;font-size:.66rem;font-weight:900;letter-spacing:.14em;text-transform:uppercase;padding:8px 12px 5px;margin-top:2px;border-bottom:1px solid #263244}
+.nba-menu-head.tools{color:#7dd3fc;margin-top:8px;padding-top:10px;border-top:1px solid #263244}
 #parlayCard{display:none}
 body.is-admin #parlayCard{display:block}
 #parlayLegs{background:#1a1a1a;color:#fff;border:1px solid #333;border-radius:8px;padding:8px 12px;font-size:.9rem;font-weight:700}
@@ -2738,7 +2748,31 @@ footer{text-align:center;padding:32px 24px;color:#4b5563;font-size:.78rem;border
 </head>
 <body>
 <div class="bg-glow"></div>
-<nav style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px"><div class="logo">Money <span>Picks</span> Arena</div><div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><button onclick="document.getElementById(\'nba-track-section\').scrollIntoView({behavior:\'smooth\',block:\'start\'})" style="background:#4338ca;color:#fff;border:none;border-radius:10px;padding:9px 16px;font-weight:800;font-size:.82rem;cursor:pointer;white-space:nowrap">&#128202; Track Record</button><button onclick="openNbaOverflowRecord()" style="background:#0e7490;color:#fff;border:none;border-radius:10px;padding:9px 16px;font-weight:800;font-size:.82rem;cursor:pointer;white-space:nowrap">Overflow Record</button><button class="admin-only" onclick="openNbaMyBets()" style="background:#4338ca;color:#fff;border:none;border-radius:10px;padding:9px 16px;font-weight:800;font-size:.82rem;cursor:pointer;white-space:nowrap">&#128176; My Bets</button></div></nav>
+<nav style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px"><div class="logo">Money <span>Picks</span> Arena</div>
+<div class="nba-menu">
+  <button type="button" class="nba-nav-btn" id="nbaNavMenuBtn" aria-haspopup="true" aria-expanded="false" onclick="_nbaNavToggle(event)">&#9776; Records &amp; Tools &#9662;</button>
+  <div class="nba-menu-list" id="nbaNavMenu" role="menu">
+    <div class="nba-menu-head" role="presentation">&#128202; Records</div>
+    <button type="button" role="menuitem" class="nba-menu-item" style="--c:#4338ca" onclick="_nbaNavGo(function(){document.getElementById('nba-track-section').scrollIntoView({behavior:'smooth',block:'start'});})">&#128202; Track Record</button>
+    <button type="button" role="menuitem" class="nba-menu-item" style="--c:#0e7490" onclick="_nbaNavGo(openNbaOverflowRecord)">&#11088; Overflow Record</button>
+    <button type="button" role="menuitem" class="nba-menu-item" style="--c:#7c3aed" onclick="_nbaNavGo(function(){openNbaCoachTrack();})">&#129504; Coach Track Record</button>
+    <div class="nba-menu-head tools" role="presentation">&#128736;&#65039; Tools</div>
+    <button type="button" role="menuitem" class="nba-menu-item admin-only" style="--c:#d97706" onclick="_nbaNavGo(function(){var c=document.getElementById('parlayCard');if(c)c.scrollIntoView({behavior:'smooth',block:'center'});})">&#127920; Auto Parlay Builder</button>
+    <button type="button" role="menuitem" class="nba-menu-item" style="--c:#a855f7" onclick="_nbaNavGo(function(){showNbaPerfectParlayBuilder();})">&#10024; Perfect Parlay</button>
+    <button type="button" role="menuitem" class="nba-menu-item admin-only" style="--c:#0e7490" onclick="_nbaNavGo(function(){openNbaMyBets();})">&#128176; My Bets</button>
+  </div>
+</div>
+<script>
+function _nbaNavToggle(e){
+  if(e)e.stopPropagation();
+  var m=document.getElementById('nbaNavMenu'),b=document.getElementById('nbaNavMenuBtn');
+  var open=!m.classList.contains('open');m.classList.toggle('open',open);if(b)b.setAttribute('aria-expanded',open?'true':'false');
+}
+function _nbaNavClose(){var m=document.getElementById('nbaNavMenu'),b=document.getElementById('nbaNavMenuBtn');if(m)m.classList.remove('open');if(b)b.setAttribute('aria-expanded','false');}
+function _nbaNavGo(fn){_nbaNavClose();try{fn();}catch(err){console.error(err);}}
+document.addEventListener('click',function(e){var w=e.target.closest?e.target.closest('.nba-menu'):null;if(!w)_nbaNavClose();});
+document.addEventListener('keydown',function(e){if(e.key==='Escape')_nbaNavClose();});
+</script></nav>
 <div class="page">
 <div class="app-hdr">
   <h1>NBA <span>Money Buckets</span></h1>
@@ -4385,55 +4419,97 @@ NBA_COACH_HTML = r"""
 .nba-coach-table tbody tr{cursor:pointer}
 .nba-coach-table tbody tr:hover{background:rgba(245,158,11,.06)}
 @media(max-width:600px){.nba-coach-row{flex-direction:column}.nba-coach-send{padding:12px}.nba-coach-question{max-width:94%}}
+.nba-coach-shell.ncx{border:1px solid rgba(56,189,248,.45)!important;background:linear-gradient(145deg,#101827,#0b1220)!important}
+.ncx-head{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:14px;align-items:center}
+.ncx-badge{width:48px;height:48px;border-radius:14px;display:grid;place-items:center;font-size:1.5rem;background:radial-gradient(circle at 30% 25%,rgba(56,189,248,.35),rgba(124,58,237,.25));border:1px solid rgba(125,211,252,.4);box-shadow:0 0 22px rgba(56,189,248,.18)}
+.ncx-kicker{color:#38bdf8;font-size:.62rem;font-weight:900;letter-spacing:.12em;text-transform:uppercase}
+.ncx-title{font-family:'Playfair Display',serif;color:#fff;font-size:1.5rem;margin:2px 0 0;line-height:1.15}
+.ncx-sub{color:#94a3b8;font-size:.74rem;margin-top:3px}
+.ncx-side{display:flex;flex-direction:column;gap:7px;align-items:stretch;min-width:190px}
+.ncx-noinv{align-self:flex-end;border:1px solid rgba(74,222,128,.38);background:rgba(74,222,128,.09);color:#86efac;border-radius:999px;padding:4px 9px;font-size:.6rem;font-weight:900;letter-spacing:.06em}
+.ncx-trk{background:#0f1726;color:#7dd3fc;border:1px solid rgba(56,189,248,.45);border-radius:10px;padding:8px 12px;font-size:.72rem;font-weight:900;cursor:pointer;white-space:nowrap}
+.ncx-trk:hover{background:rgba(56,189,248,.12)}
+.ncx-parlay{background:linear-gradient(135deg,#0369a1,#7c3aed);color:#fff;border:1px solid rgba(125,211,252,.5);border-radius:10px;padding:9px 14px;font-size:.74rem;font-weight:900;cursor:pointer;white-space:nowrap;box-shadow:0 6px 18px rgba(124,58,237,.25)}
+.ncx-parlay:hover{filter:brightness(1.12)}
+.ncx-tabs{display:flex;gap:4px;margin:18px 0 0;padding:4px;background:#0a101c;border:1px solid #1e293b;border-radius:12px}
+.ncx-tab{flex:1;background:transparent;border:0;border-radius:9px;color:#94a3b8;font-size:.74rem;font-weight:900;padding:9px 8px;cursor:pointer;white-space:nowrap}
+.ncx-tab span{display:inline-block;margin-left:4px;background:#1e293b;color:#cbd5e1;border-radius:999px;padding:1px 7px;font-size:.6rem}
+.ncx-tab:hover{color:#e2e8f0}
+.ncx-tab.active{background:linear-gradient(135deg,rgba(56,189,248,.2),rgba(124,58,237,.18));color:#fff;box-shadow:inset 0 0 0 1px rgba(125,211,252,.35)}
+.ncx-tab.active span{background:#38bdf8;color:#0b1220}
+.ncx-panels{margin:10px 0 12px}
+.ncx-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:8px}
+.ncx-grid[hidden]{display:none}
+.nba-coach-preset.ncx-preset{position:relative;text-align:left;border-radius:12px;padding:11px 12px 11px 15px;background:linear-gradient(135deg,#0f1726,#0b111d);border:1px solid #1f2b3d;color:#e2e8f0;overflow:hidden;transition:transform .12s ease,border-color .12s ease,box-shadow .12s ease}
+.ncx-preset:before{content:"";position:absolute;left:0;top:0;bottom:0;width:4px;background:var(--c)}
+.ncx-preset b{display:block;font-size:.76rem;font-weight:900;color:#f8fafc}
+.ncx-preset small{display:block;font-size:.64rem;font-weight:600;color:#8b9ab0;margin-top:3px}
+.nba-coach-preset.ncx-preset:hover{transform:translateY(-1px);border-color:var(--c);box-shadow:0 6px 16px rgba(0,0,0,.35);color:#e2e8f0}
+.ncx .nba-coach-preset.is-on{border-color:var(--c,#38bdf8);box-shadow:0 0 0 1px var(--c,#38bdf8) inset}
+.ncx-mk{position:relative;background:linear-gradient(135deg,#0f1726,#0b111d);border:1px solid #1f2b3d;border-radius:12px;padding:10px 12px 10px 15px;overflow:hidden}
+.ncx-mk:before{content:"";position:absolute;left:0;top:0;bottom:0;width:4px;background:linear-gradient(#22c55e,#f87171)}
+.ncx-mk-t{color:#f8fafc;font-size:.76rem;font-weight:900;margin-bottom:7px}
+.ncx-mk-b{display:flex;gap:6px}
+.ncx-mk-b .nba-coach-preset{flex:1;text-align:center;border-radius:8px;background:#0a101c;padding:6px 4px;font-size:.64rem;white-space:nowrap}
+.nba-coach-preset.ncx-ov{color:#86efac;border-color:rgba(74,222,128,.35)}
+.nba-coach-preset.ncx-un{color:#fca5a5;border-color:rgba(248,113,113,.35)}
+.ncx .nba-coach-preset.ncx-ov.is-on,.ncx .nba-coach-preset.ncx-un.is-on{background:rgba(56,189,248,.16);border-color:#38bdf8;color:#fff;box-shadow:none}
+.nba-coach-row.ncx-ask{align-items:center;gap:8px;margin-top:0;background:#0a101c;border:1px solid #1e293b;border-radius:12px;padding:6px 6px 6px 12px}
+.ncx-ask:focus-within{border-color:#38bdf8;box-shadow:0 0 0 3px rgba(56,189,248,.12)}
+.ncx-ask-ico{font-size:1rem;opacity:.8}
+.ncx-ask .nba-coach-input{background:transparent;border:0;box-shadow:none!important}
+.ncx-ask .nba-coach-send{align-self:stretch;padding:10px 20px;font-size:.8rem;background:linear-gradient(135deg,#0284c7,#7c3aed)}
+.ncx-how{margin-top:8px;color:#64748b;font-size:.65rem;line-height:1.45}
+.ncx-how>summary{cursor:pointer;color:#7c8aa0;font-weight:800;list-style:none;display:inline-block}
+.ncx-how>summary::-webkit-details-marker{display:none}
+.ncx-how>div{margin-top:6px}
+@media(max-width:620px){.ncx-head{grid-template-columns:auto minmax(0,1fr)}.ncx-side{grid-column:1/-1;min-width:0}.ncx-noinv{align-self:flex-start}.nba-coach-row.ncx-ask{flex-direction:row;flex-wrap:wrap}.ncx-ask .nba-coach-send{width:100%}.ncx-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.ncx-mk-grid{grid-template-columns:1fr}}
+@media(max-width:420px){.ncx-grid{grid-template-columns:1fr}}
 </style>
-<section id="nba-coach" class="card nba-coach-shell" style="max-width:960px;margin:28px auto 20px;padding:20px 22px">
-  <div style="display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap">
-    <div>
-      <div style="color:#f59e0b;font-size:.66rem;font-weight:900;letter-spacing:.12em;text-transform:uppercase">Grounded NBA analysis</div>
-      <h2 style="font-family:'Playfair Display',serif;color:#fff;font-size:1.35rem;margin-top:4px">The Edge Coach · NBA Props Analyst</h2>
-      <div style="color:#94a3b8;font-size:.76rem;margin-top:5px">Find safer sportsbook sides or scan the loaded NBA board for positive Coach Edge.</div>
+<section id="nba-coach" class="card nba-coach-shell ncx" style="max-width:960px;margin:28px auto 20px;padding:20px 22px">
+  <div class="ncx-head">
+    <div class="ncx-badge">&#127936;</div>
+    <div class="ncx-titles">
+      <div class="ncx-kicker">Grounded NBA analysis · genuine sportsbook prices</div>
+      <h2 class="ncx-title">The Edge Coach</h2>
+      <div class="ncx-sub">Pick a play type below, or ask the Coach a question.</div>
     </div>
-    <div>
-      <div style="color:#86efac;border:1px solid rgba(74,222,128,.35);border-radius:999px;padding:5px 9px;height:max-content;font-size:.62rem;font-weight:900;margin-top:6px;white-space:nowrap">NO INVENTED PLAYS</div>
-      <button onclick="openNbaCoachTrack()" style="width:100%;margin-top:8px;background:#0e7490;color:#fff;border:0;border-radius:8px;padding:7px 10px;font-size:.68rem;font-weight:900;cursor:pointer;white-space:nowrap">Coach Track Record</button>
-      <button onclick="showNbaPerfectParlayBuilder()" style="width:100%;margin-top:8px;background:linear-gradient(135deg,#b45309,#7c3aed);color:#fff;border:1px solid rgba(251,191,36,.5);border-radius:8px;padding:8px 10px;font-size:.7rem;font-weight:950;cursor:pointer;white-space:nowrap;box-shadow:0 4px 14px rgba(124,58,237,.22)">&#10024; Perfect Parlay</button>
+    <div class="ncx-side">
+      <div class="ncx-noinv">NO INVENTED PLAYS</div>
+      <button type="button" class="ncx-trk" onclick="openNbaCoachTrack()">&#129504; Coach Track Record</button>
+      <button type="button" class="ncx-parlay" onclick="showNbaPerfectParlayBuilder()">&#10024; Perfect Parlay</button>
     </div>
   </div>
-  <div style="margin-top:18px;font-size:.75rem;font-weight:800;color:#facc15;border-bottom:1px solid rgba(255,255,255,.1);padding-bottom:5px;letter-spacing:.05em;text-transform:uppercase">Core</div>
-  <div class="nba-coach-presets">
-    <button class="nba-coach-preset" onclick="nbaCoachPreset('safest')">Safest bets</button>
-    <button class="nba-coach-preset" onclick="nbaCoachPreset('positive edge')">Coach Edge</button>
-    <button class="nba-coach-preset" onclick="nbaCoachPreset('alternate_minus')" style="border-color:#f59e0b;color:#fde68a">Best - Alternate Plays · Top 10</button>
-    <button class="nba-coach-preset" onclick="nbaCoachPreset('alternate_plus')" style="border-color:#4ade80;color:#bbf7d0">Best + Alternate Plays · Top 10</button>
+  <div class="ncx-tabs" role="tablist">
+    <button type="button" class="ncx-tab active" data-ncx-tab="top" onclick="_ncxTab('top')">&#11088; Top Picks <span>4</span></button>
+    <button type="button" class="ncx-tab" data-ncx-tab="props" onclick="_ncxTab('props')">&#127936; Player Props <span>10</span></button>
   </div>
-  <div style="margin-top:16px;font-size:.75rem;font-weight:800;color:#60a5fa;border-bottom:1px solid rgba(255,255,255,.1);padding-bottom:5px;letter-spacing:.05em;text-transform:uppercase">Player Props</div>
-  <div class="nba-coach-presets">
-    <button class="nba-coach-preset over-preset" onclick="nbaCoachPreset('points over')">Points OVER</button>
-    <button class="nba-coach-preset under-preset" onclick="nbaCoachPreset('points under')">Points UNDER</button>
-    <button class="nba-coach-preset over-preset" onclick="nbaCoachPreset('rebounds over')">Rebounds OVER</button>
-    <button class="nba-coach-preset under-preset" onclick="nbaCoachPreset('rebounds under')">Rebounds UNDER</button>
-    <button class="nba-coach-preset over-preset" onclick="nbaCoachPreset('assists over')">Assists OVER</button>
-    <button class="nba-coach-preset under-preset" onclick="nbaCoachPreset('assists under')">Assists UNDER</button>
-    <button class="nba-coach-preset over-preset" onclick="nbaCoachPreset('3-pointers over')">3-Pointers OVER</button>
-    <button class="nba-coach-preset under-preset" onclick="nbaCoachPreset('3-pointers under')">3-Pointers UNDER</button>
-    <button class="nba-coach-preset over-preset" onclick="nbaCoachPreset('pra over')">PRA OVER</button>
-    <button class="nba-coach-preset under-preset" onclick="nbaCoachPreset('pra under')">PRA UNDER</button>
-    <button class="nba-coach-preset over-preset" onclick="nbaCoachPreset('pts+reb over')">Pts+Reb OVER</button>
-    <button class="nba-coach-preset under-preset" onclick="nbaCoachPreset('pts+reb under')">Pts+Reb UNDER</button>
-    <button class="nba-coach-preset over-preset" onclick="nbaCoachPreset('pts+ast over')">Pts+Ast OVER</button>
-    <button class="nba-coach-preset under-preset" onclick="nbaCoachPreset('pts+ast under')">Pts+Ast UNDER</button>
-    <button class="nba-coach-preset over-preset" onclick="nbaCoachPreset('reb+ast over')">Reb+Ast OVER</button>
-    <button class="nba-coach-preset under-preset" onclick="nbaCoachPreset('reb+ast under')">Reb+Ast UNDER</button>
-    <button class="nba-coach-preset over-preset" onclick="nbaCoachPreset('blocks over')">Blocks OVER</button>
-    <button class="nba-coach-preset under-preset" onclick="nbaCoachPreset('blocks under')">Blocks UNDER</button>
-    <button class="nba-coach-preset over-preset" onclick="nbaCoachPreset('steals over')">Steals OVER</button>
-    <button class="nba-coach-preset under-preset" onclick="nbaCoachPreset('steals under')">Steals UNDER</button>
+  <div class="ncx-panels">
+    <div class="ncx-grid" data-ncx-panel="top">
+      <button type="button" class="nba-coach-preset ncx-preset" style="--c:#38bdf8" onclick="nbaCoachPreset('safest')"><b class="ncx-t">Safest Bets</b><small>Highest app probability first</small></button>
+      <button type="button" class="nba-coach-preset ncx-preset" style="--c:#a78bfa" onclick="nbaCoachPreset('positive edge')"><b class="ncx-t">Coach Edge</b><small>Biggest app-vs-book probability gap</small></button>
+      <button type="button" class="nba-coach-preset ncx-preset" style="--c:#f59e0b" onclick="nbaCoachPreset('alternate_minus')"><b class="ncx-t">Best &#8722; Alternate Plays · Top 10</b><small>Safer alternate lines, minus odds</small></button>
+      <button type="button" class="nba-coach-preset ncx-preset" style="--c:#4ade80" onclick="nbaCoachPreset('alternate_plus')"><b class="ncx-t">Best + Alternate Plays · Top 10</b><small>Plus-money alternate lines with edge</small></button>
+    </div>
+    <div class="ncx-grid ncx-mk-grid" data-ncx-panel="props" hidden>
+        <div class="ncx-mk"><div class="ncx-mk-t">Points</div><div class="ncx-mk-b"><button type="button" class="nba-coach-preset ncx-ov" onclick="nbaCoachPreset('points over')">Over · Top 10</button><button type="button" class="nba-coach-preset ncx-un" onclick="nbaCoachPreset('points under')">Under · Top 10</button></div></div>
+        <div class="ncx-mk"><div class="ncx-mk-t">Rebounds</div><div class="ncx-mk-b"><button type="button" class="nba-coach-preset ncx-ov" onclick="nbaCoachPreset('rebounds over')">Over · Top 10</button><button type="button" class="nba-coach-preset ncx-un" onclick="nbaCoachPreset('rebounds under')">Under · Top 10</button></div></div>
+        <div class="ncx-mk"><div class="ncx-mk-t">Assists</div><div class="ncx-mk-b"><button type="button" class="nba-coach-preset ncx-ov" onclick="nbaCoachPreset('assists over')">Over · Top 10</button><button type="button" class="nba-coach-preset ncx-un" onclick="nbaCoachPreset('assists under')">Under · Top 10</button></div></div>
+        <div class="ncx-mk"><div class="ncx-mk-t">3-Pointers</div><div class="ncx-mk-b"><button type="button" class="nba-coach-preset ncx-ov" onclick="nbaCoachPreset('3-pointers over')">Over · Top 10</button><button type="button" class="nba-coach-preset ncx-un" onclick="nbaCoachPreset('3-pointers under')">Under · Top 10</button></div></div>
+        <div class="ncx-mk"><div class="ncx-mk-t">PRA</div><div class="ncx-mk-b"><button type="button" class="nba-coach-preset ncx-ov" onclick="nbaCoachPreset('pra over')">Over · Top 10</button><button type="button" class="nba-coach-preset ncx-un" onclick="nbaCoachPreset('pra under')">Under · Top 10</button></div></div>
+        <div class="ncx-mk"><div class="ncx-mk-t">Pts+Reb</div><div class="ncx-mk-b"><button type="button" class="nba-coach-preset ncx-ov" onclick="nbaCoachPreset('pts+reb over')">Over · Top 10</button><button type="button" class="nba-coach-preset ncx-un" onclick="nbaCoachPreset('pts+reb under')">Under · Top 10</button></div></div>
+        <div class="ncx-mk"><div class="ncx-mk-t">Pts+Ast</div><div class="ncx-mk-b"><button type="button" class="nba-coach-preset ncx-ov" onclick="nbaCoachPreset('pts+ast over')">Over · Top 10</button><button type="button" class="nba-coach-preset ncx-un" onclick="nbaCoachPreset('pts+ast under')">Under · Top 10</button></div></div>
+        <div class="ncx-mk"><div class="ncx-mk-t">Reb+Ast</div><div class="ncx-mk-b"><button type="button" class="nba-coach-preset ncx-ov" onclick="nbaCoachPreset('reb+ast over')">Over · Top 10</button><button type="button" class="nba-coach-preset ncx-un" onclick="nbaCoachPreset('reb+ast under')">Under · Top 10</button></div></div>
+        <div class="ncx-mk"><div class="ncx-mk-t">Blocks</div><div class="ncx-mk-b"><button type="button" class="nba-coach-preset ncx-ov" onclick="nbaCoachPreset('blocks over')">Over · Top 10</button><button type="button" class="nba-coach-preset ncx-un" onclick="nbaCoachPreset('blocks under')">Under · Top 10</button></div></div>
+        <div class="ncx-mk"><div class="ncx-mk-t">Steals</div><div class="ncx-mk-b"><button type="button" class="nba-coach-preset ncx-ov" onclick="nbaCoachPreset('steals over')">Over · Top 10</button><button type="button" class="nba-coach-preset ncx-un" onclick="nbaCoachPreset('steals under')">Under · Top 10</button></div></div>
+    </div>
   </div>
-  <div class="nba-coach-row">
-    <input id="nbaCoachQuery" class="nba-coach-input" aria-label="Coach Edge search" placeholder="Type a question..." onkeydown="if(event.key==='Enter')nbaCoachSearch()">
+  <div class="nba-coach-row ncx-ask">
+    <span class="ncx-ask-ico">&#128172;</span>
+    <input id="nbaCoachQuery" class="nba-coach-input" aria-label="Coach Edge search" placeholder="Ask the Coach, e.g. best rebounds overs tonight" onkeydown="if(event.key==='Enter')nbaCoachSearch()">
     <button class="nba-coach-send" onclick="nbaCoachSearch()">Analyze</button>
   </div>
-  <div style="color:#64748b;font-size:.65rem;line-height:1.45;margin-top:8px">Requires a loaded NBA board and genuine sportsbook prices. Safest Bets and Best - Alternate Plays rank qualifying sides by highest app probability; Coach Edge still requires positive probability edge. Best + Alternate Plays ranks positive-odds alternates by Coach Edge.</div>
+  <details class="ncx-how"><summary>&#9432; How it works</summary><div>Requires a loaded NBA board and genuine sportsbook prices. Safest Bets and Best - Alternate Plays rank qualifying sides by highest app probability; Coach Edge still requires positive probability edge. Best + Alternate Plays ranks positive-odds alternates by Coach Edge.</div></details>
   <div id="nbaCoachMsg" role="status" style="color:#fbbf24;font-size:.72rem;margin-top:10px"></div>
   <div id="nbaCoachResults" class="nba-coach-answer"></div>
   <div id="nbaCoachTrackPanel" style="display:none;margin-top:22px;padding-top:16px;border-top:1px solid #1e293b">
@@ -4464,6 +4540,16 @@ NBA_COACH_HTML = r"""
   {key:'PTS_REB',label:'Pts + Reb'},{key:'PTS_AST',label:'Pts + Ast'},
   {key:'REB_AST',label:'Reb + Ast'},{key:'BLK',label:'Blocks'},{key:'STL',label:'Steals'}
  ];
+function _ncxTab(key){
+  document.querySelectorAll('#nba-coach .ncx-tab').forEach(function(t){t.classList.toggle('active',t.getAttribute('data-ncx-tab')===key);});
+  document.querySelectorAll('#nba-coach .ncx-grid').forEach(function(g){g.hidden=g.getAttribute('data-ncx-panel')!==key;});
+}
+document.addEventListener('click',function(e){
+  var b=e.target&&e.target.closest?e.target.closest('#nba-coach .nba-coach-preset'):null;
+  if(!b)return;
+  document.querySelectorAll('#nba-coach .nba-coach-preset.is-on').forEach(function(x){if(x!==b)x.classList.remove('is-on');});
+  b.classList.add('is-on');
+});
 function nbaCoachPreset(q){
  var labels={
   safest:'What are the safest NBA bets?',
