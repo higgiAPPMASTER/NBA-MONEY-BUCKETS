@@ -2727,6 +2727,57 @@ body.is-admin #parlayCard{display:block}
 .picks-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px;margin-bottom:10px}
 .pick-card{background:#161616;border:1px solid #262626;border-radius:20px;padding:22px;position:relative;overflow:hidden;transition:border-color .25s,transform .22s}
 .pick-card:hover{border-color:rgba(245,158,11,.4);transform:translateY(-3px);box-shadow:0 14px 40px rgba(0,0,0,.5)}
+.nbc-grid{grid-template-columns:repeat(auto-fill,minmax(min(290px,100%),1fr));gap:14px}
+.nbc-card{padding:0;border-radius:18px;background:linear-gradient(160deg,#1a1a1a,#111);border:1px solid #2a2a2a;border-top:3px solid var(--acc);display:flex;flex-direction:column}
+.nbc-card:hover{border-color:var(--acc);box-shadow:0 14px 40px rgba(0,0,0,.55)}
+.nbc-body{padding:16px 15px 13px;flex:1}
+.nbc-rank{position:absolute;top:8px;right:13px;font-family:'Playfair Display',serif;font-weight:900;font-size:1.7rem;color:rgba(245,158,11,.35);line-height:1}
+.nbc-top{display:flex;align-items:center;gap:12px;margin-bottom:10px;padding-right:30px}
+.nbc-hs{position:relative;width:62px;height:62px;flex:0 0 auto;border-radius:50%;background:radial-gradient(circle at 50% 30%,#2a3445,#141922);border:2px solid var(--acc);display:flex;align-items:center;justify-content:center;cursor:pointer}
+.nbc-hs-img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;border-radius:50%;z-index:2}
+.nbc-ini{font-family:'Playfair Display',serif;font-weight:800;font-size:1.2rem;color:#9ca3af;z-index:1}
+.nbc-logo{position:absolute;right:-5px;bottom:-4px;width:25px;height:25px;z-index:3;background:#0f0f0f;border:1px solid #2a2a2a;border-radius:50%;padding:2px;object-fit:contain}
+.nbc-id{flex:1;min-width:0}
+.nbc-name{font-weight:900;color:#fff;font-size:1.05rem;line-height:1.15;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.nbc-meta{font-size:.76rem;color:#9ca3af;margin-top:4px;display:flex;align-items:center;gap:5px;flex-wrap:wrap}
+.nbc-meta b{color:#e5e7eb}
+.nbc-meta2{font-size:.68rem;color:#6b7280;margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.nbc-loc{font-size:.6rem;font-weight:900;letter-spacing:.06em;padding:2px 6px;border-radius:5px}
+.nbc-loc.home{background:rgba(74,222,128,.12);color:#4ade80;border:1px solid rgba(74,222,128,.3)}
+.nbc-loc.away{background:rgba(96,165,250,.12);color:#60a5fa;border:1px solid rgba(96,165,250,.3)}
+.nbc-pos{font-size:.6rem;font-weight:900;padding:2px 6px;border-radius:5px;background:#1f2937;color:#e5e7eb;border:1px solid #374151}
+.nbc-tagrow{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:10px}
+.nbc-mkt{font-size:.74rem;font-weight:900;letter-spacing:.08em;text-transform:uppercase;color:var(--acc);padding:3px 9px;border-radius:6px;border:1px solid var(--acc);background:rgba(255,255,255,.03)}
+.nbc-hero{display:flex;align-items:center;justify-content:space-between;gap:10px;border:1px solid;border-radius:12px;padding:10px 12px;margin-bottom:10px}
+.nbc-hero-l{min-width:0}
+.nbc-verdict{font-weight:900;font-size:1.25rem;letter-spacing:.01em;line-height:1.1}
+.nbc-hero-sub{font-size:.7rem;color:#9ca3af;margin-top:3px}
+.nbc-hero-r{display:flex;flex-direction:column;gap:3px;align-items:flex-end;flex:0 0 auto}
+.nbc-px{display:flex;align-items:center;gap:6px;font-size:.78rem}
+.nbc-px span{color:#6b7280;font-weight:800;font-size:.66rem}
+.nbc-px b{font-family:monospace;color:#fbbf24;font-weight:900;font-size:.88rem}
+.nbc-px-none{color:#6b7280;font-size:.7rem;font-weight:700}
+.nbc-tiles{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-bottom:10px}
+.nbc-tile{background:#141414;border:1px solid #232323;border-radius:9px;padding:7px 8px;text-align:center;min-width:0}
+.nbc-tile .k{font-size:.56rem;color:#6b7280;text-transform:uppercase;letter-spacing:.04em;font-weight:800;line-height:1.25}
+.nbc-tile .v{font-weight:900;font-size:.92rem;margin-top:3px;color:#f3f4f6}
+.nbc-tile .v small{font-size:.66rem;color:#9ca3af;font-weight:700}
+.nbc-dim{color:#4b5563}
+.nbc-form{margin-bottom:10px}
+.nbc-form-k{font-size:.62rem;color:#94a3b8;text-transform:uppercase;letter-spacing:.05em;font-weight:800;margin-bottom:5px}
+.nbc-form-k b{color:#e2e8f0}
+.nbc-chips{display:flex;flex-wrap:wrap;gap:4px}
+.nbc-chips span{min-width:26px;text-align:center;font-size:.74rem;font-weight:900;padding:3px 6px;border-radius:6px;border:1px solid}
+.nbc-why{background:#15130b;border:1px solid rgba(253,184,39,.22);border-radius:8px;padding:7px 9px;margin-bottom:10px;font-size:.72rem;line-height:1.4;color:#cbd5e1}
+.nbc-why b{color:#fff}
+.nbc-why-k{color:#FDB827;font-weight:900;text-transform:uppercase;letter-spacing:.06em;margin-right:6px;font-size:.62rem}
+.nbc-sigs{display:flex;flex-wrap:wrap;gap:5px;margin-bottom:10px}
+.nbc-sig{font-size:.66rem;font-weight:800;padding:3px 8px;border-radius:999px;border:1px solid;white-space:nowrap}
+.nbc-foot{display:flex;align-items:center;justify-content:space-between;gap:8px;border-top:1px solid #222;padding-top:10px}
+.nbc-score{font-family:'Playfair Display',serif;font-weight:900;font-size:1.3rem;line-height:1;display:flex;align-items:baseline;gap:6px}
+.nbc-score small{font-family:'Source Sans Pro',sans-serif;font-size:.6rem;color:#6b7280;font-weight:800;text-transform:uppercase;letter-spacing:.06em}
+.nbc-tap{background:none;border:1px solid #333;color:#9ca3af;border-radius:8px;padding:6px 11px;font-size:.72rem;font-weight:800;cursor:pointer;transition:all .2s}
+.nbc-tap:hover{border-color:var(--acc);color:var(--acc)}
 .pick-rank{position:absolute;top:14px;right:15px;width:32px;height:32px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:.82rem;font-weight:900}
 .rank-1{background:linear-gradient(135deg,#C4901A,#f59e0b);color:#000;box-shadow:0 0 14px rgba(245,158,11,.5)}
 .rank-2{background:linear-gradient(135deg,#374151,#9ca3af);color:#000}
@@ -3217,7 +3268,7 @@ function renderTop10Cards(picks){
   const _boardTitle=activeTopSide==='ALL'
     ? (activeTopStat==='ALL'?'Top Picks Today':`${_catName} Picks`)
     : `${_catName} · Top 10 ${activeTopSide==='OVER'?'Over':'Under'}`;
-  let html=`<div class="section-hdr"><div class="section-title">${_boardTitle}</div><span class="count-pill">${order.length} player${order.length!==1?'s':''}</span></div><div class="picks-grid">`;
+  let html=`<div class="section-hdr"><div class="section-title">${_boardTitle}</div><span class="count-pill">${order.length} player${order.length!==1?'s':''}</span></div><div class="picks-grid nbc-grid">`;
   order.forEach((pname,i)=>{
     // Only show the single best pick per player card (highest-ranked, since
     // picks are pre-sorted by has_consistency desc, hit_rate desc, threshold desc).
@@ -3234,123 +3285,121 @@ function renderTop10Cards(picks){
       p.player_id?`https://a.espncdn.com/i/headshots/nba/players/full/${p.player_id}.png`:''
     );
     const tip=p.tipoff?new Date(p.tipoff).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',timeZoneName:'short'}):'';
-    const statBlocks=stats.map(s=>{
-      // VERDICT RULES:
-      // 1) PATTERN is the strongest signal. If it qualifies, the pick IS the pattern
-      //    (e.g. "PATTERN 5+ REB") — MPA/LINE/STREAK do NOT override it with UNDER.
-      // 2) If no pattern, fall back to vote-based verdict from LINE/STREAK/MPA.
-      let verdict=null, verdictText='', verdictColor='', verdictBg='';
-      if(s.historical_replay && s.side){
-        verdict=s.side;
-        verdictText=`${s.side} ${s.line}`;
-        verdictColor=dirColor(s.side);
-        verdictBg=dirBg(s.side);
-      } else if(s.has_consistency){
-        verdict='PATTERN';
-        verdictText=`PICK ${s.threshold}+`;
-        verdictColor='#FDB827';
-        verdictBg='rgba(253,184,39,.18)';
-      } else {
-        const votes={OVER:0,UNDER:0};
-        if(s.line_rec) votes[s.line_rec]++;
-        if(s.streak_rec) votes[s.streak_rec]++;
-        if(s.alt_rec) votes[s.alt_rec]++;
-        const tot=votes.OVER+votes.UNDER;
-        if(tot && votes.OVER!==votes.UNDER){
-          verdict=votes.OVER>votes.UNDER?'OVER':'UNDER';
-          verdictText=`${verdict}${s.dk_line?' '+s.dk_line:''}`;
-          verdictColor=dirColor(verdict);
-          verdictBg=dirBg(verdict);
-        }
+    const s=p;
+    const loc=(p.location||'').toLowerCase();
+    // VERDICT RULES (unchanged):
+    // 1) PATTERN is the strongest signal. If it qualifies, the pick IS the pattern.
+    // 2) If no pattern, fall back to vote-based verdict from LINE/STREAK/MPA.
+    let verdict=null, verdictText='', verdictColor='#9ca3af';
+    if(s.historical_replay && s.side){
+      verdict=s.side; verdictText=`${s.side} ${s.line}`; verdictColor=dirColor(s.side);
+    } else if(s.has_consistency){
+      verdict='PATTERN'; verdictText=`PICK ${s.threshold}+`; verdictColor='#FDB827';
+    } else {
+      const votes={OVER:0,UNDER:0};
+      if(s.line_rec) votes[s.line_rec]++;
+      if(s.streak_rec) votes[s.streak_rec]++;
+      if(s.alt_rec) votes[s.alt_rec]++;
+      const tot=votes.OVER+votes.UNDER;
+      if(tot && votes.OVER!==votes.UNDER){
+        verdict=votes.OVER>votes.UNDER?'OVER':'UNDER';
+        verdictText=`${verdict}${s.dk_line!=null?' '+s.dk_line:''}`;
+        verdictColor=dirColor(verdict);
       }
-      const verdictPill = verdict ? `<span style="background:${verdictBg};color:${verdictColor};border:1px solid ${verdictColor}66;padding:5px 12px;border-radius:7px;font-size:.92rem;font-weight:900;white-space:nowrap">${verdictText}</span>` : '';
-      // Suppress any UNDER signal badges when PATTERN is the pick — they'd contradict
-      // the pattern. Only show signals that agree (OVER) as reinforcement.
-      const patternOverride = s.has_consistency;
-      const badges=[];
-      if(s.has_consistency) badges.push(`<span style="background:rgba(253,184,39,.18);color:#FDB827;padding:4px 10px;border-radius:6px;font-size:.82rem;font-weight:800">PICK ${s.hits}/${s.games} (${s.pct}%) vs ${p.opp} ${(p.location||'').toLowerCase()}</span>`);
-      if(s.historical_replay && s.side) badges.push(`<span style="background:${dirBg(s.side)};color:${dirColor(s.side)};padding:4px 10px;border-radius:6px;font-size:.82rem;font-weight:800">${s.side} ${s.line} · ${s.book||'Archived sportsbook'}</span>`);
-      if(s.line_rec && (!patternOverride || s.line_rec==='OVER')) badges.push(`<span style="background:${dirBg(s.line_rec)};color:${dirColor(s.line_rec)};padding:4px 10px;border-radius:6px;font-size:.82rem;font-weight:800">LINE ${s.line_rec} ${s.line_rec_hits} (${s.line_rec_pct}%)</span>`);
-      if(s.streak_rec && (!patternOverride || s.streak_rec==='OVER')) badges.push(`<span style="background:${dirBg(s.streak_rec)};color:${dirColor(s.streak_rec)};padding:4px 10px;border-radius:6px;font-size:.82rem;font-weight:800">🔥 ${s.streak_n} STRAIGHT ${s.streak_rec}</span>`);
-      if(s.alt_rec && (!patternOverride || s.alt_rec==='OVER')) badges.push(`<span style="background:${dirBg(s.alt_rec)};color:${dirColor(s.alt_rec)};padding:4px 10px;border-radius:6px;font-size:.82rem;font-weight:800">⭐ MPA ${s.alt_rec}${s.alt_evens&&s.alt_odds?` — even: ${s.alt_evens} · odd: ${s.alt_odds}`:''}</span>`);
-      // Data lines: spell out exactly what the user sees on a bet slip
-      const lines=[];
-      if(s.dk_line!=null) lines.push(`<div style="font-size:.86rem;color:#ddd;margin-bottom:3px"><strong style="color:#fff">Line ${s.dk_line}</strong> ${s.stat_label}</div>`);
-      if(s.historical_replay && s.pick && s.games){
-        lines.push(`<div style="font-size:.8rem;color:#e2e8f0;margin-bottom:4px"><strong>${s.hits}/${s.games} ${s.pick} ${s.line}</strong> vs ${p.opp} · ${(p.location||'').toLowerCase()} (${s.pct}%)</div>`);
-        const _recent=(s.recent_glog||[]).slice(0,10);
-        if(_recent.length){
-          lines.push(`<div style="font-size:.72rem;color:#94a3b8;margin-bottom:4px">Last ${_recent.length} ${s.stat_label} before game: <strong style="color:#e2e8f0">${_recent.map(x=>x.v).join(' · ')}</strong></div>`);
-        }else if(s.recent_avg!=null){
-          lines.push(`<div style="font-size:.72rem;color:#94a3b8;margin-bottom:4px">Pre-game L10 ${s.stat_label} average: <strong style="color:#e2e8f0">${s.recent_avg}</strong></div>`);
-        }
-      }
-      if(s.dk_line!=null && s.dk_hits!=null){
-        const over=s.dk_hits, under=(s.l10_games||10)-over;
-        lines.push(`<div style="font-size:.8rem;color:#aaa;margin-bottom:3px">vs line last ${s.l10_games||10} (vs ${p.opp} ${(p.location||'').toLowerCase()}): <span style="color:#4ade80;font-weight:700">${over} over</span> · <span style="color:#f87171;font-weight:700">${under} under</span></div>`);
-      }
-      if(s.recent_avg!=null){
-        var _gap=s.gap!=null?s.gap:null;
-        var _gapClr=_gap==null?'#94a3b8':_gap>0?'#4ade80':_gap<0?'#f87171':'#94a3b8';
-        var _gapTxt=_gap==null?'':_gap>0?(' +'+_gap+' above line'):(' '+_gap+' below line');
-        lines.push('<div style="font-size:.78rem;color:#888;margin-bottom:4px;padding:4px 7px;background:rgba(255,255,255,.03);border-radius:5px">L10 all-opp avg: <strong style="color:#fff">'+s.recent_avg+'</strong>'+'<span style="color:'+_gapClr+';font-weight:700">'+_gapTxt+'</span></div>');
-      }
-      if(s.threshold) lines.push(`<div style="font-size:.8rem;color:#aaa;margin-bottom:8px"><strong style="color:#a5b4fc">PICK HISTORY</strong> · hit <strong style="color:#FDB827">${s.threshold}+</strong> ${s.stat_label} in <strong style="color:#fff">${s.hits}/${s.games}</strong> vs ${p.opp} ${(p.location||'').toLowerCase()}</div>`);
-      // Odds — show Over/Under odds whenever available (DK preferred, FD fallback)
-      var _ov=s.dk_over_odds||s.fd_odds||'';
-      var _un=s.dk_under_odds||'';
-      if(_ov||_un){
-        var _oddsHtml='<div style="font-size:.8rem;margin-bottom:5px;display:flex;gap:10px;align-items:center">';
-        if(_ov) _oddsHtml+='<span style="color:#64748b">Over</span> <span style="font-family:monospace;font-weight:900;color:#fbbf24">'+_ov+'</span>';
-        if(_un) _oddsHtml+=((_ov?' · ':'')+'<span style="color:#64748b">Under</span> <span style="font-family:monospace;font-weight:900;color:#fbbf24">'+_un+'</span>');
-        _oddsHtml+='</div>';
-        lines.push(_oddsHtml);
-      }
-      // B — Best bet at the sportsbook's actual line
-      if(s.best_bet){
-        const bb=s.best_bet, isPass=bb.side==='PASS';
-        const bc=isPass?'#9ca3af':dirColor(bb.side);
-        const confColor=bb.conf==='STRONG'?'#4ade80':bb.conf==='LEAN'?'#fbbf24':'#9ca3af';
-        const label=isPass?`NO EDGE ${bb.line}`:`${bb.side} ${bb.line}`;
-        lines.push(`<div style="font-size:.82rem;margin:7px 0 5px;padding:6px 9px;background:rgba(255,255,255,.03);border-left:3px solid ${bc};border-radius:5px">
-          <span style="color:#888">BEST BET </span><strong style="color:${bc}">${label}</strong>
-          <span style="color:#fff"> ${bb.hits}/${bb.games} (${bb.pct}%)</span>
-          <span style="color:${confColor};font-weight:800"> ${bb.conf}</span></div>`);
-      }
-      return `<div style="background:#0d0d0d;border:1px solid #1f1f1f;border-radius:10px;padding:12px 14px;margin-top:9px">
-        <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:7px">
-          <div style="font-size:.98rem;min-width:0"><span>${s.emoji}</span> <strong style="color:#fff">${s.stat_label}</strong></div>
-          ${verdictPill}
+    }
+    // When a pattern qualifies, only show signals that agree (OVER) as reinforcement.
+    const patternOverride=s.has_consistency;
+    const sig=(c,t)=>`<span class="nbc-sig" style="color:${c};background:${c}1f;border-color:${c}55">${t}</span>`;
+    const badges=[];
+    if(s.historical_replay && s.side) badges.push(sig(dirColor(s.side),`${s.side} ${s.line} · ${s.book||'Archived sportsbook'}`));
+    if(s.line_rec && (!patternOverride || s.line_rec==='OVER')) badges.push(sig(dirColor(s.line_rec),`LINE ${s.line_rec} ${s.line_rec_hits} (${s.line_rec_pct}%)`));
+    if(s.streak_rec && (!patternOverride || s.streak_rec==='OVER')) badges.push(sig(dirColor(s.streak_rec),`🔥 ${s.streak_n} STRAIGHT ${s.streak_rec}`));
+    if(s.alt_rec && (!patternOverride || s.alt_rec==='OVER')) badges.push(sig(dirColor(s.alt_rec),`⭐ MPA ${s.alt_rec}${s.alt_evens&&s.alt_odds?` · even ${s.alt_evens} · odd ${s.alt_odds}`:''}`));
+    // Hero line: the pick plus both sportsbook prices.
+    const _ov=s.dk_over_odds||s.fd_odds||'';
+    const _un=s.dk_under_odds||'';
+    const priceHtml=(_ov||_un)
+      ? `${_ov?`<div class="nbc-px"><span>O</span><b>${_ov}</b></div>`:''}${_un?`<div class="nbc-px"><span>U</span><b>${_un}</b></div>`:''}`
+      : `<div class="nbc-px nbc-px-none">${s.dk_line!=null?'Odds n/a':'No book line'}</div>`;
+    const hero=`<div class="nbc-hero" style="border-color:${verdictColor}55;background:linear-gradient(135deg,${verdictColor}1a,rgba(255,255,255,.015))">
+        <div class="nbc-hero-l">
+          <div class="nbc-verdict" style="color:${verdictColor}">${verdictText||'NO CONSENSUS'}</div>
+          <div class="nbc-hero-sub">${s.dk_line!=null?`Book line ${s.dk_line} · `:''}${s.stat_label}</div>
         </div>
-        ${lines.join('')}
-        <div style="display:flex;flex-wrap:wrap;gap:6px">${badges.join('')}</div>
+        <div class="nbc-hero-r">${priceHtml}</div>
       </div>`;
-    }).join('');
+    // Stat tiles
+    const tiles=[];
+    const tile=(k,v)=>tiles.push(`<div class="nbc-tile"><div class="k">${k}</div><div class="v">${v}</div></div>`);
+    const pctClr=v=>v>=80?'#4ade80':v>=65?'#fbbf24':'#f87171';
+    if(s.games && (s.threshold || (s.historical_replay && s.pick))){
+      tile(`${s.threshold?s.threshold+'+':s.pick+' '+s.line} vs ${p.opp} ${loc}`,`<span style="color:${pctClr(s.pct)}">${s.hits}/${s.games}</span> <small>${s.pct}%</small>`);
+    }
+    if(s.dk_line!=null && s.dk_hits!=null){
+      const over=s.dk_hits, under=(s.l10_games||10)-over;
+      tile(`vs line L${s.l10_games||10} · ${p.opp} ${loc}`,`<span style="color:#4ade80">${over}O</span> <span class="nbc-dim">·</span> <span style="color:#f87171">${under}U</span>`);
+    }
+    if(s.recent_avg!=null){
+      const g=s.gap!=null?s.gap:null;
+      const gc=g==null?'#94a3b8':g>0?'#4ade80':g<0?'#f87171':'#94a3b8';
+      tile('L10 all-opp avg',`${s.recent_avg}${g==null?'':` <small style="color:${gc}">${g>0?'+':''}${g}</small>`}`);
+    }
+    if(s.best_bet){
+      const bb=s.best_bet, isPass=bb.side==='PASS';
+      const bc=isPass?'#9ca3af':dirColor(bb.side);
+      const cc=bb.conf==='STRONG'?'#4ade80':bb.conf==='LEAN'?'#fbbf24':'#9ca3af';
+      tile('Best bet',`<span style="color:${bc}">${isPass?'NO EDGE '+bb.line:bb.side+' '+bb.line}</span> <small>${bb.hits}/${bb.games} (${bb.pct}%)</small> <small style="color:${cc};font-weight:900">${bb.conf}</small>`);
+    }
+    // Pre-game form strip (historical replay)
+    let recentHtml='';
+    if(s.historical_replay && s.pick && s.games){
+      const _recent=(s.recent_glog||[]).slice(0,10);
+      if(_recent.length){
+        const ln=Number(s.line);
+        recentHtml=`<div class="nbc-form"><div class="nbc-form-k">Last ${_recent.length} ${s.stat_label} before game</div><div class="nbc-chips">${_recent.map(x=>{
+          const v=Number(x.v), hit=isFinite(ln)&&isFinite(v)?(s.pick==='UNDER'?v<ln:v>ln):null;
+          const c=hit==null?'#94a3b8':hit?'#4ade80':'#f87171';
+          return `<span style="color:${c};border-color:${c}55;background:${c}14">${x.v}</span>`;}).join('')}</div></div>`;
+      }else if(s.recent_avg!=null){
+        recentHtml=`<div class="nbc-form"><div class="nbc-form-k">Pre-game L10 ${s.stat_label} average: <b>${s.recent_avg}</b></div></div>`;
+      }
+    }
+    const why=s.threshold
+      ? `<div class="nbc-why"><span class="nbc-why-k">Pick history</span>Hit <b style="color:#FDB827">${s.threshold}+</b> ${s.stat_label} in <b>${s.hits}/${s.games}</b> vs ${p.opp} ${loc}</div>`
+      : '';
+    // Footer score = strongest verified hit rate on the card.
+    const scorePct=s.games&&s.pct!=null?s.pct:(s.best_bet&&s.best_bet.side!=='PASS'?s.best_bet.pct:(s.line_rec_pct!=null?s.line_rec_pct:null));
+    const ini=String(pname||'').split(/ +/).map(w=>w.charAt(0)).join('').slice(0,2).toUpperCase();
+    const mkt=String(p.stat||'').toUpperCase();
+    const acc={PTS:'#a78bfa',REB:'#60a5fa',AST:'#34d399',FG3M:'#f87171',PRA:'#c084fc',BLK:'#2dd4bf',STL:'#f472b6'}[mkt]||'#fbbf24';
     const _bverd=_nbaPickVerdict(p);
     const _betHtml=(window.IS_ADMIN&&!p.historical_replay)?_nbaBetBtn(p,_bverd):'';
     html+=`
-    <div class="pick-card" style="padding:0;overflow:hidden;border-radius:14px;background:linear-gradient(180deg,#161616 0%,#0f0f0f 100%);border:1px solid #262626">
-      <div style="background:linear-gradient(135deg,#1e3a5f 0%,#0a1a2e 100%);padding:8px 12px;display:flex;align-items:center;justify-content:space-between;border-bottom:2px solid #FDB827">
-        <div style="display:flex;align-items:center;gap:8px">
-          <div style="width:26px;height:26px;border-radius:50%;background:#FDB827;color:#000;display:flex;align-items:center;justify-content:center;font-weight:900;font-size:.82rem">${i+1}</div>
-          <div style="font-size:.72rem;letter-spacing:.12em;color:#FDB827;font-weight:800">NBA · ${p.team}</div>
-          ${formBadge}
+    <div class="pick-card nbc-card" style="--acc:${acc}">
+      <div class="nbc-rank">${i+1}</div>
+      <div class="nbc-body">
+        <div class="nbc-top">
+          <div class="nbc-hs" onclick="openLadder('${cardKey}')" title="Open game log">
+            <span class="nbc-ini">${ini}</span>
+            ${headshot?`<img class="nbc-hs-img" src="${headshot}" alt="${pname}" onerror="if(this.dataset.fallback){this.style.display='none';return;}this.dataset.fallback='1';this.src='https://a.espncdn.com/i/headshots/nba/players/full/${p.player_id||''}.png'"/>`:''}
+            <img class="nbc-logo" src="${teamLogo}" alt="${p.team}" onerror="this.style.display='none'"/>
+          </div>
+          <div class="nbc-id">
+            <div class="nbc-name">${pname}</div>
+            <div class="nbc-meta"><b>${p.team}</b> vs <b>${p.opp}</b>${loc?`<span class="nbc-loc ${loc==='home'?'home':'away'}">${loc.toUpperCase()}</span>`:''}${p.position?`<span class="nbc-pos">${p.position}</span>`:''}</div>
+            <div class="nbc-meta2">${tip?`⏱ ${tip}`:''}${tip&&p.matchup?' · ':''}${p.matchup||''}</div>
+          </div>
         </div>
-        <img src="${teamLogo}" alt="${p.team}" style="height:28px;width:28px;object-fit:contain" onerror="this.style.display='none'"/>
-      </div>
-      <div style="position:relative;height:110px;background:radial-gradient(ellipse at center top,rgba(253,184,39,.15),transparent 70%),linear-gradient(180deg,#1e3a5f 0%,#0a1a2e 100%);overflow:hidden">
-        ${headshot?`<img onclick="openLadder('${cardKey}')" src="${headshot}" alt="${pname}" style="position:absolute;bottom:-6px;left:50%;transform:translateX(-50%);height:120px;object-fit:contain;cursor:pointer" onerror="if(this.dataset.fallback){this.style.display='none';return;}this.dataset.fallback='1';this.src='https://a.espncdn.com/i/headshots/nba/players/full/${p.player_id||''}.png'"/>`:''}
-        <div onclick="openLadder('${cardKey}')" style="position:absolute;bottom:6px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,.62);color:#FDB827;font-size:.62rem;font-weight:800;padding:3px 9px;border-radius:6px;border:1px solid #FDB82766;cursor:pointer;white-space:nowrap">📊 TAP FOR GAME LOG</div>
-        ${p.position?`<div style="position:absolute;top:10px;right:12px;background:rgba(0,0,0,.6);color:#fff;font-weight:800;font-size:.88rem;padding:4px 10px;border-radius:6px;border:1px solid #444">${p.position}</div>`:''}
-      </div>
-      <div style="background:#FDB827;color:#000;text-align:center;padding:7px 10px;font-weight:900;font-size:.95rem;letter-spacing:.01em">${pname}</div>
-      <div style="padding:8px 10px 10px">
-        <div style="display:flex;justify-content:space-between;align-items:center;font-size:.9rem;color:#aaa;margin-bottom:4px">
-          <span>vs <strong style="color:#fff">${p.opp}</strong></span>
-          ${tip?`<span>⏱ ${tip}</span>`:''}
+        <div class="nbc-tagrow"><span class="nbc-mkt">${s.emoji||''} ${s.stat_label}</span>${formBadge}</div>
+        ${hero}
+        ${tiles.length?`<div class="nbc-tiles">${tiles.join('')}</div>`:''}
+        ${recentHtml}
+        ${why}
+        ${badges.length?`<div class="nbc-sigs">${badges.join('')}</div>`:''}
+        <div class="nbc-foot">
+          <div class="nbc-score" style="color:${scorePct==null?'#64748b':pctClr(scorePct)}">${scorePct==null?'—':scorePct+'%'}<small>hit rate</small></div>
+          <button class="nbc-tap" onclick="openLadder('${cardKey}')">📊 Game Log</button>
         </div>
-        <div style="font-size:.78rem;color:#666;margin-bottom:4px">${p.matchup}</div>
-        ${statBlocks}
       </div>
       ${_betHtml}
     </div>`;
@@ -4551,7 +4600,7 @@ NBA_COACH_HTML = r"""
   </div>
   <div class="ncx-panels">
     <div class="ncx-grid" data-ncx-panel="top">
-      <button type="button" class="nba-coach-preset ncx-preset" style="--c:#38bdf8" onclick="nbaCoachPreset('safest')"><b class="ncx-t">Safest Bets</b><small>Highest app probability first</small></button>
+      <button type="button" class="nba-coach-preset ncx-preset" style="--c:#38bdf8" onclick="nbaCoachPreset('safest')"><b class="ncx-t">Safest Bets</b><small>80%+ vs opponent H/A, moved to a safer line</small></button>
       <button type="button" class="nba-coach-preset ncx-preset" style="--c:#a78bfa" onclick="nbaCoachPreset('positive edge')"><b class="ncx-t">Coach Edge</b><small>Biggest app-vs-book probability gap</small></button>
       <button type="button" class="nba-coach-preset ncx-preset" style="--c:#f59e0b" onclick="nbaCoachPreset('alternate_minus')"><b class="ncx-t">Best &#8722; Alternate Plays · Top 10</b><small>Safer alternate lines, minus odds</small></button>
       <button type="button" class="nba-coach-preset ncx-preset" style="--c:#4ade80" onclick="nbaCoachPreset('alternate_plus')"><b class="ncx-t">Best + Alternate Plays · Top 10</b><small>Plus-money alternate lines with edge</small></button>
@@ -4574,7 +4623,7 @@ NBA_COACH_HTML = r"""
     <input id="nbaCoachQuery" class="nba-coach-input" aria-label="Coach Edge search" placeholder="Ask the Coach, e.g. best rebounds overs tonight" onkeydown="if(event.key==='Enter')nbaCoachSearch()">
     <button class="nba-coach-send" onclick="nbaCoachSearch()">Analyze</button>
   </div>
-  <details class="ncx-how"><summary>&#9432; How it works</summary><div>Requires a loaded NBA board and genuine sportsbook prices. Safest Bets and Best - Alternate Plays rank qualifying sides by highest app probability; Coach Edge still requires positive probability edge. Best + Alternate Plays ranks positive-odds alternates by Coach Edge.</div></details>
+  <details class="ncx-how"><summary>&#9432; How it works</summary><div>Requires a loaded NBA board and genuine sportsbook prices. Safest Bets takes sides that hit the book line 80%+ against today’s opponent at this venue, then moves to the genuine line on the safer side (lower Over, higher Under) that hit 100% of those games, with odds no shorter than -1000. Best - Alternate Plays ranks qualifying sides by highest app probability; Coach Edge still requires positive probability edge. Best + Alternate Plays ranks positive-odds alternates by Coach Edge.</div></details>
   <div id="nbaCoachMsg" role="status" style="color:#fbbf24;font-size:.72rem;margin-top:10px"></div>
   <div id="nbaCoachResults" class="nba-coach-answer"></div>
   <div id="nbaCoachTrackPanel" style="display:none;margin-top:22px;padding-top:16px;border-top:1px solid #1e293b">
@@ -4644,7 +4693,7 @@ function nbaCoachPreset(q){
  };
  var input=document.getElementById('nbaCoachQuery');
  if(input)input.value=labels[q]||q;
- nbaCoachSearch(q==='alternate_minus'?'alternate_minus':(q==='alternate_plus'?'alternate_plus':'all'),labels[q]||q);
+ nbaCoachSearch(q==='alternate_minus'?'alternate_minus':(q==='alternate_plus'?'alternate_plus':(q==='safest'?'safest':'all')),labels[q]||q);
 }
 function _nbaPerfectParlayCommit(html){
  var msg=document.getElementById('nbaCoachMsg'),box=document.getElementById('nbaCoachResults');
@@ -4949,16 +4998,21 @@ async function nbaCoachSearch(forceMode,presetQuery){
       box.innerHTML=questionHtml+'<div style="margin-top:11px;color:#cbd5e1;font-size:.78rem;line-height:1.5">'+_nbaEsc(d.message||'No loaded NBA prop matched that request with a genuine sportsbook price and positive Coach Edge.')+'</div>';
       box.style.display='block';return;
     }
+    var isSafe=mode==='safest';
     var rows=__nbaCoachRows.map(function(x,i){
+      var e=Number(x.edge*100),moved=x.base_line!=null&&Number(x.base_line)!==Number(x.line);
+      var fromTxt=x.base_line!=null?'<br><span style="color:#64748b;font-size:.62rem">'+(moved?'from book '+_nbaEsc(String(x.base_line))+' · ':'book line · ')+_nbaEsc(String(x.base_hits))+'/'+_nbaEsc(String(x.games))+'</span>':'';
       return '<tr tabindex="0" onclick="nbaCoachDetail('+i+')" onkeydown="if(event.key===\'Enter\'||event.key===\' \'){event.preventDefault();nbaCoachDetail('+i+')}">'+
        '<td>'+(i+1)+'</td><td><b style="color:#fff;text-decoration:underline;text-decoration-style:dotted;text-underline-offset:2px">'+_nbaEsc(x.player)+'</b><br><span style="color:#64748b">'+_nbaEsc(x.team||'NBA')+(x.alternate?' · ALTERNATE':'')+'</span></td>'+
-       '<td>'+_nbaEsc(x.category)+'<br><b style="color:'+(x.side==='OVER'?'#4ade80':'#f87171')+'">'+_nbaEsc(x.side)+' '+_nbaEsc(String(x.line))+'</b></td>'+
+       '<td>'+_nbaEsc(x.category)+'<br><b style="color:'+(x.side==='OVER'?'#4ade80':'#f87171')+'">'+_nbaEsc(x.side)+' '+_nbaEsc(String(x.line))+'</b>'+fromTxt+'</td>'+
        '<td>'+_nbaEsc((Number(x.odds)>0?'+':'')+String(x.odds))+'<br><span style="color:#64748b;font-size:.6rem">'+_nbaEsc(x.source||'Sportsbook')+'</span></td>'+
-       '<td>'+Number(x.model_probability*100).toFixed(1)+'%</td><td>'+Number(x.implied_probability*100).toFixed(1)+'%</td>'+
-       '<td style="color:#4ade80!important;font-weight:700">+'+Number(x.edge*100).toFixed(2)+' pts</td></tr>';
+       '<td'+(isSafe&&Number(x.model_probability)>=.9995?' style="color:#fbbf24!important;font-weight:900"':'')+'>'+Number(x.model_probability*100).toFixed(1)+'%'+(isSafe&&x.games?'<br><span style="color:#64748b;font-size:.6rem">'+_nbaEsc(String(x.hits))+'/'+_nbaEsc(String(x.games))+'</span>':'')+'</td><td>'+Number(x.implied_probability*100).toFixed(1)+'%</td>'+
+       '<td style="color:'+(e>=0?'#4ade80':'#f87171')+'!important;font-weight:700">'+(e>=0?'+':'')+e.toFixed(2)+' pts</td></tr>';
     }).join('');
-    var summary='<div style="margin-top:11px;color:#e5e7eb;font-size:.76rem;line-height:1.5">'+_nbaEsc(d.message||('I checked the loaded NBA board and ranked '+__nbaCoachRows.length+' matching positive-edge plays.'))+' Probability edge is shown in percentage points, not traditional expected ROI.</div>';
-    box.innerHTML=questionHtml+summary+'<div class="nba-coach-table-wrap"><table class="nba-coach-table"><thead><tr><th>#</th><th>Player</th><th>Play</th><th>Odds</th><th>App Prob</th><th>Implied</th><th>Coach Edge</th></tr></thead><tbody>'+rows+'</tbody></table></div>';
+    var summary='<div style="margin-top:11px;color:#e5e7eb;font-size:.76rem;line-height:1.5">'+_nbaEsc(d.message||(isSafe
+      ?('I found '+__nbaCoachRows.length+' players who hit the book line 80%+ against today’s opponent at this venue, then moved each to the safer line with the best hit rate. Ranked by app hit rate.')
+      :('I checked the loaded NBA board and ranked '+__nbaCoachRows.length+' matching positive-edge plays.')))+(isSafe?' App % is the raw hit rate in those games, not a guarantee.':' Probability edge is shown in percentage points, not traditional expected ROI.')+'</div>';
+    box.innerHTML=questionHtml+summary+'<div class="nba-coach-table-wrap"><table class="nba-coach-table"><thead><tr><th>#</th><th>Player</th><th>Play</th><th>Odds</th><th>'+(isSafe?'App Hit Rate':'App Prob')+'</th><th>Implied</th><th>'+(isSafe?'Edge':'Coach Edge')+'</th></tr></thead><tbody>'+rows+'</tbody></table></div>';
     box.style.display='block';
    }catch(e){
      var text=e&&e.name==='AbortError'?'Coach Edge timed out while warming archived data.':(e.message||'Coach Edge unavailable.');
@@ -4990,26 +5044,68 @@ function nbaCoachDetail(i){
  ov.style.cssText='position:fixed;inset:0;background:rgba(2,6,23,.84);z-index:10020;display:flex;align-items:center;justify-content:center;padding:16px;backdrop-filter:blur(4px);animation:nbaCoachFadeIn .16s ease-out';
  ov.onclick=function(e){if(e.target===ov)_nbaCloseCoachDetail();};
  var sideColor=x.side==='OVER'?'#4ade80':'#f87171';
- var games=(x.game_log||[]).length?(x.game_log||[]).join(', '):'No qualifying games';
- var opponent=x.opponent_history||'No qualifying opponent history';
+ var lineNum=Number(x.line);
+ var _isHit=function(v){var n=Number(v);if(!isFinite(n)||!isFinite(lineNum))return null;return x.side==='UNDER'?n<lineNum:n>lineNum;};
+ var _chips=function(list){
+  if(!list.length)return '<span style="color:#64748b;font-size:.78rem">No qualifying games</span>';
+  return list.map(function(v){var h=_isHit(v),c=h==null?'#94a3b8':(h?'#4ade80':'#f87171');
+   return '<span style="min-width:30px;text-align:center;font-size:.8rem;font-weight:900;padding:4px 7px;border-radius:7px;color:'+c+';border:1px solid '+c+'55;background:'+c+'14">'+_nbaEsc(String(v))+'</span>';}).join('');
+ };
+ var games=(x.game_log||[]).filter(function(v){return v!=null&&v!=='';});
+ var oppList=Array.isArray(x.opponent_history)?x.opponent_history:String(x.opponent_history||'').split(',').map(function(v){return v.trim();}).filter(function(v){return v&&v!=='—';});
+ var gHits=games.filter(function(v){return _isHit(v)===true;}).length;
+ var oHits=oppList.filter(function(v){return _isHit(v)===true;}).length;
+ var board=null;
+ try{if(typeof allPicksData!=='undefined'&&allPicksData){var nm=String(x.player||'').toLowerCase();board=allPicksData.find(function(p){return String(p.player||'').toLowerCase()===nm;})||null;}}catch(e){}
+ var pid=board&&board.player_id;
+ var head=(board&&board.headshot)||(pid?'https://a.espncdn.com/i/headshots/nba/players/full/'+pid+'.png':'');
+ var team=String(x.team||(board&&board.team)||'');
+ var logo=team?'https://a.espncdn.com/i/teamlogos/nba/500/'+team.toLowerCase()+'.png':'';
+ var ini=String(x.player||'').split(/ +/).map(function(w){return w.charAt(0);}).join('').slice(0,2).toUpperCase();
+ var tip=board&&board.tipoff?new Date(board.tipoff).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',timeZoneName:'short'}):'';
+ var meta=_nbaEsc(team||'NBA')+(board&&board.opp?' vs '+_nbaEsc(board.opp):'')+(board&&board.location?' · '+_nbaEsc(String(board.location).toUpperCase()):'')+(tip?' · '+_nbaEsc(tip):'');
+ var model=Math.max(0,Math.min(1,Number(x.model_probability)||0)),implied=Math.max(0,Math.min(1,Number(x.implied_probability)||0));
+ var oddsTxt=(Number(x.odds)>0?'+':'')+String(x.odds);
+ var tileCss='background:#0f172a;border:1px solid #1e293b;border-radius:11px;padding:10px;text-align:center';
+ var kCss='color:#64748b;font-size:.6rem;font-weight:900;letter-spacing:.08em;text-transform:uppercase';
+ var secCss='margin-top:12px;background:#0b1220;border:1px solid #1e293b;border-radius:12px;padding:12px 14px';
  ov.innerHTML='<style>@keyframes nbaCoachFadeIn{from{opacity:0}to{opacity:1}}@keyframes nbaCoachSlideIn{from{opacity:0;transform:translateY(12px) scale(.985)}to{opacity:1;transform:translateY(0) scale(1)}}</style>'+
- '<div style="background:linear-gradient(160deg,#111827,#0b1120);border:1px solid #4338ca;border-radius:18px;max-width:620px;width:100%;max-height:90vh;overflow:auto;box-shadow:0 24px 80px rgba(0,0,0,.68);animation:nbaCoachSlideIn .18s ease-out">'+
- '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:14px;padding:18px 20px;border-bottom:1px solid #1e293b">'+
- '<div><div style="color:#fff;font-size:1.15rem;font-weight:900">'+_nbaEsc(x.player)+'</div>'+
- '<div style="color:#a5b4fc;font-size:.8rem;font-weight:800;margin-top:3px">'+_nbaEsc(x.team||'NBA')+' · '+_nbaEsc(x.category)+(x.alternate?' · GENUINE ALTERNATE':'')+'</div></div>'+
- '<button onclick="_nbaCloseCoachDetail()" aria-label="Close Coach details" style="background:#1e293b;border:0;color:#cbd5e1;width:34px;height:34px;border-radius:9px;cursor:pointer;font-size:1.1rem;flex-shrink:0">&#215;</button></div>'+
- '<div style="padding:18px 20px">'+
- '<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;background:rgba(67,56,202,.12);border:1px solid rgba(129,140,248,.3);border-radius:12px;padding:13px 15px">'+
- '<div><div style="color:'+sideColor+';font-size:1.05rem;font-weight:900">'+_nbaEsc(x.side)+' '+_nbaEsc(String(x.line))+' @ '+_nbaEsc(String(x.odds))+'</div><div style="color:#94a3b8;font-size:.72rem;margin-top:3px">'+_nbaEsc(x.source||'Sportsbook line')+'</div></div>'+
- '<div style="text-align:right"><div style="color:#4ade80;font-size:1.2rem;font-weight:900">+'+(x.edge*100).toFixed(1)+'%</div><div style="color:#94a3b8;font-size:.65rem">COACH EDGE</div></div></div>'+
+ '<div style="background:linear-gradient(170deg,#111827,#0a0f1c);border:1px solid #334155;border-top:3px solid '+sideColor+';border-radius:18px;max-width:600px;width:100%;max-height:90vh;overflow:auto;box-shadow:0 24px 80px rgba(0,0,0,.7);animation:nbaCoachSlideIn .18s ease-out">'+
+ '<div style="display:flex;align-items:center;gap:14px;padding:18px 18px 14px;background:radial-gradient(ellipse at top left,rgba(99,102,241,.18),transparent 65%)">'+
+  '<div style="position:relative;width:68px;height:68px;flex:0 0 auto;border-radius:50%;background:radial-gradient(circle at 50% 30%,#2a3445,#141922);border:2px solid '+sideColor+';display:flex;align-items:center;justify-content:center">'+
+   '<span style="font-weight:900;font-size:1.25rem;color:#94a3b8">'+_nbaEsc(ini)+'</span>'+
+   (head?'<img src="'+head+'" alt="" onerror="this.style.display=&#39;none&#39;" style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover;border-radius:50%">':'')+
+   (logo?'<img src="'+logo+'" alt="" onerror="this.style.display=&#39;none&#39;" style="position:absolute;right:-5px;bottom:-4px;width:27px;height:27px;background:#0b1220;border:1px solid #334155;border-radius:50%;padding:2px;object-fit:contain">':'')+
+  '</div>'+
+  '<div style="flex:1;min-width:0"><div style="color:#fff;font-size:1.22rem;font-weight:900;line-height:1.15;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+_nbaEsc(x.player)+'</div>'+
+   '<div style="color:#94a3b8;font-size:.78rem;font-weight:700;margin-top:4px">'+meta+'</div>'+
+   '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:7px"><span style="font-size:.66rem;font-weight:900;letter-spacing:.08em;text-transform:uppercase;color:#a5b4fc;border:1px solid rgba(165,180,252,.45);background:rgba(99,102,241,.12);padding:3px 8px;border-radius:6px">'+_nbaEsc(x.category)+'</span>'+
+   (x.alternate?'<span style="font-size:.66rem;font-weight:900;letter-spacing:.08em;color:#fbbf24;border:1px solid rgba(251,191,36,.45);background:rgba(251,191,36,.1);padding:3px 8px;border-radius:6px">GENUINE ALTERNATE</span>':'')+'</div></div>'+
+  '<button onclick="_nbaCloseCoachDetail()" aria-label="Close Coach details" style="align-self:flex-start;background:#1e293b;border:0;color:#cbd5e1;width:34px;height:34px;border-radius:9px;cursor:pointer;font-size:1.1rem;flex-shrink:0">&#215;</button></div>'+
+ '<div style="padding:4px 18px 18px">'+
+ '<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;border:1px solid '+sideColor+'55;background:linear-gradient(135deg,'+sideColor+'1c,rgba(255,255,255,.02));border-radius:14px;padding:13px 15px">'+
+  '<div><div style="color:#64748b;font-size:.6rem;font-weight:900;letter-spacing:.1em">THE PLAY</div>'+
+  '<div style="color:'+sideColor+';font-size:1.45rem;font-weight:900;line-height:1.15">'+_nbaEsc(x.side)+' '+_nbaEsc(String(x.line))+'</div>'+
+  '<div style="color:#94a3b8;font-size:.74rem;margin-top:2px"><b style="color:#fbbf24;font-family:monospace;font-size:.92rem">'+_nbaEsc(oddsTxt)+'</b> · '+_nbaEsc(x.source||'Sportsbook line')+'</div></div>'+
+  '<div style="text-align:center;background:'+(x.edge>=0?'rgba(74,222,128,.1)':'rgba(248,113,113,.1)')+';border:1px solid '+(x.edge>=0?'rgba(74,222,128,.35)':'rgba(248,113,113,.35)')+';border-radius:12px;padding:8px 12px"><div style="color:'+(x.edge>=0?'#4ade80':'#f87171')+';font-size:1.35rem;font-weight:900;line-height:1">'+(x.edge>=0?'+':'')+(x.edge*100).toFixed(1)+'%</div><div style="color:#94a3b8;font-size:.58rem;font-weight:900;letter-spacing:.1em;margin-top:3px">'+(x.safest?'EDGE':'COACH EDGE')+'</div></div></div>'+
+ (x.base_line!=null?'<div style="display:flex;align-items:center;gap:10px;margin-top:12px;background:#0b1220;border:1px solid #1e293b;border-radius:12px;padding:11px 14px">'+
+  '<div style="flex:1;text-align:center"><div style="color:#64748b;font-size:.6rem;font-weight:900;letter-spacing:.08em">BOOK LINE</div><div style="color:#cbd5e1;font-weight:900;font-size:1.05rem;margin-top:2px">'+_nbaEsc(x.side)+' '+_nbaEsc(String(x.base_line))+'</div><div style="color:#94a3b8;font-size:.72rem">'+_nbaEsc(String(x.base_hits))+'/'+_nbaEsc(String(x.games))+' · '+Math.round(Number(x.base_hit_rate)*100)+'%</div></div>'+
+  '<div style="color:'+sideColor+';font-size:1.3rem;font-weight:900">&#8594;</div>'+
+  '<div style="flex:1;text-align:center"><div style="color:#64748b;font-size:.6rem;font-weight:900;letter-spacing:.08em">SAFER LINE</div><div style="color:'+sideColor+';font-weight:900;font-size:1.05rem;margin-top:2px">'+_nbaEsc(x.side)+' '+_nbaEsc(String(x.line))+'</div><div style="color:'+(Number(x.model_probability)>=.9995?'#fbbf24':'#94a3b8')+';font-size:.72rem;font-weight:800">'+_nbaEsc(String(x.hits))+'/'+_nbaEsc(String(x.games))+' · '+Math.round(Number(x.model_probability)*100)+'%</div></div></div>':'')+
+ '<div style="'+secCss+'"><div style="display:flex;justify-content:space-between;font-size:.7rem;font-weight:800;margin-bottom:7px"><span style="color:#a5b4fc">'+(x.safest?'APP HIT RATE ':'MODEL ')+(model*100).toFixed(1)+'%</span><span style="color:#94a3b8">BOOK IMPLIED '+(implied*100).toFixed(1)+'%</span></div>'+
+  '<div style="position:relative;height:12px;background:#1e293b;border-radius:999px;overflow:visible">'+
+   '<div style="position:absolute;left:0;top:0;bottom:0;width:'+(model*100).toFixed(1)+'%;background:linear-gradient(90deg,#4338ca,#818cf8);border-radius:999px"></div>'+
+   '<div title="Book implied" style="position:absolute;top:-4px;bottom:-4px;left:calc('+(implied*100).toFixed(1)+'% - 1px);width:3px;background:#f8fafc;border-radius:2px;box-shadow:0 0 6px rgba(255,255,255,.6)"></div>'+
+  '</div><div style="color:#64748b;font-size:.66rem;margin-top:7px">White marker = sportsbook break-even. Bar past the marker = edge.</div></div>'+
  '<div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-top:12px">'+
- '<div style="background:#0f172a;border-radius:10px;padding:10px"><div style="color:#64748b;font-size:.62rem">MODEL</div><div style="color:#e2e8f0;font-weight:900">'+(x.model_probability*100).toFixed(1)+'%</div></div>'+
- '<div style="background:#0f172a;border-radius:10px;padding:10px"><div style="color:#64748b;font-size:.62rem">IMPLIED</div><div style="color:#e2e8f0;font-weight:900">'+(x.implied_probability*100).toFixed(1)+'%</div></div>'+
- '<div style="background:#0f172a;border-radius:10px;padding:10px"><div style="color:#64748b;font-size:.62rem">RECENT AVG</div><div style="color:#e2e8f0;font-weight:900">'+_nbaEsc(String(x.recent_average==null?'—':x.recent_average))+'</div></div></div>'+
- '<div style="margin-top:14px;background:#0f172a;border-radius:11px;padding:13px 15px"><div style="color:#c4b5fd;font-size:.7rem;font-weight:900;margin-bottom:6px">MATCHUP EVIDENCE</div>'+
- '<div style="color:#cbd5e1;font-size:.8rem;line-height:1.55"><b style="color:#94a3b8">Game log:</b> '+_nbaEsc(games)+'<br><b style="color:#94a3b8">Opponent history:</b> '+_nbaEsc(String(opponent))+'</div></div>'+
- '<div style="margin-top:10px;color:#cbd5e1;font-size:.78rem;line-height:1.55">'+_nbaEsc(x.selection_reason||'Positive Coach Edge based on opponent history and the exact sportsbook price.')+'</div>'+
- '<button onclick="_nbaCoachOpenBet()" style="width:100%;margin-top:16px;padding:11px 14px;background:#4338ca;color:#fff;border:0;border-radius:10px;font-weight:900;cursor:pointer">Open exact bet form</button>'+
+  '<div style="'+tileCss+'"><div style="'+kCss+'">Recent avg</div><div style="color:#e2e8f0;font-weight:900;font-size:1.05rem;margin-top:3px">'+_nbaEsc(String(x.recent_average==null?'—':x.recent_average))+'</div></div>'+
+  '<div style="'+tileCss+'"><div style="'+kCss+'">Log vs line</div><div style="color:#e2e8f0;font-weight:900;font-size:1.05rem;margin-top:3px">'+(games.length?gHits+'/'+games.length:'—')+'</div></div>'+
+  '<div style="'+tileCss+'"><div style="'+kCss+'">Vs opponent</div><div style="color:#e2e8f0;font-weight:900;font-size:1.05rem;margin-top:3px">'+(oppList.length?oHits+'/'+oppList.length:'—')+'</div></div></div>'+
+ '<div style="'+secCss+'"><div style="color:#c4b5fd;font-size:.66rem;font-weight:900;letter-spacing:.08em;margin-bottom:8px">GAME LOG · '+_nbaEsc(x.side)+' '+_nbaEsc(String(x.line))+'</div><div style="display:flex;flex-wrap:wrap;gap:5px">'+_chips(games)+'</div>'+
+  '<div style="color:#c4b5fd;font-size:.66rem;font-weight:900;letter-spacing:.08em;margin:12px 0 8px">OPPONENT HISTORY</div><div style="display:flex;flex-wrap:wrap;gap:5px">'+(oppList.length?_chips(oppList):'<span style="color:#64748b;font-size:.78rem">'+_nbaEsc(String(x.opponent_history||'No qualifying opponent history'))+'</span>')+'</div>'+
+  '<div style="color:#64748b;font-size:.64rem;margin-top:9px"><span style="color:#4ade80">Green</span> = would have cashed · <span style="color:#f87171">Red</span> = missed</div></div>'+
+ '<div style="margin-top:10px;color:#94a3b8;font-size:.76rem;line-height:1.5">'+_nbaEsc(x.selection_reason||'Positive Coach Edge based on opponent history and the exact sportsbook price.')+'</div>'+
+ '<button onclick="_nbaCoachOpenBet()" style="width:100%;margin-top:14px;padding:12px 14px;background:linear-gradient(90deg,#4338ca,#6366f1);color:#fff;border:0;border-radius:11px;font-weight:900;cursor:pointer;letter-spacing:.02em">Open exact bet form</button>'+
  '</div></div>';
  document.body.appendChild(ov);
  document.body.style.overflow='hidden';
@@ -5450,7 +5546,115 @@ def _nba_coach_source(row):
     return (row.get("bookmaker_label") or row.get("book")
             or row.get("bookmaker") or "Odds API (bookmaker not retained)")
 
+_NBA_SAFEST_MIN_RATE = 0.80
+
+def _nba_coach_safest_rows(standard, alternate, count=10):
+    """Safest Bets: 80%+ vs today's opponent at this venue, then the safer line.
+
+    A side qualifies when the player's H/A history against today's opponent
+    clears the posted book line at least 80% of the time. The play then moves
+    to the genuine sportsbook line on the safer side of that book line (lower
+    for OVER, higher for UNDER) that hits 100% of that same history; when no
+    priced line reaches 100%, the highest-hit-rate priced line is used. Only
+    real quoted prices no shorter than -1000 are eligible; no line or price is
+    ever synthesized.
+    """
+    def _american(o):
+        try:
+            v = float(str(o).replace("+", ""))
+        except Exception:
+            return None
+        return v if v >= -1000 and _nba_coach_implied(o) is not None else None
+    ladders = {}
+    for a in alternate or []:
+        stat = a.get("stat") or a.get("stat_key")
+        name = a.get("player") or a.get("name") or ""
+        if stat in STAT_CONFIG and name:
+            ladders.setdefault((_nn(name), stat), []).append(a)
+    out = []
+    for r in standard or []:
+        stat = r.get("stat") or r.get("stat_key")
+        if stat not in STAT_CONFIG:
+            continue
+        name = r.get("player") or r.get("name") or ""
+        try:
+            base_line = float(r.get("dk_line") if r.get("dk_line") is not None else r.get("line"))
+        except Exception:
+            continue
+        vals = []
+        for x in str(r.get("history") or "").split(","):
+            try: vals.append(float(x))
+            except Exception: pass
+        if not name or not vals:
+            continue
+        n = len(vals)
+        for side in ("OVER", "UNDER"):
+            hit = (lambda v, ln: v > ln) if side == "OVER" else (lambda v, ln: v < ln)
+            base_hits = sum(hit(v, base_line) for v in vals)
+            if base_hits / n < _NBA_SAFEST_MIN_RATE:
+                continue
+            cands = []
+            std_odds = r.get("dk_over_odds") if side == "OVER" else r.get("dk_under_odds")
+            if std_odds in (None, ""):
+                std_odds = r.get("over_odds") if side == "OVER" else r.get("under_odds")
+            if std_odds in (None, "") and side == "OVER":
+                std_odds = r.get("fd_odds") or r.get("odds")
+            if _american(std_odds) is not None:
+                cands.append((base_line, std_odds, _nba_coach_source(r), False))
+            for a in ladders.get((_nn(name), stat), []):
+                try:
+                    ln = float(a.get("line"))
+                except Exception:
+                    continue
+                if (side == "OVER" and not ln < base_line) or (side == "UNDER" and not ln > base_line):
+                    continue
+                o = a.get("over_odds") if side == "OVER" else a.get("under_odds")
+                if _american(o) is not None:
+                    cands.append((ln, o, _nba_coach_source(a), True))
+            if not cands:
+                continue
+            def _rank(c, hit=hit, side=side):
+                hits = sum(hit(v, c[0]) for v in vals)
+                closeness = c[0] if side == "OVER" else -c[0]
+                return (hits, closeness, _american(c[1]))
+            line, odds, source, is_alt = max(cands, key=_rank)
+            hits = sum(hit(v, line) for v in vals)
+            model = hits / n
+            implied = _nba_coach_implied(odds)
+            edge = model - implied
+            venue = str(r.get("side") or r.get("location") or "").lower()
+            opp = r.get("opp_name") or r.get("opp") or "opponent"
+            moved = (line != base_line)
+            out.append({"player": name, "team": r.get("team", ""), "stat": stat,
+                "category": STAT_CONFIG[stat]["label"], "side": side,
+                "line": line, "odds": odds,
+                "model_probability": round(model, 5), "implied_probability": implied,
+                "edge": round(edge, 5), "coach_edge": round(edge * 100, 2),
+                "book": source, "source": source, "alternate": bool(is_alt),
+                "base_line": base_line, "base_hits": base_hits, "hits": hits, "games": n,
+                "base_hit_rate": round(base_hits / n, 5), "safest": True,
+                "recent_average": round(sum(vals[-10:]) / len(vals[-10:]), 1),
+                "game_log": vals[-10:], "opponent_history": r.get("history") or "—",
+                "selection_reason": (
+                    f"{side} {base_line:g} hit {base_hits}/{n} vs {opp}"
+                    f"{(' ' + venue) if venue in ('home', 'away') else ''}; "
+                    + (f"safer line {side} {line:g} hits {hits}/{n} ({model*100:.0f}%) at {odds}."
+                       if moved else
+                       f"no safer priced line improved on it, so the book line is kept at {odds}."))})
+    out.sort(key=lambda x: (x["model_probability"], x["games"],
+                            _american(x["odds"]) or -1000), reverse=True)
+    unique_rows, seen_players = [], set()
+    for row in out:
+        key = re.sub(r"[^a-z0-9]+", "", str(row.get("player") or "").lower())
+        if not key or key in seen_players:
+            continue
+        seen_players.add(key)
+        unique_rows.append(row)
+    return unique_rows[:max(1, min(int(count or 10), 10))]
+
 def _nba_coach_rows(standard, alternate, query="", mode="all", count=100):
+    if mode == "safest":
+        return _nba_coach_safest_rows(standard, alternate, count)
     q = (query or "").lower().strip()
     cat_terms = {k.lower(): k for k in STAT_CONFIG}
     cat_terms.update({v["label"].lower(): k for k, v in STAT_CONFIG.items()})
@@ -5549,7 +5753,7 @@ async def nba_coach_edge(request: Request):
     body = await request.json()
     ds = str(body.get("date") or date.today().isoformat())
     mode = str(body.get("mode") or "all").lower()
-    if mode not in ("all", "standard", "alternate", "alternate_minus", "alternate_plus"): mode = "all"
+    if mode not in ("all", "standard", "alternate", "alternate_minus", "alternate_plus", "safest"): mode = "all"
     query_text = str(body.get("query", ""))
     if mode == "all" and re.search(r"(?:best\s*[-–]\s*alternate|minus|favorite|negative\s+odds)", query_text, re.I):
         mode = "alternate_minus"
@@ -5592,7 +5796,7 @@ async def nba_coach_edge(request: Request):
                 "results": saved_rows,
                 "source": "NBA durable historical alternate Coach snapshot",
             }
-    if (is_alt_mode and ds < date.today().isoformat()
+    if ((is_alt_mode or mode == "safest") and ds < date.today().isoformat()
             and not (isinstance(existing_alternate, dict)
                      and existing_alternate.get("historical_alternates"))):
         games_for_alt = standard.get("games") or []
@@ -5633,7 +5837,9 @@ async def nba_coach_edge(request: Request):
     rows = _nba_coach_rows(standard_rows, alternate, body.get("query",""), mode, requested_count)
     if not rows:
         response = {"date":ds,"results":[],
-                    "message":"No eligible positive Coach Edge results for the requested intent."}
+                    "message":("No player has hit 80%+ against today's opponent at this venue with a genuine sportsbook price."
+                               if mode == "safest" else
+                               "No eligible positive Coach Edge results for the requested intent.")}
     else:
         response = {
             "date":ds,
@@ -5642,7 +5848,7 @@ async def nba_coach_edge(request: Request):
                       else "NBA loaded standard data"),
         }
     if (alternate_result and not alternate_result.get("ok", True)
-            and mode in ("all", "standard")):
+            and mode in ("all", "standard", "safest")):
         response["alternate_error"] = alternate_result.get(
             "error", "Archived alternate lines are unavailable for this date.")
     return response
@@ -5656,7 +5862,7 @@ _NBA_COACH_SNAP_CAT = "__coach_picks__"
 _NBA_COACH_LEDGER_CAT = "__coach_ledger__"
 _NBA_COACH_DETAIL_CAT = "__coach_detail__"
 _NBA_COACH_PRESETS = (
-    ("Safest bets", "safest", "all"),
+    ("Safest bets", "safest", "safest"),
     ("Positive Coach Edge", "positive edge", "all"),
     ("Points OVER", "points over", "standard"),
     ("Points UNDER", "points under", "standard"),
@@ -5730,7 +5936,7 @@ def _nba_coach_capture_pregame(date_str: str, result: dict):
     alternate = alt_doc.get("props") if isinstance(alt_doc, dict) else []
     presets = {}
     for label, query, mode in _NBA_COACH_PRESETS:
-        source_mode = (mode if mode in ("alternate", "alternate_minus", "alternate_plus")
+        source_mode = (mode if mode in ("alternate", "alternate_minus", "alternate_plus", "safest")
                        else ("standard" if mode == "standard" else "all"))
         got = _nba_coach_rows(standard, alternate, query, source_mode, 200)
         # Preserve exact server-owned side/line/price, and never record invalid
@@ -5832,14 +6038,27 @@ def _nba_historical_coach_rows(date_str, alternate_track_rows=None):
             "side":"eq.ALL","select":"detail","limit":"1"}) or []
         source = saved[0].get("detail") or [] if saved else []
     candidates = []
+    safest_candidates = []
     for row in source:
         try:
             implied = _nba_coach_implied(row.get("odds"))
             model = float(row.get("pct")) / 100.0
             edge = model - implied
+            american = float(str(row.get("odds")).replace("+", ""))
         except Exception:
             continue
-        if implied is None or edge <= 0:
+        if implied is None:
+            continue
+        # Saved replays keep only the posted line's H/A record, so Safest can
+        # apply its 80% rule there but cannot re-test lower/higher lines.
+        if model >= _NBA_SAFEST_MIN_RATE and american >= -1000:
+            safest_candidates.append({**row, "name":row.get("player",""),
+                "model_probability":model, "implied_probability":implied,
+                "coach_edge":edge * 100, "edge":edge,
+                "category":row.get("stat_label") or row.get("stat",""),
+                "result":row.get("result") or "PENDING",
+                "profit":row.get("profit")})
+        if edge <= 0:
             continue
         candidates.append({**row, "name":row.get("player",""),
             "model_probability":model, "implied_probability":implied,
@@ -5859,7 +6078,7 @@ def _nba_historical_coach_rows(date_str, alternate_track_rows=None):
             if len(grouped[label]) >= 10:
                 break
     add("Positive Coach Edge", candidates, lambda r:r["edge"])
-    add("Safest bets", candidates, lambda r:r["model_probability"])
+    add("Safest bets", safest_candidates, lambda r:(r["model_probability"], int(r.get("games") or 0)))
     for label, _, _ in _NBA_COACH_PRESETS:
         if label in ("Positive Coach Edge", "Safest bets",
                      "Best - Alternate Plays", "Best + Alternate Plays"):
