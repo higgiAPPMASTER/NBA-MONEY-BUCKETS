@@ -133,6 +133,18 @@ ODDS_ALTERNATE_MARKET_MAP = {
 MIN_GAMES     = 1
 MIN_MINUTES   = 10.0
 ESPN_SEASONS  = [2026, 2025, 2024, 2023, 2022, 2021, 2020]   # ESPN uses season END year — 7 seasons for full career H/A history
+
+
+def _nba_current_espn_season(as_of=None) -> int:
+    """ESPN labels an NBA season by its END year (Oct 2026 -> 2027)."""
+    d = as_of or date.today()
+    return d.year + 1 if d.month >= 10 else d.year
+
+
+# The in-progress season must always be included, or this season's games never
+# reach any recent-form or matchup history once the season has started.
+if _nba_current_espn_season() not in ESPN_SEASONS:
+    ESPN_SEASONS = [_nba_current_espn_season()] + ESPN_SEASONS
 TOP_N         = 12
 
 # ─── Cache ────────────────────────────────────────────────────────────────────
@@ -144,6 +156,14 @@ _CACHE_DIR.mkdir(parents=True, exist_ok=True)
 _CACHE_TTL = 6 * 3600  # 6 hours
 _NBA_ALT_WARM_INFLIGHT: Dict[str, asyncio.Task] = {}
 _NBA_GAMELOG_CACHE: Dict[tuple, List[Dict]] = {}
+# Completed seasons never change, so their parsed logs are also kept on disk:
+# a woken/restarted instance reuses them instead of re-downloading ~1 MB per
+# player-season. The in-progress season stays memory-only with a short TTL.
+_NBA_GAMELOG_DIR = _CACHE_DIR / "nba_gamelogs"
+_NBA_GAMELOG_DIR.mkdir(parents=True, exist_ok=True)
+_NBA_GAMELOG_CUR_TTL = 600
+_NBA_GAMELOG_CUR_TS: Dict[tuple, float] = {}
+_NBA_LOG_FETCH_TASKS: Dict[str, asyncio.Task] = {}
 _NBA_HIST_INFLIGHT: Dict[str, asyncio.Task] = {}
 _NBA_PLAYER_IDENTITY_CACHE: Dict[str, dict] = {}
 
@@ -907,9 +927,21 @@ async def get_player_gamelogs_espn(player_id: str, season: int,
                                     client: httpx.AsyncClient = None) -> List[Dict]:
     """Fetch one player's game logs for one season from ESPN."""
     cache_key = (str(player_id), int(season))
+    completed_season = int(season) < _nba_current_espn_season()
     cached = _NBA_GAMELOG_CACHE.get(cache_key)
-    if cached is not None:
+    if cached is not None and (completed_season or
+            time.time() - _NBA_GAMELOG_CUR_TS.get(cache_key, 0) < _NBA_GAMELOG_CUR_TTL):
         return cached
+    disk_path = _NBA_GAMELOG_DIR / f"{re.sub(r'[^0-9A-Za-z]', '', str(player_id))}_{int(season)}.json"
+    if completed_season:
+        try:
+            if disk_path.exists():
+                games = json.loads(disk_path.read_text(encoding="utf-8"))
+                if isinstance(games, list):
+                    _NBA_GAMELOG_CACHE[cache_key] = games
+                    return games
+        except Exception:
+            pass
     url = (f"https://site.web.api.espn.com/apis/common/v3/sports/"
            f"basketball/nba/athletes/{player_id}/gamelog")
     async with sem:
@@ -993,6 +1025,15 @@ async def get_player_gamelogs_espn(player_id: str, season: int,
             'STL':         _nba_extract_stat(stats, 'STL', labels) or 0,
         })
     _NBA_GAMELOG_CACHE[cache_key] = games
+    if completed_season:
+        try:
+            tmp = disk_path.with_name(disk_path.name + f".{os.getpid()}.tmp")
+            tmp.write_text(json.dumps(games), encoding="utf-8")
+            os.replace(tmp, disk_path)
+        except Exception as exc:
+            print(f"[nba_gamelog] disk cache write failed: {exc}")
+    else:
+        _NBA_GAMELOG_CUR_TS[cache_key] = time.time()
     return games
 
 # ─── Analysis ─────────────────────────────────────────────────────────────────
@@ -2119,6 +2160,14 @@ async def run_analysis(selected_date: str = None, force: bool = False) -> Dict:
 
     # Fetch game logs (all players, 3 seasons)
     all_player_ids = list({p['id'] for players in rosters.values() for p in players})
+    if not historical_replay:
+        # Live boards only analyse players with a sportsbook line posted today
+        # (every live pick/prop loop skips unlined players), so fetching
+        # history for the rest of the roster only slowed the run into its
+        # deadline. Same picks, far fewer ESPN downloads.
+        all_player_ids = list({
+            p['id'] for players in rosters.values() for p in players
+            if any((_nn(p['name']), s) in odds_lookup for s in STAT_CONFIG)})
     log.append(f"Fetching game logs for {len(all_player_ids)} players x {len(ESPN_SEASONS)} seasons...")
     # A full slate can exceed 200 player-season requests. Reusing one HTTP/2
     # connection pool avoids a fresh TLS handshake for every request, while the
@@ -2132,19 +2181,31 @@ async def run_analysis(selected_date: str = None, force: bool = False) -> Dict:
         all_logs = [g for res in season_results if isinstance(res, list) for g in res]
         return pid, all_logs
 
-    try:
+    async def fetch_all_logs():
         limits = httpx.Limits(max_connections=40, max_keepalive_connections=36)
         async with httpx.AsyncClient(timeout=8, limits=limits) as log_client:
-            log_results = await asyncio.wait_for(
-                asyncio.gather(*[
-                    fetch_player_logs(pid, log_client) for pid in all_player_ids
-                ]), timeout=40)
+            return await asyncio.gather(*[
+                fetch_player_logs(pid, log_client) for pid in all_player_ids])
+
+    # The download task is shielded: if the deadline passes it keeps running in
+    # the background and fills the caches, so the next Get Picks completes.
+    fetch_key = f"{today_str}|{historical_replay}|{len(all_player_ids)}"
+    fetch_task = _NBA_LOG_FETCH_TASKS.get(fetch_key)
+    if fetch_task is None or (fetch_task.done() and (fetch_task.cancelled() or fetch_task.exception())):
+        fetch_task = asyncio.create_task(fetch_all_logs())
+        _NBA_LOG_FETCH_TASKS[fetch_key] = fetch_task
+        fetch_task.add_done_callback(
+            lambda t, k=fetch_key: _NBA_LOG_FETCH_TASKS.pop(k, None)
+            if _NBA_LOG_FETCH_TASKS.get(k) is t else None)
+    try:
+        log_results = await asyncio.wait_for(asyncio.shield(fetch_task), timeout=90)
     except asyncio.TimeoutError:
         return {
             'date': today_str, 'picks': [], 'all_picks': [], 'games': games,
             'historical_replay': historical_replay, 'total': 0,
+            'run_incomplete': True,
             'log': [
-                'Error: ESPN player history did not finish within 40 seconds. '
+                'Error: ESPN player history did not finish within 90 seconds; it keeps loading in the background. '
                 'Please run this date again; completed player-season responses '
                 'were cached for the retry.'
             ],
@@ -3689,6 +3750,10 @@ async function runPicks(force=false){
     var _topSideChooser=document.getElementById('topSideChooser');if(_topSideChooser)_topSideChooser.style.display='none';
     document.querySelectorAll('#filterBar .filter-btn[data-top-side]').forEach(b=>b.classList.toggle('active',b.dataset.topSide==='ALL'));
     const log=data.log||[];
+    if(data.run_incomplete){
+      document.getElementById('content').innerHTML=`<div class="msg-card"><span class="ico"></span><h2>Run Didn&#39;t Finish</h2><p>${log[log.length-1]||'Player history did not finish loading.'} Press Get Picks again in a minute.</p></div>`;
+      return;
+    }
     if(!top10.length && !allPicksData.length){
       document.getElementById('content').innerHTML=`<div class="msg-card"><span class="ico"></span><h2>${data.historical_replay?'Historical Replay Unavailable':'No Qualifying Picks'}</h2><p>${data.historical_replay?(log[log.length-1]||'No complete archived player-prop slate was available.'):'No 70%+ picks for today matchups; sportsbook lines may not be posted yet.'}</p></div><div class="log-box">${log.join('<br>')}</div>`;
       renderPropsSection(data.props_picks, data.props_nopick);
