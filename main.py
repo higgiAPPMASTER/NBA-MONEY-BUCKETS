@@ -2868,7 +2868,9 @@ footer{text-align:center;padding:32px 24px;color:#4b5563;font-size:.78rem;border
     <button type="button" role="menuitem" class="nba-menu-item" style="--c:#4338ca" onclick="_nbaNavGo(function(){document.getElementById('nba-track-section').scrollIntoView({behavior:'smooth',block:'start'});})">&#128202; Track Record</button>
     <button type="button" role="menuitem" class="nba-menu-item" style="--c:#0e7490" onclick="_nbaNavGo(openNbaOverflowRecord)">&#11088; Overflow Record</button>
     <button type="button" role="menuitem" class="nba-menu-item" style="--c:#7c3aed" onclick="_nbaNavGo(function(){openNbaCoachTrack();})">&#129504; Coach Track Record</button>
+    <button type="button" role="menuitem" class="nba-menu-item" style="--c:#8b5cf6" onclick="_nbaNavGo(function(){openNbaGpRecord();})">&#128302; Game Predictor Record</button>
     <div class="nba-menu-head tools" role="presentation">&#128736;&#65039; Tools</div>
+    <button type="button" role="menuitem" class="nba-menu-item" style="--c:#8b5cf6" onclick="_nbaNavGo(function(){openNbaGamePredictor();})">&#128302; Game Predictor</button>
     <button type="button" role="menuitem" class="nba-menu-item admin-only" style="--c:#d97706" onclick="_nbaNavGo(function(){var c=document.getElementById('parlayCard');if(c)c.scrollIntoView({behavior:'smooth',block:'center'});})">&#127920; Auto Parlay Builder</button>
     <button type="button" role="menuitem" class="nba-menu-item" style="--c:#a855f7" onclick="_nbaNavGo(function(){showNbaPerfectParlayBuilder();})">&#10024; Perfect Parlay</button>
     <button type="button" role="menuitem" class="nba-menu-item admin-only" style="--c:#0e7490" onclick="_nbaNavGo(function(){openNbaMyBets();})">&#128176; My Bets</button>
@@ -5394,6 +5396,332 @@ document.addEventListener('DOMContentLoaded',function(){var s=document.getElemen
 """
 
 # ─── Bet Log Routes ───────────────────────────────────────────────────────────
+NBA_GP_HTML = r"""
+<style>
+.ngp-shell{max-width:1240px;margin:0 auto 22px;border:1px solid rgba(167,139,250,.45)!important;background:radial-gradient(circle at 95% 0%,rgba(124,58,237,.18),transparent 40%),linear-gradient(145deg,#120f22,#0a0a14)!important;border-radius:18px;padding:18px}
+.ngp-head{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:14px;align-items:center}
+.ngp-badge{width:50px;height:50px;border-radius:14px;display:grid;place-items:center;font-size:1.55rem;background:radial-gradient(circle at 30% 25%,rgba(167,139,250,.4),rgba(56,189,248,.2));border:1px solid rgba(196,181,253,.45)}
+.ngp-kicker{color:#a78bfa;font-size:.62rem;font-weight:900;letter-spacing:.12em;text-transform:uppercase}
+.ngp-title{font-family:'Playfair Display',serif;color:#fff;font-size:1.55rem;margin:2px 0 0;line-height:1.15}
+.ngp-sub{color:#94a3b8;font-size:.74rem;margin-top:3px}
+.ngp-side{display:flex;gap:7px;flex-wrap:wrap;justify-content:flex-end}
+.ngp-btn{background:#15122a;color:#c4b5fd;border:1px solid rgba(167,139,250,.45);border-radius:10px;padding:8px 12px;font-size:.72rem;font-weight:900;cursor:pointer;white-space:nowrap}
+.ngp-btn:hover{background:rgba(167,139,250,.14)}
+.ngp-msg{color:#fbbf24;font-size:.74rem;margin:10px 0 0}
+.ngp-rec-strip{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px}
+.ngp-rec-box{flex:1;min-width:150px;background:#0d0b1a;border:1px solid #262046;border-radius:12px;padding:9px 12px;cursor:pointer}
+.ngp-rec-box .k{color:#8b86b5;font-size:.58rem;font-weight:900;letter-spacing:.1em;text-transform:uppercase}
+.ngp-rec-box .v{color:#fff;font-size:1.05rem;font-weight:900;margin-top:2px}
+.ngp-rec-box .s{color:#94a3b8;font-size:.66rem;margin-top:1px}
+.ngp-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(360px,1fr));gap:16px;margin-top:16px}
+@media(max-width:760px){.ngp-grid{grid-template-columns:1fr}.ngp-head{grid-template-columns:auto 1fr}.ngp-side{grid-column:1/-1;justify-content:flex-start}}
+.ngp-card{background:linear-gradient(180deg,#14121f,#0e0d16);border:1px solid #29243f;border-radius:18px;padding:16px;overflow:hidden;position:relative}
+.ngp-card.final{border-color:#334155}
+.ngp-top{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.ngp-mu{display:flex;align-items:center;gap:8px;font-weight:900;color:#fff;font-size:1rem}
+.ngp-mu img{width:30px;height:30px;object-fit:contain}
+.ngp-at{color:#4b5563;font-weight:500}
+.ngp-time{color:#94a3b8;font-size:.7rem;text-align:right}
+.ngp-tags{display:flex;gap:5px;flex-wrap:wrap;margin-top:8px}
+.ngp-tag{border-radius:999px;padding:2px 8px;font-size:.58rem;font-weight:900;letter-spacing:.06em;border:1px solid #334155;color:#cbd5e1}
+.ngp-tag.saved{border-color:rgba(74,222,128,.45);color:#86efac;background:rgba(74,222,128,.08)}
+.ngp-tag.retro{border-color:rgba(251,191,36,.45);color:#fcd34d;background:rgba(251,191,36,.08)}
+.ngp-tag.live{border-color:rgba(248,113,113,.5);color:#fca5a5;background:rgba(248,113,113,.1)}
+.ngp-hero{display:flex;align-items:center;gap:12px;margin-top:12px;padding:12px 14px;border-radius:14px;background:linear-gradient(135deg,rgba(167,139,250,.16),rgba(167,139,250,.04));border:1px solid rgba(167,139,250,.35)}
+.ngp-hero img{width:44px;height:44px;object-fit:contain}
+.ngp-hero .lbl{color:#a5a0d0;font-size:.6rem;font-weight:900;letter-spacing:.1em}
+.ngp-hero .team{color:#fff;font-size:1.08rem;font-weight:900;line-height:1.15}
+.ngp-hero .score{color:#c4b5fd;font-size:.76rem;font-weight:800;margin-top:2px}
+.ngp-hero .prob{margin-left:auto;text-align:center}
+.ngp-hero .prob b{display:block;color:#fff;font-size:1.45rem;font-weight:900;line-height:1}
+.ngp-hero .prob small{color:#a5a0d0;font-size:.56rem;font-weight:900;letter-spacing:.1em}
+.ngp-bar-l{display:flex;justify-content:space-between;font-size:.68rem;font-weight:900;margin:12px 0 4px}
+.ngp-bar{height:9px;border-radius:999px;background:#1e1b31;overflow:hidden;display:flex}
+.ngp-bar .a{background:linear-gradient(90deg,#3b82f6,#60a5fa)}
+.ngp-bar .h{background:linear-gradient(90deg,#f59e0b,#fbbf24)}
+.ngp-boxes{display:grid;grid-template-columns:repeat(3,1fr);gap:7px;margin-top:10px}
+.ngp-box{background:#0b0a13;border:1px solid #221e36;border-radius:11px;padding:8px 6px;text-align:center}
+.ngp-box .k{color:#7c7799;font-size:.55rem;font-weight:900;letter-spacing:.08em;text-transform:uppercase}
+.ngp-box .v{color:#fff;font-size:.95rem;font-weight:900;margin-top:2px}
+.ngp-box .s{color:#8b93a7;font-size:.6rem;margin-top:1px}
+.ngp-box.over{border-color:rgba(74,222,128,.45);background:rgba(74,222,128,.07)}.ngp-box.over .v{color:#4ade80}
+.ngp-box.under{border-color:rgba(248,113,113,.45);background:rgba(248,113,113,.07)}.ngp-box.under .v{color:#f87171}
+.ngp-box.pick{border-color:rgba(167,139,250,.5);background:rgba(167,139,250,.08)}.ngp-box.pick .v{color:#c4b5fd}
+.ngp-box.lean .v{color:#94a3b8}
+.ngp-ml{display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;color:#a1a1aa;font-size:.68rem;margin-top:9px}
+.ngp-ml b{color:#e5e7eb}
+.ngp-res{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}
+.ngp-chip{border-radius:8px;padding:4px 8px;font-size:.64rem;font-weight:900}
+.ngp-chip.WIN{background:rgba(74,222,128,.14);color:#4ade80;border:1px solid rgba(74,222,128,.4)}
+.ngp-chip.LOSS{background:rgba(248,113,113,.12);color:#f87171;border:1px solid rgba(248,113,113,.4)}
+.ngp-chip.PUSH{background:rgba(250,204,21,.1);color:#facc15;border:1px solid rgba(250,204,21,.4)}
+.ngp-sec{border-top:1px solid #221e36;margin-top:12px;padding-top:10px}
+.ngp-sec>summary{cursor:pointer;color:#c4b5fd;font-size:.74rem;font-weight:900;list-style:none}
+.ngp-sec>summary::-webkit-details-marker{display:none}
+.ngp-sec>summary:before{content:"\25B8  ";color:#7c7799}
+.ngp-sec[open]>summary:before{content:"\25BE  "}
+.ngp-tbl{width:100%;border-collapse:collapse;font-size:.66rem;margin-top:8px}
+.ngp-tbl th{color:#7c7799;font-weight:900;text-align:left;padding:5px 4px;font-size:.56rem;text-transform:uppercase;letter-spacing:.06em;border-bottom:1px solid #221e36}
+.ngp-tbl td{padding:6px 4px;border-bottom:1px solid #1a1729;color:#e2e8f0;vertical-align:top}
+.ngp-tbl td.n{color:#8b93a7;font-size:.6rem}
+.ngp-tbl tr.same td{background:rgba(245,158,11,.1);color:#fde68a}
+.ngp-tbl tr.today td{background:linear-gradient(90deg,rgba(167,139,250,.28),rgba(167,139,250,.1));color:#fff;font-weight:900;border-top:1px solid rgba(167,139,250,.6);border-bottom:1px solid rgba(167,139,250,.6)}
+.ngp-pos{color:#4ade80!important;font-weight:800}.ngp-neg{color:#f87171!important;font-weight:800}.ngp-zero{color:#64748b!important}
+.ngp-teams{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px}
+.ngp-team{background:#0b0a13;border:1px solid #221e36;border-radius:12px;padding:10px}
+.ngp-thdr{display:flex;align-items:center;gap:6px;margin-bottom:6px}
+.ngp-thdr img{width:22px;height:22px;object-fit:contain}
+.ngp-thdr b{color:#fff;font-size:.8rem}
+.ngp-ha{margin-left:auto;font-size:.54rem;font-weight:900;border-radius:999px;padding:1px 7px}
+.ngp-ha.h{background:rgba(245,158,11,.15);color:#fbbf24}.ngp-ha.a{background:rgba(96,165,250,.15);color:#93c5fd}
+.ngp-sr{display:flex;justify-content:space-between;gap:6px;font-size:.64rem;padding:3px 0;border-bottom:1px dashed #1c1930}
+.ngp-sr span:first-child{color:#8b93a7}.ngp-sr span:last-child{color:#e5e7eb;font-weight:800;text-align:right}
+.ngp-l10{display:flex;gap:3px;flex-wrap:wrap;margin-top:7px}
+.ngp-l10 span{width:20px;height:20px;border-radius:6px;display:grid;place-items:center;font-size:.58rem;font-weight:900;cursor:default}
+.ngp-l10 .W{background:rgba(74,222,128,.16);color:#4ade80;border:1px solid rgba(74,222,128,.35)}
+.ngp-l10 .L{background:rgba(248,113,113,.13);color:#f87171;border:1px solid rgba(248,113,113,.35)}
+.ngp-badge2{display:inline-block;font-size:.55rem;font-weight:900;border-radius:6px;padding:1px 6px;margin:5px 4px 0 0}
+.ngp-badge2.b2b{background:rgba(248,113,113,.15);color:#fca5a5}.ngp-badge2.stk{background:#1e1b31;color:#c4b5fd}.ngp-badge2.rest{background:rgba(56,189,248,.12);color:#7dd3fc}
+.ngp-inj{font-size:.64rem;padding:4px 0;border-bottom:1px dashed #1c1930;display:flex;justify-content:space-between;gap:6px}
+.ngp-inj .st{font-weight:900}.ngp-inj .st.out{color:#f87171}.ngp-inj .st.q{color:#fbbf24}.ngp-inj .st.p{color:#94a3b8}
+.ngp-inj .imp{color:#f87171;font-weight:900;white-space:nowrap}
+.ngp-crewtag{display:inline-block;border-radius:999px;padding:2px 9px;font-size:.6rem;font-weight:900;margin-left:6px}
+.ngp-crewtag.hi{background:rgba(248,113,113,.14);color:#fca5a5}.ngp-crewtag.lo{background:rgba(74,222,128,.12);color:#86efac}.ngp-crewtag.nt{background:#1e1b31;color:#c4b5fd}
+.ngp-note{color:#8b93a7;font-size:.62rem;margin-top:7px;line-height:1.45}
+.ngp-how{margin-top:14px;color:#94a3b8;font-size:.72rem}
+.ngp-how summary{cursor:pointer;color:#a78bfa;font-weight:900}
+.ngp-how div{margin-top:8px;line-height:1.55}
+.ngp-recpanel{margin-top:16px;border-top:1px solid #262046;padding-top:14px}
+.ngp-day{background:#0d0b1a;border:1px solid #221e36;border-radius:12px;margin-top:8px}
+.ngp-day>summary{cursor:pointer;padding:10px 12px;display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;font-size:.72rem;color:#e5e7eb;font-weight:800}
+.ngp-day .body{padding:0 12px 10px;overflow-x:auto}
+</style>
+<div class="card ngp-shell" id="nbaGpSection">
+  <div class="ngp-head">
+    <div class="ngp-badge">&#128302;</div>
+    <div><div class="ngp-kicker">Team model &middot; every game</div><h2 class="ngp-title">Game Predictor</h2>
+      <div class="ngp-sub">Winner, spread and total: home/road points for &amp; against, last 10, rest, head-to-head, injuries and referee crews.</div></div>
+    <div class="ngp-side"><button type="button" class="ngp-btn" onclick="nbaGpLoad(true)">&#8635; Refresh</button><button type="button" class="ngp-btn" onclick="openNbaGpRecord()">&#128200; Predictor Record</button></div>
+  </div>
+  <div id="nbaGpRecordStrip" class="ngp-rec-strip"></div>
+  <div id="nbaGpMsg" class="ngp-msg" role="status"></div>
+  <div id="nbaGpGrid" class="ngp-grid"></div>
+  <div id="nbaGpRecordPanel" class="ngp-recpanel" style="display:none"></div>
+  <details class="ngp-how"><summary>&#9432; How the model works</summary><div>
+    <b>Baseline:</b> the home team's home points for/against and the away team's road points for/against. Last season anchors the numbers early on; this season takes over as games are played.<br>
+    <b>Last 10:</b> each team's last 10 scoring and defense versus its season level (capped at &plusmn;3.5 pts).<br>
+    <b>Rest:</b> back-to-backs and 3-games-in-4-nights cost points; the rested opponent gains a little.<br>
+    <b>Head-to-head:</b> the last 10 meetings, with games in today's building weighted double (capped at &plusmn;4 on the total, &plusmn;3 on the margin).<br>
+    <b>Injuries:</b> Out/Doubtful/Questionable rotation players remove part of their scoring, weighted by how likely they are to sit (max 9 pts per team).<br>
+    <b>Referees:</b> the posted crew's points, fouls and free throws per game versus league average (two seasons, shrunk for small samples) adjust the total by up to &plusmn;3.5 and the home margin by up to &plusmn;1.<br>
+    <b>Picks:</b> win % comes from the projected margin. ATS picks need a 1.5-point edge over the spread; O/U picks need a 2-point edge over the total. Book lines are ESPN's posted odds; prices shorter than -1000 are never shown.<br>
+    <b>Record:</b> the last forecast before each tip-off is saved and graded after the final. Started games always show the saved pregame forecast. Kept separate from every player-prop record.
+  </div></details>
+</div>
+<script>
+var __nbaGp={data:null,loading:false,date:''};
+function _ngpEsc(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
+function _ngpQS(){var t=localStorage.getItem('__mpa_token')||'',a=localStorage.getItem('__mpa_admin')||'';return '_tok='+encodeURIComponent(t)+(a?'&admin='+encodeURIComponent(a):'');}
+function _ngpDate(){var dp=document.getElementById('datePicker');return (dp&&dp.value)||'__TODAY__';}
+function _ngpOdds(o){if(o==null||o==='')return '';var n=Number(o);if(!isFinite(n))return '';return (n>0?'+':'')+Math.round(n);}
+function _ngpSigned(v,dec){if(v==null||!isFinite(Number(v)))return '—';var n=Number(v);var t=n.toFixed(dec==null?1:dec);return (n>0?'+':'')+t;}
+function _ngpCls(v){var n=Number(v);return !isFinite(n)||Math.abs(n)<0.05?'ngp-zero':(n>0?'ngp-pos':'ngp-neg');}
+function _ngpTime(g){try{return new Date(g.tip).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',timeZoneName:'short'});}catch(e){return '';}}
+function _ngpSpread(v){if(v==null)return '—';var n=Number(v);return n===0?'PK':(n>0?'+':'')+n;}
+function _ngpRec(b){if(!b)return '—';return b.wins+'-'+b.losses+(b.pushes?'-'+b.pushes:'');}
+function _ngpMoney(v){if(v==null)return '$0';var n=Number(v);return (n<0?'-$':'+$')+Math.abs(n).toFixed(0);}
+function nbaGpLoad(force){
+  var ds=_ngpDate(),grid=document.getElementById('nbaGpGrid'),msg=document.getElementById('nbaGpMsg');
+  if(!grid)return;
+  if(__nbaGp.loading)return;
+  if(!force&&__nbaGp.data&&__nbaGp.date===ds)return;
+  __nbaGp.loading=true;__nbaGp.date=ds;
+  msg.textContent='Loading Game Predictor for '+ds+'… first load of the day can take up to a minute.';
+  if(!__nbaGp.data)grid.innerHTML='';
+  fetch('/api/nba/game-predictor?date_str='+encodeURIComponent(ds)+'&'+_ngpQS()+(force?'&_r='+Date.now():''))
+    .then(function(r){return r.json().then(function(j){if(!r.ok)throw new Error(j.detail||('HTTP '+r.status));return j;});})
+    .then(function(d){
+      __nbaGp.data=d;
+      var gs=d.games||[];
+      if(!gs.length){msg.textContent=d.message||'No NBA games on this date.';grid.innerHTML='';return;}
+      var notes=[];
+      if(!d.refsAvailable)notes.push('Referee history source unavailable right now; crews are shown without an adjustment.');
+      if(d.partialHistory)notes.push('Some team history could not be loaded; affected numbers use what was available.');
+      msg.textContent=notes.join(' ');
+      grid.innerHTML=gs.map(_ngpCard).join('');
+    })
+    .catch(function(e){msg.textContent='Game Predictor unavailable: '+e.message;})
+    .then(function(){__nbaGp.loading=false;});
+  nbaGpLoadRecordStrip();
+}
+function _ngpTeamPanel(g,side){
+  var p=side==='h'?g.homeProfile:g.awayProfile;if(!p)return '';
+  var ab=side==='h'?g.home:g.away,logo=side==='h'?g.home_logo:g.away_logo,isH=side==='h';
+  var pv=p.prev_venue||{},cv=p.cur_venue||{},cur=p.cur||{},l10=p.l10||{};
+  var ss=Number(g.season)||0,prevLbl=(ss-2)+'–'+String(ss-1).slice(-2),curLbl=(ss-1)+'–'+String(ss).slice(-2);
+  function pf(x){return x&&x.games?x.pf+' / '+x.pa+' <span style="color:#64748b">('+x.games+')</span>':'—';}
+  var chips=(p.l10_games||[]).map(function(x){var w=x.pf>x.pa;return '<span class="'+(w?'W':'L')+'" title="'+_ngpEsc(x.date+' '+(x.home?'vs ':'@ ')+x.opp+' '+x.pf+'-'+x.pa)+'">'+(w?'W':'L')+'</span>';}).join('');
+  var badges='';
+  if(p.b2b)badges+='<span class="ngp-badge2 b2b">BACK-TO-BACK</span>';
+  if(p.three_in_four)badges+='<span class="ngp-badge2 b2b">3 IN 4</span>';
+  if(p.streak)badges+='<span class="ngp-badge2 stk">'+_ngpEsc(p.streak)+'</span>';
+  if(p.rest_days!=null&&!p.b2b&&p.rest_days<=7)badges+='<span class="ngp-badge2 rest">'+(p.rest_days-1)+' DAY'+(p.rest_days-1===1?'':'S')+' REST</span>';
+  return '<div class="ngp-team"><div class="ngp-thdr"><img src="'+_ngpEsc(logo)+'" alt="" onerror="this.style.display=&#39;none&#39;"><b>'+_ngpEsc(ab)+'</b><span class="ngp-ha '+(isH?'h':'a')+'">'+(isH?'HOME':'AWAY')+'</span></div>'
+    +'<div class="ngp-sr"><span>'+prevLbl+' '+(isH?'home':'road')+' PF / PA</span><span>'+pf(pv)+'</span></div>'
+    +'<div class="ngp-sr"><span>'+curLbl+' '+(isH?'home':'road')+' PF / PA</span><span>'+pf(cv)+'</span></div>'
+    +'<div class="ngp-sr"><span>'+curLbl+' all games</span><span>'+pf(cur)+'</span></div>'
+    +'<div class="ngp-sr"><span>'+(isH?'Home':'Road')+' record</span><span>'+(cv.games?cv.w+'-'+cv.l:'—')+'</span></div>'
+    +'<div class="ngp-sr"><span>Last 10'+(p.l10_spans_prev?' (incl. last season)':'')+'</span><span>'+(l10.games?l10.w+'-'+l10.l+' · '+l10.pf+' / '+l10.pa:'—')+'</span></div>'
+    +'<div class="ngp-l10">'+chips+'</div><div>'+badges+'</div></div>';
+}
+function _ngpInj(list,ab){
+  if(!list||!list.length)return '<div class="ngp-note">'+_ngpEsc(ab)+': no injuries listed.</div>';
+  return '<div style="margin-top:6px"><div style="color:#e5e7eb;font-size:.66rem;font-weight:900">'+_ngpEsc(ab)+'</div>'+list.map(function(x){
+    var s=String(x.status||'').toLowerCase(),c=s.indexOf('out')>=0||s.indexOf('doubt')>=0?'out':(s.indexOf('quest')>=0||s.indexOf('day')>=0?'q':'p');
+    return '<div class="ngp-inj"><span><b style="color:#fff">'+_ngpEsc(x.name)+'</b> <span style="color:#64748b">'+_ngpEsc(x.pos||'')+'</span> · <span class="st '+c+'">'+_ngpEsc(x.status)+'</span>'
+      +(x.detail?' <span style="color:#64748b">'+_ngpEsc(x.detail)+'</span>':'')
+      +'<br><span style="color:#8b93a7">'+(x.ppg!=null?x.ppg+' ppg · '+x.mpg+' mpg · ':'')+_ngpEsc(x.reason||'')+'</span></span>'
+      +'<span class="imp">'+(x.counted?'-'+x.lost+' pts':'')+'</span></div>';
+  }).join('')+'</div>';
+}
+function _ngpCrew(c){
+  if(!c||!c.refs||!c.refs.length)return '<div class="ngp-note">Referee crew not posted yet. The NBA posts crews on game day (around 9 AM ET); refresh then.</div>';
+  var tag=c.tag?'<span class="ngp-crewtag '+(c.tag.indexOf('High')===0?'hi':c.tag.indexOf('Lets')===0?'lo':'nt')+'">'+_ngpEsc(c.tag)+'</span>':'';
+  var rows=c.refs.map(function(r){
+    if(!r.games)return '<tr><td>'+_ngpEsc(r.name)+'</td><td colspan="5" class="n">No referee history found</td></tr>';
+    return '<tr><td><b>'+_ngpEsc(r.name)+'</b></td><td>'+r.games+'</td>'
+      +'<td>'+(r.pf!=null?r.pf:'—')+' <span class="'+_ngpCls(r.pf_rel)+'">('+_ngpSigned(r.pf_rel)+')</span></td>'
+      +'<td>'+(r.fta!=null?r.fta:'—')+' <span class="'+_ngpCls(r.fta_rel)+'">('+_ngpSigned(r.fta_rel)+')</span></td>'
+      +'<td>'+(r.pts!=null?r.pts:'—')+' <span class="'+_ngpCls(r.pts_rel)+'">('+_ngpSigned(r.pts_rel)+')</span></td>'
+      +'<td>'+(r.home_win!=null?Math.round(r.home_win*1000)/10+'%':'—')+'</td></tr>';
+  }).join('');
+  return '<div style="margin-top:6px;font-size:.68rem;color:#e5e7eb;font-weight:900">Crew'+tag+'</div>'
+    +'<div style="overflow-x:auto"><table class="ngp-tbl"><thead><tr><th>Referee</th><th>G</th><th>Fouls/G</th><th>FTA/G</th><th>Pts/G</th><th>Home W%</th></tr></thead><tbody>'+rows+'</tbody></table></div>'
+    +(c.known?'<div class="ngp-note">Crew vs league average: fouls '+_ngpSigned(c.pf_rel)+', free-throw attempts '+_ngpSigned(c.fta_rel)+', points '+_ngpSigned(c.pts_rel)+' per game (sample-adjusted)'
+      +(c.home_win!=null&&c.league_home_win!=null?'; home teams win '+Math.round(c.home_win*1000)/10+'% with this crew vs '+Math.round(c.league_home_win*1000)/10+'% league-wide':'')
+      +'. Model effect: total '+_ngpSigned(c.total_adj)+', home margin '+_ngpSigned(c.margin_adj)+'. Numbers in brackets are vs league average.</div>':'');
+}
+function _ngpMeetings(g){
+  var line=g.book&&g.book.total!=null?Number(g.book.total):null;
+  var today='<tr class="today"><td>TODAY</td><td>'+_ngpEsc(g.away)+' @ '+_ngpEsc(g.home)+'</td>';
+  if(g.completed&&g.home_score!=null){
+    var tot=g.home_score+g.away_score,hw=g.home_score>g.away_score;
+    today+='<td>'+g.away_score+'–'+g.home_score+'</td><td>'+_ngpEsc(hw?g.home:g.away)+'</td><td>'+(hw?'W':'L')+'</td><td>'+tot+'</td><td>'+(line==null?'—':tot>line?'OVER':tot<line?'UNDER':'PUSH')+'</td></tr>';
+  }else{
+    today+='<td>Proj '+Math.round(g.projAway)+'–'+Math.round(g.projHome)+'</td><td>'+_ngpEsc(g.pickTeam)+' '+g.pickProb+'%</td><td>—</td><td>'+g.projTotal+'</td><td>'+(line==null?'—':'Book '+line)+'</td></tr>';
+  }
+  var rows=(g.meetings||[]).map(function(m){
+    var hw=m.winner===g.home,ou=line==null?'—':m.total>line?'OVER':m.total<line?'UNDER':'PUSH';
+    return '<tr'+(m.sameVenue?' class="same"':'')+'><td>'+_ngpEsc(m.date)+(m.playoffs?' <span style="color:#a78bfa">PO</span>':'')+'</td>'
+      +'<td>'+_ngpEsc(m.away)+' @ '+_ngpEsc(m.home)+(m.sameVenue?' · SAME':'')+'</td>'
+      +'<td>'+m.awayPts+'–'+m.homePts+'</td><td>'+_ngpEsc(m.winner)+'</td><td>'+(hw?'W':'L')+'</td><td>'+m.total+'</td><td>'+ou+'</td></tr>';
+  }).join('');
+  var same=(g.meetings||[]).filter(function(m){return m.sameVenue;}),hW=(g.meetings||[]).filter(function(m){return m.winner===g.home;}).length;
+  var avg=(g.meetings||[]).length?Math.round((g.meetings||[]).reduce(function(s,m){return s+m.total;},0)/g.meetings.length*10)/10:null;
+  return '<div class="ngp-note">'+_ngpEsc(g.home)+' is '+hW+'-'+((g.meetings||[]).length-hW)+' in the last '+(g.meetings||[]).length+' meetings'+(avg!=null?' · avg total '+avg:'')+'. Gold rows = games in '+_ngpEsc(g.home)+'\'s building (today\'s venue). W/L is for '+_ngpEsc(g.home)+'. O/U compares with today\'s book total.</div>'
+    +'<div style="overflow-x:auto"><table class="ngp-tbl"><thead><tr><th>Date</th><th>Game</th><th>Score</th><th>Winner</th><th>W/L</th><th>Total</th><th>vs O/U</th></tr></thead><tbody>'+today+(rows||'<tr><td colspan="7" class="n">No meetings in the last five seasons.</td></tr>')+'</tbody></table></div>';
+}
+function _ngpCard(g){
+  var b=g.book||{},hp=Math.round((g.winProbHome||0.5)*100),ap=100-hp;
+  var pickHome=g.pickTeam===g.home,pickLogo=pickHome?g.home_logo:g.away_logo,pickName=pickHome?g.home_name:g.away_name;
+  var tags='';
+  if(g.stype===1)tags+='<span class="ngp-tag">PRESEASON · NOT TRACKED</span>';
+  if(g.stype===3)tags+='<span class="ngp-tag">PLAYOFFS</span>';
+  if(g.savedPrediction)tags+='<span class="ngp-tag saved">SAVED PREGAME FORECAST</span>';
+  else if(g.retro)tags+='<span class="ngp-tag retro">RETRO VIEW · NOT A SAVED FORECAST</span>';
+  if(g.state==='in')tags+='<span class="ngp-tag live">LIVE · '+_ngpEsc(g.status)+'</span>';
+  var right=g.completed&&g.home_score!=null?'<b style="color:#fff">FINAL '+g.away_score+'–'+g.home_score+'</b>':_ngpEsc(_ngpTime(g));
+  var homeSpr=g.projMargin!=null?-g.projMargin:null;
+  var atsCls=g.atsPick?'pick':'lean',atsV=g.atsPick?_ngpEsc(g.atsPick)+' '+_ngpSpread(g.atsPick===g.home?b.home_spread:(b.home_spread!=null?-b.home_spread:null)):(g.atsLean?'Lean '+_ngpEsc(g.atsLean):'—');
+  var atsS=g.atsEdge!=null?'edge '+Math.abs(g.atsEdge).toFixed(1)+' pts'+(g.atsPick?'':' · no play'):'no spread posted';
+  var ouCls=g.ouPick==='OVER'?'over':g.ouPick==='UNDER'?'under':'lean',ouV=g.ouPick?g.ouPick+' '+b.total:(g.ouLean?'Lean '+g.ouLean:'—');
+  var ouOdds=g.ouPick==='OVER'?b.over_odds:g.ouPick==='UNDER'?b.under_odds:null;
+  var ouS=g.ouEdge!=null?'edge '+Math.abs(g.ouEdge).toFixed(1)+' pts'+(g.ouPick?(ouOdds!=null?' · '+_ngpOdds(ouOdds):''):' · no play'):'no total posted';
+  var ml='';
+  if(g.pickMl!=null){var imp=Number(g.pickMl)>0?100/(Number(g.pickMl)+100):-Number(g.pickMl)/(-Number(g.pickMl)+100);
+    ml='<span>'+_ngpEsc(g.pickTeam)+' ML <b>'+_ngpOdds(g.pickMl)+'</b> · model '+g.pickProb+'% vs implied '+(imp*100).toFixed(1)+'% → <b class="'+_ngpCls(g.mlEdge)+'">'+_ngpSigned(g.mlEdge)+' pts</b></span>';}
+  else ml='<span>Moneyline unavailable'+(b.hidden_short?' (shorter than -1000)':'')+'</span>';
+  var bpi=g.bpiHome!=null?'<span>ESPN BPI: '+_ngpEsc(g.home)+' '+g.bpiHome+'%</span>':'';
+  var res='';
+  if(g.result){var r=g.result;
+    res='<div class="ngp-res"><span class="ngp-chip '+r.winner+'">Winner '+(r.winner==='WIN'?'✓':'✗')+'</span>'
+      +(r.ats?'<span class="ngp-chip '+r.ats+'">ATS '+_ngpEsc(r.ats_pick)+' '+_ngpSpread(r.ats_line)+' · '+r.ats+'</span>':'')
+      +(r.ou?'<span class="ngp-chip '+r.ou+'">'+r.ou_pick+' '+r.ou_line+' ('+r.ou_total+') · '+r.ou+'</span>':'')+'</div>';}
+  var fx=(g.factors||[]).map(function(f){
+    var isBase=f.name==='Home/road scoring baseline';
+    return '<tr><td><b>'+_ngpEsc(f.name)+'</b><div class="n" style="color:#8b93a7;font-weight:500">'+_ngpEsc(f.note||'')+'</div></td>'
+      +'<td class="'+(isBase?'':_ngpCls(f.away))+'">'+(isBase?f.away:_ngpSigned(f.away))+'</td><td class="'+(isBase?'':_ngpCls(f.home))+'">'+(isBase?f.home:_ngpSigned(f.home))+'</td></tr>';
+  }).join('')+'<tr><td><b>Projected score</b></td><td><b>'+g.projAway+'</b></td><td><b>'+g.projHome+'</b></td></tr>';
+  return '<div class="ngp-card'+(g.completed?' final':'')+'">'
+    +'<div class="ngp-top"><div class="ngp-mu"><img src="'+_ngpEsc(g.away_logo)+'" alt="" onerror="this.style.display=&#39;none&#39;">'+_ngpEsc(g.away)+' <span class="ngp-at">@</span> '+_ngpEsc(g.home)+'<img src="'+_ngpEsc(g.home_logo)+'" alt="" onerror="this.style.display=&#39;none&#39;"></div>'
+    +'<div class="ngp-time">'+right+'<br>'+_ngpEsc(g.venue||'')+'</div></div>'
+    +(tags?'<div class="ngp-tags">'+tags+'</div>':'')
+    +'<div class="ngp-hero"><img src="'+_ngpEsc(pickLogo)+'" alt="" onerror="this.style.display=&#39;none&#39;"><div><div class="lbl">PREDICTED WINNER</div><div class="team">'+_ngpEsc(pickName||g.pickTeam)+'</div>'
+    +'<div class="score">Projected '+_ngpEsc(g.away)+' '+g.projAway+' – '+g.projHome+' '+_ngpEsc(g.home)+'</div></div>'
+    +'<div class="prob"><b>'+g.pickProb+'%</b><small>WIN PROB</small></div></div>'
+    +'<div class="ngp-bar-l"><span style="color:#60a5fa">'+_ngpEsc(g.away)+' '+ap+'%</span><span style="color:#fbbf24">'+hp+'% '+_ngpEsc(g.home)+'</span></div>'
+    +'<div class="ngp-bar"><div class="a" style="width:'+ap+'%"></div><div class="h" style="width:'+hp+'%"></div></div>'
+    +'<div class="ngp-boxes">'
+      +'<div class="ngp-box"><div class="k">Model spread</div><div class="v">'+_ngpEsc(g.home)+' '+_ngpSpread(homeSpr==null?null:Math.round(homeSpr*10)/10)+'</div><div class="s">margin '+_ngpSigned(g.projMargin)+'</div></div>'
+      +'<div class="ngp-box"><div class="k">Book spread</div><div class="v">'+(b.home_spread!=null?_ngpEsc(g.home)+' '+_ngpSpread(b.home_spread):'—')+'</div><div class="s">'+_ngpEsc(b.book||'')+(b.home_spread_odds!=null?' · '+_ngpOdds(b.home_spread_odds):'')+'</div></div>'
+      +'<div class="ngp-box '+atsCls+'"><div class="k">ATS pick</div><div class="v">'+atsV+'</div><div class="s">'+atsS+'</div></div>'
+      +'<div class="ngp-box"><div class="k">Proj total</div><div class="v">'+g.projTotal+'</div><div class="s">'+_ngpEsc(g.away)+' '+g.projAway+' + '+_ngpEsc(g.home)+' '+g.projHome+'</div></div>'
+      +'<div class="ngp-box"><div class="k">Book O/U</div><div class="v">'+(b.total!=null?b.total:'—')+'</div><div class="s">'+(b.over_odds!=null?'o '+_ngpOdds(b.over_odds):'')+(b.under_odds!=null?' · u '+_ngpOdds(b.under_odds):'')+'</div></div>'
+      +'<div class="ngp-box '+ouCls+'"><div class="k">O/U pick</div><div class="v">'+ouV+'</div><div class="s">'+ouS+'</div></div>'
+    +'</div>'
+    +'<div class="ngp-ml">'+ml+bpi+'</div>'
+    +res
+    +'<details class="ngp-sec"><summary>Why this pick · factor breakdown</summary><div style="overflow-x:auto"><table class="ngp-tbl"><thead><tr><th>Factor</th><th>'+_ngpEsc(g.away)+'</th><th>'+_ngpEsc(g.home)+'</th></tr></thead><tbody>'+fx+'</tbody></table></div></details>'
+    +'<details class="ngp-sec" open><summary>Teams · points for/against, last 10 &amp; rest</summary><div class="ngp-teams">'+_ngpTeamPanel(g,'a')+_ngpTeamPanel(g,'h')+'</div></details>'
+    +'<details class="ngp-sec"><summary>Last 10 meetings · today highlighted</summary>'+_ngpMeetings(g)+'</details>'
+    +'<details class="ngp-sec"><summary>Injuries'+((g.lostHome||g.lostAway)?' · '+_ngpEsc(g.away)+' -'+(g.lostAway||0)+' / '+_ngpEsc(g.home)+' -'+(g.lostHome||0)+' pts':'')+'</summary>'+_ngpInj(g.injAway,g.away)+_ngpInj(g.injHome,g.home)+'</details>'
+    +'<details class="ngp-sec"><summary>Referees'+(g.crew&&g.crew.tag?' · '+_ngpEsc(g.crew.tag):'')+'</summary>'+_ngpCrew(g.crew)+'</details>'
+    +'</div>';
+}
+function nbaGpLoadRecordStrip(){
+  var el=document.getElementById('nbaGpRecordStrip');if(!el)return;
+  fetch('/api/nba/game-predictor/record?'+_ngpQS()).then(function(r){return r.ok?r.json():null;}).then(function(d){
+    if(!d){el.innerHTML='';return;}
+    __nbaGp.record=d;var t=d.totals||{};
+    function box(k,label){var b=t[k]||{};return '<div class="ngp-rec-box" onclick="openNbaGpRecord()"><div class="k">'+label+'</div><div class="v">'+_ngpRec(b)+(b.pct!=null?' <span style="color:#a78bfa;font-size:.8rem">'+b.pct+'%</span>':'')+'</div><div class="s">'+(b.priced?_ngpMoney(b.profit)+' · ROI '+(b.roi!=null?b.roi+'%':'—')+' at $'+d.stake:'No graded games yet')+'</div></div>';}
+    el.innerHTML=box('winner','Winner record')+box('ats','ATS record')+box('ou','O/U record');
+    var p=document.getElementById('nbaGpRecordPanel');if(p&&p.style.display!=='none')_ngpRenderRecord();
+  }).catch(function(){el.innerHTML='';});
+}
+function _ngpRenderRecord(){
+  var p=document.getElementById('nbaGpRecordPanel'),d=__nbaGp.record;if(!p)return;
+  if(!d){p.innerHTML='<div class="ngp-note">Loading record…</div>';return;}
+  var days=(d.days||[]);
+  var html='<div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><div style="color:#fff;font-weight:900;font-size:1rem">&#128200; Game Predictor Record</div><button type="button" class="ngp-btn" onclick="document.getElementById(&#39;nbaGpRecordPanel&#39;).style.display=&#39;none&#39;">Close</button></div>'
+    +'<div class="ngp-note">Saved pregame forecasts only, graded after the final. Winner P/L uses the saved moneyline; ATS and O/U use the saved price (or -110 when no price was posted). $'+d.stake+' per pick.</div>';
+  if(!days.length)html+='<div class="ngp-note" style="font-size:.74rem">No saved forecasts yet. The first forecasts are saved the first time the predictor loads before tip-off.</div>';
+  html+=days.map(function(day){
+    var rows=(day.games||[]).map(function(r){
+      return '<tr><td>'+_ngpEsc(r.away)+' @ '+_ngpEsc(r.home)+'</td><td>'+r.away_score+'–'+r.home_score+'</td>'
+        +'<td>'+_ngpEsc(r.pickTeam)+' '+(r.pickProb||'')+'% <span class="ngp-chip '+r.winner+'">'+r.winner+'</span></td>'
+        +'<td>'+(r.ats?_ngpEsc(r.ats_pick)+' '+_ngpSpread(r.ats_line)+' <span class="ngp-chip '+r.ats+'">'+r.ats+'</span>':'<span class="n">no play</span>')+'</td>'
+        +'<td>'+(r.ou?r.ou_pick+' '+r.ou_line+' <span class="ngp-chip '+r.ou+'">'+r.ou+'</span>':'<span class="n">no play</span>')+'</td></tr>';
+    }).join('');
+    var pend=day.saved-(day.games||[]).length;
+    return '<details class="ngp-day"><summary><span>'+_ngpEsc(day.date)+'</span><span>Winner '+_ngpRec(day.winner)+' · ATS '+_ngpRec(day.ats)+' · O/U '+_ngpRec(day.ou)+(pend>0?' · <span style="color:#94a3b8">'+pend+' pending</span>':'')+'</span></summary>'
+      +'<div class="body">'+(rows?'<table class="ngp-tbl"><thead><tr><th>Game</th><th>Final</th><th>Winner pick</th><th>ATS</th><th>O/U</th></tr></thead><tbody>'+rows+'</tbody></table>':'<div class="ngp-note">Games not final yet.</div>')+'</div></details>';
+  }).join('');
+  p.innerHTML=html;
+}
+function openNbaGpRecord(){
+  var s=document.getElementById('nbaGpSection'),p=document.getElementById('nbaGpRecordPanel');
+  if(!p)return;p.style.display='block';_ngpRenderRecord();if(!__nbaGp.record)nbaGpLoadRecordStrip();
+  p.scrollIntoView({behavior:'smooth',block:'start'});
+}
+function openNbaGamePredictor(){var s=document.getElementById('nbaGpSection');if(s)s.scrollIntoView({behavior:'smooth',block:'start'});nbaGpLoad(false);}
+(function(){
+  function init(){var dp=document.getElementById('datePicker');if(dp)dp.addEventListener('change',function(){nbaGpLoad(true);});nbaGpLoad(false);}
+  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',init);else init();
+})();
+</script>
+"""
+
+
 @app.get("/api/bets")
 async def nba_get_bets(request: Request, token: str = "", admin: str = "", settle: bool = True):
     from fastapi import HTTPException
@@ -6708,6 +7036,909 @@ async def nba_historical_month_status(request: Request, month: str = ""):
     return {"month":month,"status":_nba_hist_status(month)}
 
 # ─── Routes ───────────────────────────────────────────────────────────────────
+# ─── NBA Game Predictor ─────────────────────────────────────────────────────────
+# Team-level winner / spread / total model built only from free ESPN data plus
+# Basketball-Reference referee tendencies.  Every adjustment is bounded and shown
+# on the card.  Pregame forecasts are saved to their own ledger namespace and are
+# never mixed into player-prop, Overflow, or Coach records.
+_NBA_GP_ESPN = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba"
+_NBA_GP_DIR = _CACHE_DIR / "nba_gp"
+_NBA_GP_MEM: Dict[str, Any] = {}
+_NBA_GP_APP = "nba_game_predictor"
+_NBA_GP_SNAP_CAT = "__gp_snapshot__"
+_NBA_GP_GRADED_CAT = "__gp_graded__"
+_NBA_GP_STAKE = 100.0
+_NBA_GP_LOCK = _nba_th.Lock()
+_NBA_GP_SD = 12.5            # NBA final-margin standard deviation (points)
+_NBA_GP_LEAGUE_PTS = 114.0   # used only when a team has no usable history
+_NBA_GP_ATS_MIN = 1.5        # model-vs-spread points needed for an ATS pick
+_NBA_GP_OU_MIN = 2.0         # model-vs-total points needed for an O/U pick
+_NBA_GP_ABSENT = {"out": 1.0, "doubtful": 0.8, "questionable": 0.45,
+                  "day-to-day": 0.35, "probable": 0.0}
+_NBA_GP_UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                            "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"}
+try:
+    _NBA_GP_DIR.mkdir(parents=True, exist_ok=True)
+except Exception:
+    pass
+
+
+def _nba_gp_clamp(v, lo, hi):
+    return max(lo, min(hi, v))
+
+
+def _nba_gp_et_date(iso) -> str:
+    try:
+        from zoneinfo import ZoneInfo as _ZI
+        dt = datetime.fromisoformat(str(iso).replace("Z", "+00:00"))
+        return dt.astimezone(_ZI("America/New_York")).date().isoformat()
+    except Exception:
+        return str(iso or "")[:10]
+
+
+def _nba_gp_today_et() -> str:
+    try:
+        from zoneinfo import ZoneInfo as _ZI
+        return datetime.now(_ZI("America/New_York")).date().isoformat()
+    except Exception:
+        return date.today().isoformat()
+
+
+def _nba_gp_mem_get(key, ttl):
+    hit = _NBA_GP_MEM.get(key)
+    if hit is not None and time.time() - hit[0] < ttl:
+        return hit[1]
+    return None
+
+
+def _nba_gp_mem_set(key, value):
+    _NBA_GP_MEM[key] = (time.time(), value)
+    if len(_NBA_GP_MEM) > 900:
+        for k in sorted(_NBA_GP_MEM, key=lambda k: _NBA_GP_MEM[k][0])[:300]:
+            _NBA_GP_MEM.pop(k, None)
+    return value
+
+
+def _nba_gp_score(comp) -> Optional[float]:
+    s = comp.get("score")
+    if isinstance(s, dict):
+        s = s.get("value", s.get("displayValue"))
+    try:
+        return float(s)
+    except Exception:
+        return None
+
+
+async def _nba_gp_team_games(client, team_id, season, stype, sem):
+    """Completed games for one team/season/type (compact, cached)."""
+    key = f"tg:{team_id}:{season}:{stype}"
+    done = int(season) < _nba_current_espn_season()
+    hit = _nba_gp_mem_get(key, 10 ** 9 if done else 600)
+    if hit is not None:
+        return hit
+    path = _NBA_GP_DIR / f"team_{team_id}_{season}_{stype}.json"
+    if done:
+        try:
+            if path.exists():
+                return _nba_gp_mem_set(key, json.loads(path.read_text(encoding="utf-8")))
+        except Exception:
+            pass
+    data = None
+    for attempt in range(2):
+        try:
+            async with sem:
+                r = await client.get(f"{_NBA_GP_ESPN}/teams/{team_id}/schedule",
+                                     params={"season": season, "seasontype": stype})
+            if r.status_code == 200:
+                data = r.json()
+                break
+        except Exception:
+            pass
+        await asyncio.sleep(0.5)
+    if not isinstance(data, dict):
+        raise RuntimeError(f"ESPN schedule unavailable for team {team_id} {season}")
+    out = []
+    for e in data.get("events") or []:
+        c = (e.get("competitions") or [{}])[0]
+        if not (((c.get("status") or {}).get("type") or {}).get("completed")):
+            continue
+        comps = c.get("competitors") or []
+        me = next((x for x in comps if str((x.get("team") or {}).get("id")) == str(team_id)), None)
+        op = next((x for x in comps if x is not me), None)
+        if not me or not op:
+            continue
+        pf, pa = _nba_gp_score(me), _nba_gp_score(op)
+        if pf is None or pa is None or (pf == 0 and pa == 0):
+            continue
+        out.append({"id": str(e.get("id", "")), "date": _nba_gp_et_date(e.get("date")),
+                    "tip": e.get("date", ""), "home": me.get("homeAway") == "home",
+                    "neutral": bool(c.get("neutralSite")),
+                    "opp_id": str((op.get("team") or {}).get("id", "")),
+                    "opp": _norm_abbr((op.get("team") or {}).get("abbreviation", "")),
+                    "pf": pf, "pa": pa, "stype": int(stype), "season": int(season)})
+    out.sort(key=lambda g: g.get("tip") or "")
+    if done:
+        try:
+            tmp = path.with_name(path.name + f".{os.getpid()}.tmp")
+            tmp.write_text(json.dumps(out), encoding="utf-8")
+            os.replace(tmp, path)
+        except Exception:
+            pass
+    return _nba_gp_mem_set(key, out)
+
+
+def _nba_gp_parse_refs(html_text: str) -> dict:
+    i = html_text.find('id="rs_raw"')
+    if i < 0:
+        return {}
+    j = html_text.find("</table>", i)
+    table = html_text[i:j if j > 0 else None]
+    out = {}
+    for row in re.findall(r"<tr[^>]*>(.*?)</tr>", table, re.S):
+        cells = {k: re.sub(r"<[^>]+>", "", v).strip() for k, v in
+                 re.findall(r'data-stat="([a-z_]+)"[^>]*>(.*?)</t[dh]>', row, re.S)}
+        name = cells.get("referee") or ""
+        if not name or not str(cells.get("g", "")).isdigit():
+            continue
+
+        def f(k):
+            try:
+                return float(str(cells.get(k, "")).replace("+", ""))
+            except Exception:
+                return None
+        out[_nn(name)] = {"name": name, "g": int(cells["g"]), "pf": f("pf_per_g"),
+                          "pf_rel": f("pf_per_g_rel"), "fta": f("fta_per_g"),
+                          "fta_rel": f("fta_per_g_rel"), "pts": f("pts_per_g"),
+                          "pts_rel": f("pts_per_g_rel"), "home_win": f("home_win_loss_pct")}
+    return out
+
+
+async def _nba_gp_ref_season(client, end_year: int):
+    key = f"refs:{end_year}"
+    done = int(end_year) < _nba_current_espn_season()
+    ttl = 10 ** 9 if done else 12 * 3600
+    hit = _nba_gp_mem_get(key, ttl)
+    if hit is not None:
+        return hit or None
+    path = _NBA_GP_DIR / f"refs_{end_year}.json"
+    try:
+        if path.exists() and (done or time.time() - path.stat().st_mtime < ttl):
+            return _nba_gp_mem_set(key, json.loads(path.read_text(encoding="utf-8"))) or None
+    except Exception:
+        pass
+    try:
+        r = await client.get(f"https://www.basketball-reference.com/referees/{end_year}_register.html",
+                             headers=_NBA_GP_UA)
+        table = _nba_gp_parse_refs(r.text) if r.status_code == 200 else {}
+    except Exception:
+        table = {}
+    if not table:
+        # Short negative cache: retry later instead of hammering the source.
+        _NBA_GP_MEM[key] = (time.time() - ttl + 1800, {})
+        return None
+    try:
+        tmp = path.with_name(path.name + f".{os.getpid()}.tmp")
+        tmp.write_text(json.dumps(table), encoding="utf-8")
+        os.replace(tmp, path)
+    except Exception:
+        pass
+    return _nba_gp_mem_set(key, table)
+
+
+def _nba_gp_ref_lookup(tables, name):
+    nn = _nn(name)
+    parts = nn.split()
+    found = []
+    for t in tables:
+        if not t:
+            continue
+        row = t.get(nn)
+        if row is None and len(parts) >= 2:
+            row = next((v for k, v in t.items() if _nm(k, nn)), None)
+        if row:
+            found.append(row)
+    return found
+
+
+def _nba_gp_crew(officials, ref_cur, ref_prev):
+    """Crew tendencies: games-weighted across two seasons, shrunk toward average."""
+    tables = [ref_cur or {}, ref_prev or {}]
+    lg_home = None
+    src = ref_prev or ref_cur or {}
+    tot_g = sum(v["g"] for v in src.values() if v.get("home_win") is not None)
+    if tot_g:
+        lg_home = sum(v["home_win"] * v["g"] for v in src.values()
+                      if v.get("home_win") is not None) / tot_g
+    refs = []
+    for name in officials:
+        rows = _nba_gp_ref_lookup(tables, name)
+        g = sum(r["g"] for r in rows)
+        if not rows or g <= 0:
+            refs.append({"name": name, "games": 0})
+            continue
+
+        def wavg(k):
+            vals = [(r[k], r["g"]) for r in rows if r.get(k) is not None]
+            n = sum(w for _, w in vals)
+            return round(sum(v * w for v, w in vals) / n, 2) if n else None
+        refs.append({"name": name, "games": g, "pf": wavg("pf"), "pf_rel": wavg("pf_rel"),
+                     "fta": wavg("fta"), "fta_rel": wavg("fta_rel"), "pts": wavg("pts"),
+                     "pts_rel": wavg("pts_rel"), "home_win": wavg("home_win")})
+    known = [r for r in refs if r.get("games")]
+    crew = {"refs": refs, "known": len(known), "league_home_win": round(lg_home, 3) if lg_home else None}
+    if not known:
+        crew.update({"total_adj": 0.0, "margin_adj": 0.0, "tag": ""})
+        return crew
+
+    def shrunk(k):
+        vals = [(r[k] * r["games"] / (r["games"] + 25.0)) for r in known if r.get(k) is not None]
+        return sum(vals) / len(vals) if vals else 0.0
+    pts_rel, pf_rel, fta_rel = shrunk("pts_rel"), shrunk("pf_rel"), shrunk("fta_rel")
+    hw = [(r["home_win"], r["games"]) for r in known if r.get("home_win") is not None]
+    home_win = sum(v * w for v, w in hw) / sum(w for _, w in hw) if hw else None
+    total_adj = _nba_gp_clamp(0.6 * pts_rel, -3.5, 3.5)
+    margin_adj = 0.0
+    if home_win is not None and lg_home is not None:
+        n = sum(w for _, w in hw)
+        margin_adj = _nba_gp_clamp((home_win - lg_home) * 8.0 * n / (n + 60.0), -1.0, 1.0)
+    tag = ("High-foul crew" if pf_rel >= 1.2 else "Lets them play" if pf_rel <= -1.2 else "Neutral crew")
+    crew.update({"pts_rel": round(pts_rel, 2), "pf_rel": round(pf_rel, 2), "fta_rel": round(fta_rel, 2),
+                 "home_win": round(home_win, 3) if home_win is not None else None,
+                 "total_adj": round(total_adj, 2), "margin_adj": round(margin_adj, 2), "tag": tag})
+    return crew
+
+
+def _nba_gp_split(games):
+    n = len(games)
+    if not n:
+        return {"games": 0, "pf": None, "pa": None, "w": 0, "l": 0}
+    return {"games": n, "pf": round(sum(g["pf"] for g in games) / n, 1),
+            "pa": round(sum(g["pa"] for g in games) / n, 1),
+            "w": sum(g["pf"] > g["pa"] for g in games), "l": sum(g["pf"] < g["pa"] for g in games)}
+
+
+def _nba_gp_blend(cur, prev, k=8.0):
+    """Current season gains weight game by game; last season anchors early."""
+    if cur["games"] and prev["games"] >= 5:
+        w = cur["games"] / (cur["games"] + k)
+        return (w * cur["pf"] + (1 - w) * prev["pf"], w * cur["pa"] + (1 - w) * prev["pa"], round(w, 2))
+    if cur["games"]:
+        return cur["pf"], cur["pa"], 1.0
+    if prev["games"]:
+        return prev["pf"], prev["pa"], 0.0
+    return _NBA_GP_LEAGUE_PTS, _NBA_GP_LEAGUE_PTS, 0.0
+
+
+def _nba_gp_team_profile(games_by_season, season, venue, ds, event_id):
+    """games_by_season: {(season, stype): [compact games]} for one team."""
+    def before(rows):
+        return [g for g in rows if g["date"] < ds and g["id"] != str(event_id)]
+    cur = before(games_by_season.get((season, 2), []))
+    cur_po = before(games_by_season.get((season, 3), []))
+    prev = games_by_season.get((season - 1, 2), [])
+    is_home = venue == "home"
+    cur_v = [g for g in cur if g["home"] == is_home]
+    prev_v = [g for g in prev if g["home"] == is_home]
+    reg_all = sorted(prev + cur, key=lambda g: g["tip"])
+    l10 = reg_all[-10:]
+    recent_any = sorted(cur + cur_po, key=lambda g: g["tip"])
+    streak = ""
+    if recent_any or reg_all:
+        seq = recent_any or reg_all
+        last_w = seq[-1]["pf"] > seq[-1]["pa"]
+        n = 0
+        for g in reversed(seq):
+            if (g["pf"] > g["pa"]) != last_w:
+                break
+            n += 1
+        streak = ("W" if last_w else "L") + str(n)
+    rest_days, b2b, three_in_four = None, False, False
+    if recent_any:
+        try:
+            d0 = date.fromisoformat(ds)
+            last = date.fromisoformat(recent_any[-1]["date"])
+            rest_days = (d0 - last).days
+            b2b = rest_days == 1
+            in4 = [g for g in recent_any if 0 < (d0 - date.fromisoformat(g["date"])).days <= 3]
+            three_in_four = len(in4) >= 2
+        except Exception:
+            pass
+    return {"cur": _nba_gp_split(cur), "prev": _nba_gp_split(prev),
+            "cur_venue": _nba_gp_split(cur_v), "prev_venue": _nba_gp_split(prev_v),
+            "l10": _nba_gp_split(l10),
+            "l10_games": [{"date": g["date"], "opp": g["opp"], "home": g["home"],
+                           "pf": int(g["pf"]), "pa": int(g["pa"]), "season": g["season"]} for g in l10],
+            "l10_spans_prev": any(g["season"] != season for g in l10),
+            "streak": streak, "rest_days": rest_days, "b2b": b2b, "three_in_four": three_in_four}
+
+
+def _nba_gp_spread_home(pc, home_abbr, away_abbr):
+    details = str(pc.get("details") or "").strip()
+    m = re.match(r"^([A-Za-z]+)\s*([+-]?\d+(?:\.\d+)?)$", details)
+    if m:
+        ab, val = _norm_abbr(m.group(1).upper()), abs(float(m.group(2)))
+        if ab == home_abbr:
+            return -val
+        if ab == away_abbr:
+            return val
+    if details.upper() in ("EVEN", "PK", "PICK"):
+        return 0.0
+    try:
+        return float(pc.get("spread"))
+    except Exception:
+        return None
+
+
+def _nba_gp_num(v):
+    try:
+        return float(v) if v not in (None, "") else None
+    except Exception:
+        return None
+
+
+def _nba_gp_odds_ok(o):
+    v = _nba_gp_num(o)
+    return v is not None and v >= -1000 and (v >= 100 or v <= -100)
+
+
+def _nba_gp_implied(o):
+    v = _nba_gp_num(o)
+    if v is None or not (v >= 100 or v <= -100):
+        return None
+    return 100.0 / (v + 100.0) if v > 0 else -v / (-v + 100.0)
+
+
+def _nba_gp_summary_bits(summ, home_abbr, away_abbr, home_id, away_id):
+    gi = summ.get("gameInfo") or {}
+    officials = [o.get("displayName") or o.get("fullName") for o in (gi.get("officials") or [])
+                 if o.get("displayName") or o.get("fullName")]
+    pcs = [p for p in (summ.get("pickcenter") or []) if isinstance(p, dict)]
+    pcs.sort(key=lambda p: ((p.get("provider") or {}).get("priority") or 99))
+    pc = pcs[0] if pcs else {}
+    ho, ao = pc.get("homeTeamOdds") or {}, pc.get("awayTeamOdds") or {}
+    book = {"book": (pc.get("provider") or {}).get("name") or "",
+            "total": _nba_gp_num(pc.get("overUnder")),
+            "over_odds": _nba_gp_num(pc.get("overOdds")), "under_odds": _nba_gp_num(pc.get("underOdds")),
+            "home_spread": _nba_gp_spread_home(pc, home_abbr, away_abbr) if pc else None,
+            "home_spread_odds": _nba_gp_num(ho.get("spreadOdds")),
+            "away_spread_odds": _nba_gp_num(ao.get("spreadOdds")),
+            "home_ml": _nba_gp_num(ho.get("moneyLine")), "away_ml": _nba_gp_num(ao.get("moneyLine"))}
+    for k in ("over_odds", "under_odds", "home_spread_odds", "away_spread_odds", "home_ml", "away_ml"):
+        if book.get(k) is not None and book[k] < -1000:
+            book[k] = None          # never surface prices shorter than -1000
+            book["hidden_short"] = True
+    pred = summ.get("predictor") or {}
+    bpi = None
+    try:
+        hp = (pred.get("homeTeam") or {}).get("gameProjection")
+        bpi = round(float(hp), 1) if hp not in (None, "") else None
+    except Exception:
+        bpi = None
+    inj = {home_id: [], away_id: []}
+    for t in summ.get("injuries") or []:
+        tid = str((t.get("team") or {}).get("id", ""))
+        if tid not in inj:
+            continue
+        for i in t.get("injuries") or []:
+            a = i.get("athlete") or {}
+            status = str(i.get("status") or (i.get("type") or {}).get("description") or "")
+            det = i.get("details") or {}
+            inj[tid].append({"id": str(a.get("id", "")), "name": a.get("displayName", ""),
+                             "pos": (a.get("position") or {}).get("abbreviation", ""),
+                             "status": status,
+                             "detail": " ".join(x for x in [det.get("side"), det.get("type"), det.get("detail")] if x)
+                                       or (i.get("shortComment") or "")})
+    venue = (gi.get("venue") or {}).get("fullName", "")
+    return officials, book, bpi, inj, venue
+
+
+def _nba_gp_injury_rows(rows, logs_cur, logs_prev, team_cur_games, ds):
+    out, total = [], 0.0
+    for r in rows:
+        key = r["status"].lower()
+        p = next((v for k, v in _NBA_GP_ABSENT.items() if k in key), 0.3)
+        cur = [g for g in (logs_cur.get(r["id"]) or []) if _nba_gp_et_date(g.get("date")) < ds]
+        prev = logs_prev.get(r["id"]) or []
+        use, label = (cur, "this season") if len(cur) >= 3 else (prev, "last season")
+        n = len(use)
+        ppg = round(sum(g.get("PTS", 0) for g in use) / n, 1) if n else None
+        mpg = round(sum(g.get("MIN", 0) for g in use) / n, 1) if n else None
+        counted, reason, lost = False, "", 0.0
+        if not n or n < 3:
+            reason = "no recent role data"
+        elif mpg < 15:
+            reason = "minor role"
+        elif team_cur_games >= 10 and not cur:
+            reason = "out all season — already in team numbers"
+        elif p <= 0:
+            reason = "expected to play"
+        else:
+            lost = round(ppg * 0.45 * p, 1)
+            counted = True
+            reason = f"~{int(p * 100)}% chance out · {ppg} ppg {label}"
+        total += lost
+        out.append({**r, "ppg": ppg, "mpg": mpg, "games": n, "p_absent": p,
+                    "lost": lost, "counted": counted, "reason": reason})
+    out.sort(key=lambda x: (-(x["lost"] or 0), -(x["ppg"] or 0)))
+    return out, round(min(9.0, total), 1)
+
+
+def _nba_gp_predict_one(g, hp, ap, meetings, crew, inj_h, inj_a, lost_h, lost_a, book, bpi):
+    factors = []
+    hb_pf, hb_pa, hw = _nba_gp_blend(hp["cur_venue"], hp["prev_venue"])
+    ab_pf, ab_pa, aw = _nba_gp_blend(ap["cur_venue"], ap["prev_venue"])
+    ph = (hb_pf + ab_pa) / 2.0
+    pa_ = (ab_pf + hb_pa) / 2.0
+    base_h, base_a = ph, pa_
+    factors.append({"name": "Home/road scoring baseline", "home": round(ph, 1), "away": round(pa_, 1),
+                    "note": f"{g['home']} home PF/PA + {g['away']} road PF/PA · last season blended with "
+                            f"this season ({int(hw * 100)}% / {int(aw * 100)}% current)"})
+    # Last-10 form against each team's own season level.
+    hs_pf, hs_pa, _ = _nba_gp_blend(hp["cur"], hp["prev"])
+    as_pf, as_pa, _ = _nba_gp_blend(ap["cur"], ap["prev"])
+    fh = fa = 0.0
+    if hp["l10"]["games"] >= 5 and ap["l10"]["games"] >= 5:
+        fh = _nba_gp_clamp(0.25 * (hp["l10"]["pf"] - hs_pf), -2.5, 2.5) + \
+             _nba_gp_clamp(0.25 * (ap["l10"]["pa"] - as_pa), -2.5, 2.5)
+        fa = _nba_gp_clamp(0.25 * (ap["l10"]["pf"] - as_pf), -2.5, 2.5) + \
+             _nba_gp_clamp(0.25 * (hp["l10"]["pa"] - hs_pa), -2.5, 2.5)
+        fh, fa = _nba_gp_clamp(fh, -3.5, 3.5), _nba_gp_clamp(fa, -3.5, 3.5)
+    ph += fh; pa_ += fa
+    factors.append({"name": "Last 10 form", "home": round(fh, 1), "away": round(fa, 1),
+                    "note": f"{g['home']} L10 {hp['l10']['w']}-{hp['l10']['l']} · {g['away']} L10 {ap['l10']['w']}-{ap['l10']['l']}"})
+    # Rest / back-to-back.
+    rh = ra = 0.0
+    notes = []
+    for side, prof, abbr in (("h", hp, g["home"]), ("a", ap, g["away"])):
+        own = opp = 0.0
+        if prof["b2b"]:
+            own, opp = -1.2, 0.8
+            notes.append(f"{abbr} on a back-to-back")
+        if prof["three_in_four"]:
+            own -= 0.5
+            notes.append(f"{abbr} 3rd game in 4 nights")
+        if side == "h":
+            rh += own; ra += opp
+        else:
+            ra += own; rh += opp
+    ph += rh; pa_ += ra
+    factors.append({"name": "Rest / back-to-back", "home": round(rh, 1), "away": round(ra, 1),
+                    "note": "; ".join(notes) or f"Rest days {g['home']} {hp['rest_days'] if hp['rest_days'] is not None else '—'} · {g['away']} {ap['rest_days'] if ap['rest_days'] is not None else '—'}"})
+    # Head-to-head (same building weighted double).
+    hh = ha = 0.0
+    model_meet = meetings[:10]
+    same = [m for m in model_meet if m["home"]]
+    rev = [m for m in model_meet if not m["home"]]
+    if same or rev:
+        wsum = len(same) + 0.5 * len(rev)
+        tot_avg = (sum(m["pf"] + m["pa"] for m in same) + 0.5 * sum(m["pf"] + m["pa"] for m in rev)) / wsum
+        mar_avg = (sum(m["pf"] - m["pa"] for m in same) + 0.5 * sum(m["pf"] - m["pa"] + 5.0 for m in rev)) / wsum
+        w = min(0.20, 0.04 * len(same) + 0.02 * len(rev))
+        t_adj = _nba_gp_clamp((tot_avg - (ph + pa_)) * w, -4.0, 4.0)
+        m_adj = _nba_gp_clamp((mar_avg - (ph - pa_)) * w, -3.0, 3.0)
+        tot_now = ph + pa_
+        hh = t_adj * ph / tot_now + m_adj / 2.0
+        ha = t_adj * pa_ / tot_now - m_adj / 2.0
+        ph += hh; pa_ += ha
+    factors.append({"name": "Head-to-head history", "home": round(hh, 1), "away": round(ha, 1),
+                    "note": (f"{len(same)} at {g['home']} + {len(rev)} at {g['away']} in the last "
+                             f"{len(model_meet)} meetings" if model_meet else "No recent meetings")})
+    # Injuries.
+    ph -= lost_h; pa_ -= lost_a
+    factors.append({"name": "Injuries", "home": -lost_h, "away": -lost_a,
+                    "note": f"{sum(1 for x in inj_h if x['counted'])} {g['home']} / "
+                            f"{sum(1 for x in inj_a if x['counted'])} {g['away']} rotation players flagged"})
+    # Referees.
+    t_adj, m_adj = crew.get("total_adj", 0.0), crew.get("margin_adj", 0.0)
+    tot_now = ph + pa_
+    rh2 = t_adj * ph / tot_now + m_adj / 2.0 if tot_now else 0.0
+    ra2 = t_adj * pa_ / tot_now - m_adj / 2.0 if tot_now else 0.0
+    ph += rh2; pa_ += ra2
+    factors.append({"name": "Referee crew", "home": round(rh2, 1), "away": round(ra2, 1),
+                    "note": (f"{crew.get('tag')} · {crew['known']}/{len(crew['refs'])} refs with history"
+                             if crew.get("known") else
+                             ("Crew not posted yet" if not crew.get("refs") else "No referee history found"))})
+    ph, pa_ = round(ph, 1), round(pa_, 1)
+    margin = round(ph - pa_, 1)
+    total = round(ph + pa_, 1)
+    wp = 0.5 * (1.0 + math.erf(margin / (_NBA_GP_SD * math.sqrt(2.0))))
+    wp = round(_nba_gp_clamp(wp, 0.03, 0.97), 3)
+    pick = g["home"] if wp >= 0.5 else g["away"]
+    pick_prob = round((wp if wp >= 0.5 else 1 - wp) * 100, 1)
+    # Book comparisons.
+    ou_pick = ou_lean = None
+    ou_edge = None
+    if book.get("total") is not None:
+        ou_edge = round(total - book["total"], 1)
+        ou_lean = "OVER" if ou_edge > 0 else "UNDER" if ou_edge < 0 else None
+        side_odds = book.get("over_odds") if ou_lean == "OVER" else book.get("under_odds")
+        if ou_lean and abs(ou_edge) >= _NBA_GP_OU_MIN and (side_odds is None or _nba_gp_odds_ok(side_odds)):
+            ou_pick = ou_lean
+    ats_pick = ats_lean = None
+    ats_edge = None
+    if book.get("home_spread") is not None:
+        ats_edge = round(margin + book["home_spread"], 1)
+        ats_lean = g["home"] if ats_edge > 0 else g["away"] if ats_edge < 0 else None
+        if ats_lean and abs(ats_edge) >= _NBA_GP_ATS_MIN:
+            ats_pick = ats_lean
+    pick_ml = book.get("home_ml") if pick == g["home"] else book.get("away_ml")
+    ml_edge = None
+    if _nba_gp_odds_ok(pick_ml):
+        ml_edge = round((pick_prob / 100.0 - _nba_gp_implied(pick_ml)) * 100, 1)
+    else:
+        pick_ml = None   # missing, or shorter than -1000 (never surfaced)
+    return {"projHome": ph, "projAway": pa_, "projMargin": margin, "projTotal": total,
+            "baseHome": round(base_h, 1), "baseAway": round(base_a, 1),
+            "winProbHome": wp, "pickTeam": pick, "pickProb": pick_prob,
+            "ouPick": ou_pick, "ouLean": ou_lean, "ouEdge": ou_edge,
+            "atsPick": ats_pick, "atsLean": ats_lean, "atsEdge": ats_edge,
+            "pickMl": pick_ml, "mlEdge": ml_edge, "factors": factors, "bpiHome": bpi}
+
+
+async def _nba_gp_build(ds: str) -> dict:
+    target = date.fromisoformat(ds)
+    season = _nba_current_espn_season(target)
+    async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
+        sbd = None
+        for attempt in range(2):
+            try:
+                r = await client.get(f"{_NBA_GP_ESPN}/scoreboard", params={"dates": ds.replace("-", "")})
+                if r.status_code == 200:
+                    sbd = r.json()
+                    break
+            except Exception:
+                pass
+            await asyncio.sleep(0.5)
+        if not isinstance(sbd, dict) or not isinstance(sbd.get("events"), list):
+            raise RuntimeError("ESPN schedule is unavailable right now.")
+        games = []
+        for e in sbd["events"]:
+            c = (e.get("competitions") or [{}])[0]
+            comps = c.get("competitors") or []
+            h = next((x for x in comps if x.get("homeAway") == "home"), None)
+            a = next((x for x in comps if x.get("homeAway") == "away"), None)
+            if not h or not a:
+                continue
+            st = (c.get("status") or {}).get("type") or {}
+            stype = int(((e.get("season") or {}).get("type")) or 2)
+            games.append({"event_id": str(e.get("id", "")), "tip": e.get("date", ""), "stype": stype,
+                          "home": _norm_abbr(h["team"].get("abbreviation", "")),
+                          "away": _norm_abbr(a["team"].get("abbreviation", "")),
+                          "home_id": str(h["team"].get("id", "")), "away_id": str(a["team"].get("id", "")),
+                          "home_name": h["team"].get("displayName", ""), "away_name": a["team"].get("displayName", ""),
+                          "home_logo": h["team"].get("logo", ""), "away_logo": a["team"].get("logo", ""),
+                          "state": st.get("state", "pre"), "status": st.get("shortDetail") or st.get("description", ""),
+                          "completed": bool(st.get("completed")),
+                          "home_score": _nba_gp_score(h), "away_score": _nba_gp_score(a),
+                          "home_rec": next((x.get("summary") for x in (h.get("records") or []) if x.get("type") == "total"), ""),
+                          "away_rec": next((x.get("summary") for x in (a.get("records") or []) if x.get("type") == "total"), "")})
+        if not games:
+            return {"date": ds, "games": [], "message": "No NBA games are scheduled for this date."}
+        sem = asyncio.Semaphore(10)
+        need = set()
+        for g in games:
+            for s in range(season - 4, season + 1):
+                need.add((g["home_id"], s, 2)); need.add((g["home_id"], s, 3))
+            need.update({(g["away_id"], season, 2), (g["away_id"], season, 3), (g["away_id"], season - 1, 2)})
+        need = sorted(need)
+        res = await asyncio.gather(*[_nba_gp_team_games(client, t, s, ty, sem) for t, s, ty in need],
+                                   return_exceptions=True)
+        tg: Dict[str, Dict] = {}
+        missing = 0
+        for (t, s, ty), v in zip(need, res):
+            if isinstance(v, Exception):
+                missing += 1
+                v = []
+            tg.setdefault(t, {})[(s, ty)] = v
+
+        async def _summary(eid):
+            key = f"sum:{eid}"
+            hit = _nba_gp_mem_get(key, 240)
+            if hit is not None:
+                return hit
+            async with sem:
+                r = await client.get(f"{_NBA_GP_ESPN}/summary", params={"event": eid})
+            if r.status_code != 200:
+                raise RuntimeError(f"HTTP {r.status_code}")
+            return _nba_gp_mem_set(key, r.json())
+        sums = await asyncio.gather(*[_summary(g["event_id"]) for g in games], return_exceptions=True)
+        ref_cur, ref_prev = await asyncio.gather(_nba_gp_ref_season(client, season),
+                                                 _nba_gp_ref_season(client, season - 1))
+        bits = {}
+        pids = set()
+        for g, s in zip(games, sums):
+            if isinstance(s, Exception) or not isinstance(s, dict):
+                bits[g["event_id"]] = ([], {}, None, {g["home_id"]: [], g["away_id"]: []}, "")
+                continue
+            b = _nba_gp_summary_bits(s, g["home"], g["away"], g["home_id"], g["away_id"])
+            bits[g["event_id"]] = b
+            for rows in b[3].values():
+                pids.update(x["id"] for x in rows if x["id"])
+        psem = asyncio.Semaphore(8)
+        pids = sorted(pids)
+        logs = await asyncio.gather(*[get_player_gamelogs_espn(p, s, psem, client)
+                                      for p in pids for s in (season, season - 1)], return_exceptions=True)
+        logs_cur, logs_prev = {}, {}
+        for i, p in enumerate(pids):
+            lc, lp = logs[2 * i], logs[2 * i + 1]
+            logs_cur[p] = [] if isinstance(lc, Exception) else lc
+            logs_prev[p] = [] if isinstance(lp, Exception) else lp
+
+    preds = []
+    for g in games:
+        th, ta = tg.get(g["home_id"], {}), tg.get(g["away_id"], {})
+        hp = _nba_gp_team_profile(th, season, "home", ds, g["event_id"])
+        ap = _nba_gp_team_profile(ta, season, "away", ds, g["event_id"])
+        meet_all = []
+        for (s, ty), rows in th.items():
+            meet_all.extend(m for m in rows if m["opp_id"] == g["away_id"] and m["date"] < ds
+                            and m["id"] != g["event_id"])
+        meet_all.sort(key=lambda m: m["tip"], reverse=True)
+        meetings = meet_all[:10]
+        officials, book, bpi, inj, venue = bits[g["event_id"]]
+        crew = _nba_gp_crew(officials, ref_cur, ref_prev)
+        inj_h, lost_h = _nba_gp_injury_rows(inj.get(g["home_id"], []), logs_cur, logs_prev, hp["cur"]["games"], ds)
+        inj_a, lost_a = _nba_gp_injury_rows(inj.get(g["away_id"], []), logs_cur, logs_prev, ap["cur"]["games"], ds)
+        model = _nba_gp_predict_one(g, hp, ap, meetings, crew, inj_h, inj_a, lost_h, lost_a, book, bpi)
+        preds.append({**{k: g[k] for k in ("event_id", "tip", "stype", "home", "away", "home_id", "away_id",
+                                           "home_name", "away_name", "home_logo", "away_logo", "state",
+                                           "status", "completed", "home_score", "away_score",
+                                           "home_rec", "away_rec")},
+                      "venue": venue, "season": season, **model, "book": book,
+                      "homeProfile": hp, "awayProfile": ap, "crew": crew,
+                      "injHome": inj_h, "injAway": inj_a, "lostHome": lost_h, "lostAway": lost_a,
+                      "meetings": [{"date": m["date"], "home": g["home"] if m["home"] else g["away"],
+                                    "away": g["away"] if m["home"] else g["home"],
+                                    "homePts": int(m["pf"] if m["home"] else m["pa"]),
+                                    "awayPts": int(m["pa"] if m["home"] else m["pf"]),
+                                    "winner": g["home"] if m["pf"] > m["pa"] else g["away"],
+                                    "total": int(m["pf"] + m["pa"]), "sameVenue": bool(m["home"]),
+                                    "playoffs": m["stype"] == 3, "season": m["season"]} for m in meetings]})
+    preds.sort(key=lambda p: p.get("tip") or "")
+    return {"date": ds, "season": season, "games": preds,
+            "refsAvailable": bool(ref_cur or ref_prev),
+            "partialHistory": missing > 0}
+
+
+def _nba_gp_compact(p):
+    keep = ("event_id", "tip", "stype", "home", "away", "home_id", "away_id", "projHome", "projAway",
+            "projMargin", "projTotal", "winProbHome", "pickTeam", "pickProb", "ouPick", "ouLean", "ouEdge",
+            "atsPick", "atsLean", "atsEdge", "pickMl", "mlEdge", "factors", "bpiHome", "book")
+    out = {k: p.get(k) for k in keep}
+    out["crew"] = [r.get("name") for r in (p.get("crew") or {}).get("refs", [])]
+    out["saved_at"] = datetime.utcnow().isoformat(timespec="seconds") + "Z"
+    return out
+
+
+def _nba_gp_snapshot_doc(ds):
+    rows = _nba_sb_get({"app": f"eq.{_NBA_GP_APP}", "category": f"eq.{_NBA_GP_SNAP_CAT}",
+                        "side": "eq.ALL", "date": f"eq.{ds}", "select": "detail", "limit": "1"})
+    det = (rows[0].get("detail") if rows else None) or {}
+    return det if isinstance(det, dict) else {}
+
+
+def _nba_gp_save_snapshot(ds, preds):
+    """Latest pregame forecast per game wins; a game freezes at its tip-off."""
+    now = datetime.utcnow()
+    fresh = {}
+    for p in preds:
+        if p.get("stype") not in (2, 3) or p.get("state") != "pre":
+            continue
+        try:
+            tip = datetime.fromisoformat(str(p.get("tip")).replace("Z", "+00:00")).replace(tzinfo=None)
+        except Exception:
+            continue
+        if now >= tip:
+            continue
+        fresh[str(p["event_id"])] = _nba_gp_compact(p)
+    if not fresh:
+        return
+    with _NBA_GP_LOCK:
+        doc = _nba_gp_snapshot_doc(ds)
+        for eid, row in fresh.items():
+            old = doc.get(eid)
+            if old:
+                try:
+                    tip = datetime.fromisoformat(str(old.get("tip")).replace("Z", "+00:00")).replace(tzinfo=None)
+                    if now >= tip:
+                        continue
+                except Exception:
+                    pass
+            doc[eid] = row
+        ok = _nba_sb_upsert([{"app": _NBA_GP_APP, "date": ds, "category": _NBA_GP_SNAP_CAT, "side": "ALL",
+                              "wins": 0, "losses": 0, "locked": False, "detail": doc}],
+                            "app,date,category,side")
+    print(f"[nba_gp] snapshot {'saved' if ok else 'FAILED'}: {len(fresh)} games -> {ds}")
+
+
+def _nba_gp_profit(odds, result, default=-110.0):
+    o = _nba_gp_num(odds)
+    if o is None:
+        o = default
+    if result == "WIN":
+        return round(_NBA_GP_STAKE * (o / 100.0 if o > 0 else 100.0 / -o), 2)
+    if result == "LOSS":
+        return -_NBA_GP_STAKE
+    return 0.0
+
+
+def _nba_gp_grade(p, hs, as_):
+    book = p.get("book") or {}
+    home, away = p.get("home"), p.get("away")
+    out = {"event_id": p.get("event_id"), "home": home, "away": away, "home_score": hs, "away_score": as_,
+           "pickTeam": p.get("pickTeam"), "pickProb": p.get("pickProb"),
+           "projHome": p.get("projHome"), "projAway": p.get("projAway"), "projTotal": p.get("projTotal")}
+    won = home if hs > as_ else away
+    out["winner"] = "WIN" if p.get("pickTeam") == won else "LOSS"
+    ml = p.get("pickMl")
+    out["winner_odds"] = ml
+    out["winner_profit"] = _nba_gp_profit(ml, out["winner"]) if _nba_gp_odds_ok(ml) else None
+    if p.get("atsPick") and book.get("home_spread") is not None:
+        adj = hs + float(book["home_spread"]) - as_
+        if adj == 0:
+            r = "PUSH"
+        else:
+            r = "WIN" if (adj > 0) == (p["atsPick"] == home) else "LOSS"
+        odds = book.get("home_spread_odds") if p["atsPick"] == home else book.get("away_spread_odds")
+        out.update({"ats": r, "ats_pick": p["atsPick"], "ats_line": book["home_spread"] if p["atsPick"] == home
+                    else -float(book["home_spread"]), "ats_odds": odds, "ats_profit": _nba_gp_profit(odds, r)})
+    if p.get("ouPick") and book.get("total") is not None:
+        tot = hs + as_
+        line = float(book["total"])
+        r = "PUSH" if tot == line else ("WIN" if (tot > line) == (p["ouPick"] == "OVER") else "LOSS")
+        odds = book.get("over_odds") if p["ouPick"] == "OVER" else book.get("under_odds")
+        out.update({"ou": r, "ou_pick": p["ouPick"], "ou_line": line, "ou_total": tot, "ou_odds": odds,
+                    "ou_profit": _nba_gp_profit(odds, r)})
+    return out
+
+
+async def _nba_gp_finals(client, ds):
+    r = await client.get(f"{_NBA_GP_ESPN}/scoreboard", params={"dates": ds.replace("-", "")})
+    if r.status_code != 200:
+        raise RuntimeError(f"HTTP {r.status_code}")
+    out = {}
+    for e in r.json().get("events") or []:
+        c = (e.get("competitions") or [{}])[0]
+        st = (c.get("status") or {}).get("type") or {}
+        comps = c.get("competitors") or []
+        h = next((x for x in comps if x.get("homeAway") == "home"), None)
+        a = next((x for x in comps if x.get("homeAway") == "away"), None)
+        if not h or not a:
+            continue
+        name = str(st.get("name") or "").upper()
+        out[str(e.get("id"))] = {"completed": bool(st.get("completed")),
+                                 "void": any(x in name for x in ("POSTPONED", "CANCELED", "CANCELLED")),
+                                 "hs": _nba_gp_score(h), "as": _nba_gp_score(a)}
+    return out
+
+
+async def _nba_gp_record() -> dict:
+    snaps = _nba_sb_get({"app": f"eq.{_NBA_GP_APP}", "category": f"eq.{_NBA_GP_SNAP_CAT}",
+                         "select": "date,detail", "limit": "2000"}) or []
+    graded = {r.get("date"): r for r in (_nba_sb_get({"app": f"eq.{_NBA_GP_APP}",
+                                                       "category": f"eq.{_NBA_GP_GRADED_CAT}",
+                                                       "select": "date,detail,locked", "limit": "2000"}) or [])}
+    today = _nba_gp_today_et()
+    todo = [s for s in snaps if s.get("date") and s["date"] <= today
+            and not (graded.get(s["date"]) or {}).get("locked")]
+    if todo:
+        async with httpx.AsyncClient(timeout=15) as client:
+            for s in sorted(todo, key=lambda x: x["date"])[-21:]:
+                ds, doc = s["date"], s.get("detail") or {}
+                try:
+                    finals = await _nba_gp_finals(client, ds)
+                except Exception as exc:
+                    print(f"[nba_gp] grading {ds} skipped: {exc}")
+                    continue
+                rows, all_done = [], True
+                for eid, p in doc.items():
+                    f = finals.get(str(eid))
+                    if not f or f["void"]:
+                        if not f or not f["void"]:
+                            all_done = False
+                        continue
+                    if not f["completed"] or f["hs"] is None or f["as"] is None:
+                        all_done = False
+                        continue
+                    rows.append(_nba_gp_grade(p, f["hs"], f["as"]))
+                old_days = (date.fromisoformat(today) - date.fromisoformat(ds)).days >= 3
+                locked = all_done or old_days
+                _nba_sb_upsert([{"app": _NBA_GP_APP, "date": ds, "category": _NBA_GP_GRADED_CAT, "side": "ALL",
+                                 "wins": sum(r["winner"] == "WIN" for r in rows),
+                                 "losses": sum(r["winner"] == "LOSS" for r in rows),
+                                 "locked": locked, "detail": rows}], "app,date,category,side")
+                graded[ds] = {"date": ds, "detail": rows, "locked": locked}
+    pending = {s["date"]: len((s.get("detail") or {})) for s in snaps if s.get("date")}
+
+    def blank():
+        return {"wins": 0, "losses": 0, "pushes": 0, "profit": 0.0, "priced": 0}
+    tot = {"winner": blank(), "ats": blank(), "ou": blank()}
+    days = []
+    for ds in sorted(set(pending) | set(graded), reverse=True):
+        rows = (graded.get(ds) or {}).get("detail") or []
+        d = {"date": ds, "games": rows, "saved": pending.get(ds, 0),
+             "locked": bool((graded.get(ds) or {}).get("locked")),
+             "winner": blank(), "ats": blank(), "ou": blank()}
+        for r in rows:
+            for k, rk, pk in (("winner", "winner", "winner_profit"), ("ats", "ats", "ats_profit"),
+                              ("ou", "ou", "ou_profit")):
+                res = r.get(rk)
+                if not res:
+                    continue
+                for bucket in (d[k], tot[k]):
+                    bucket["wins"] += res == "WIN"
+                    bucket["losses"] += res == "LOSS"
+                    bucket["pushes"] += res == "PUSH"
+                    if r.get(pk) is not None:
+                        bucket["profit"] = round(bucket["profit"] + r[pk], 2)
+                        bucket["priced"] += res in ("WIN", "LOSS")
+        days.append(d)
+    for b in tot.values():
+        n = b["wins"] + b["losses"]
+        b["pct"] = round(b["wins"] / n * 100, 1) if n else None
+        b["roi"] = round(b["profit"] / (b["priced"] * _NBA_GP_STAKE) * 100, 1) if b["priced"] else None
+    return {"stake": _NBA_GP_STAKE, "totals": tot, "days": days}
+
+
+def _nba_gp_auth(request: Request) -> bool:
+    adm = request.query_params.get("admin", "")
+    return bool(get_user(request)) or (bool(adm) and adm == os.environ.get("INTERNAL_API_TOKEN", "__none__"))
+
+
+@app.get("/api/nba/game-predictor")
+async def nba_game_predictor(request: Request, date_str: str = ""):
+    from fastapi import HTTPException
+    if not _nba_gp_auth(request):
+        raise HTTPException(status_code=401, detail="Subscription required — please log in via moneypicksarena.com")
+    ds = (date_str or _nba_gp_today_et()).strip()
+    try:
+        date.fromisoformat(ds)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid date")
+    cache_key = f"gp:{ds}"
+    data = _nba_gp_mem_get(cache_key, 180)
+    if data is None:
+        try:
+            data = await asyncio.wait_for(_nba_gp_build(ds), timeout=100)
+        except asyncio.TimeoutError:
+            raise HTTPException(status_code=504, detail="Game Predictor data took too long to load. Try again in a minute.")
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"Game Predictor data unavailable: {exc}")
+        _nba_gp_mem_set(cache_key, data)
+        if ds >= _nba_gp_today_et() and data.get("games"):
+            _nba_th.Thread(target=_nba_gp_save_snapshot, args=(ds, data["games"]), daemon=True).start()
+    out = json.loads(json.dumps(data))
+    # Overlay the saved pregame forecast for any game that has already started,
+    # so a started or past game always shows what was actually predicted.
+    try:
+        doc = await asyncio.to_thread(_nba_gp_snapshot_doc, ds)
+    except Exception:
+        doc = {}
+    for p in out.get("games") or []:
+        saved = doc.get(str(p.get("event_id")))
+        if saved and p.get("state") != "pre":
+            for k, v in saved.items():
+                if k not in ("crew", "saved_at"):
+                    p[k] = v
+            p["savedPrediction"] = True
+            p["savedAt"] = saved.get("saved_at")
+        if p.get("completed") and p.get("home_score") is not None and p.get("away_score") is not None:
+            p["result"] = _nba_gp_grade(p, p["home_score"], p["away_score"])
+        p["retro"] = (not saved) and ds < _nba_gp_today_et()
+    return out
+
+
+@app.get("/api/nba/game-predictor/record")
+async def nba_game_predictor_record(request: Request):
+    from fastapi import HTTPException
+    if not _nba_gp_auth(request):
+        raise HTTPException(status_code=401, detail="Subscription required — please log in via moneypicksarena.com")
+    try:
+        return await asyncio.wait_for(_nba_gp_record(), timeout=60)
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=504, detail="Game Predictor record took too long to load.")
+
+
 @app.get("/api/verify-token")
 async def verify_token_nba(request: Request):
     from fastapi import HTTPException
@@ -6775,10 +8006,11 @@ async def index(request: Request, admin: str = "", token: str = ""):
     js_flag = "true" if is_admin else "false"
     coach_html = NBA_COACH_HTML.replace("__TODAY__", today_iso)
     historical_html = NBA_HISTORICAL_HTML.replace("__TODAY__", today_iso)
+    gp_html = NBA_GP_HTML.replace("__TODAY__", today_iso)
     # Keep the full Coach panel adjacent to the primary board, immediately before
     # ALL PICKS.  Historical Track Record remains a bottom-of-page surface.
     html = (MAIN_HTML.replace("__TODAY__", today_iso).replace("__TOMORROW__", tomorrow_iso)
-            .replace('<div id="allPicksWrap"', coach_html + '<div id="allPicksWrap"', 1)
+            .replace('<div id="allPicksWrap"', gp_html + coach_html + '<div id="allPicksWrap"', 1)
             .replace("</body>", historical_html + "</body>", 1)
             .replace("</head>", f"<script>window.IS_ADMIN = {js_flag};</script></head>", 1))
     return HTMLResponse(html)
