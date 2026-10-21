@@ -2025,7 +2025,20 @@ def best_bet_at_line(line, values):
     return {'side': side, 'line': line, 'hits': hits, 'games': n, 'pct': pct, 'conf': conf}
 
 
+_NBA_RUNS_ACTIVE = 0
+
+
 async def run_analysis(selected_date: str = None, force: bool = False) -> Dict:
+    """Player-prop run. Counts active runs so the Game Predictor can stand aside."""
+    global _NBA_RUNS_ACTIVE
+    _NBA_RUNS_ACTIVE += 1
+    try:
+        return await _run_analysis_core(selected_date, force)
+    finally:
+        _NBA_RUNS_ACTIVE -= 1
+
+
+async def _run_analysis_core(selected_date: str = None, force: bool = False) -> Dict:
     today_str = selected_date if selected_date else date.today().isoformat()
     historical_replay = today_str < date.today().isoformat()
     # File cache check first (skipped on force refresh — admin only)
@@ -5501,7 +5514,7 @@ NBA_GP_HTML = r"""
     <div class="ngp-badge">&#128302;</div>
     <div><div class="ngp-kicker">Team model &middot; every game</div><h2 class="ngp-title">Game Predictor</h2>
       <div class="ngp-sub">Winner, spread and total: home/road points for &amp; against, last 10, rest, head-to-head, injuries and referee crews.</div></div>
-    <div class="ngp-side"><button type="button" class="ngp-btn" onclick="nbaGpLoad(true)">&#8635; Refresh</button><button type="button" class="ngp-btn" onclick="openNbaGpRecord()">&#128200; Predictor Record</button></div>
+    <div class="ngp-side"><button type="button" class="ngp-btn" id="nbaGpLoadBtn" onclick="nbaGpLoad(true)">&#128302; Load predictions</button><button type="button" class="ngp-btn" onclick="openNbaGpRecord()">&#128200; Predictor Record</button></div>
   </div>
   <div id="nbaGpRecordStrip" class="ngp-rec-strip"></div>
   <div id="nbaGpMsg" class="ngp-msg" role="status"></div>
@@ -5536,6 +5549,7 @@ function nbaGpLoad(force){
   if(__nbaGp.loading)return;
   if(!force&&__nbaGp.data&&__nbaGp.date===ds)return;
   __nbaGp.loading=true;__nbaGp.date=ds;
+  var lb=document.getElementById('nbaGpLoadBtn');if(lb)lb.innerHTML='&#8635; Refresh';
   msg.textContent='Loading Game Predictor for '+ds+'… first load of the day can take up to a minute.';
   if(!__nbaGp.data)grid.innerHTML='';
   fetch('/api/nba/game-predictor?date_str='+encodeURIComponent(ds)+'&'+_ngpQS()+(force?'&_r='+Date.now():''))
@@ -5714,8 +5728,15 @@ function openNbaGpRecord(){
   p.scrollIntoView({behavior:'smooth',block:'start'});
 }
 function openNbaGamePredictor(){var s=document.getElementById('nbaGpSection');if(s)s.scrollIntoView({behavior:'smooth',block:'start'});nbaGpLoad(false);}
+function _ngpIdle(){
+  var msg=document.getElementById('nbaGpMsg'),grid=document.getElementById('nbaGpGrid'),lb=document.getElementById('nbaGpLoadBtn');
+  __nbaGp.data=null;__nbaGp.date='';
+  if(grid)grid.innerHTML='';
+  if(lb)lb.innerHTML='&#128302; Load predictions';
+  if(msg)msg.innerHTML='<span style="color:#94a3b8">Predictions load only when you ask, so they never slow down a player-prop run. Click <b style="color:#c4b5fd">Load predictions</b> for '+_ngpEsc(_ngpDate())+'.</span>';
+}
 (function(){
-  function init(){var dp=document.getElementById('datePicker');if(dp)dp.addEventListener('change',function(){nbaGpLoad(true);});nbaGpLoad(false);}
+  function init(){var dp=document.getElementById('datePicker');if(dp)dp.addEventListener('change',function(){if(!__nbaGp.loading)_ngpIdle();});_ngpIdle();}
   if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',init);else init();
 })();
 </script>
@@ -7109,6 +7130,25 @@ def _nba_gp_score(comp) -> Optional[float]:
         return None
 
 
+class _NbaGpRunBusy(Exception):
+    pass
+
+
+def _nba_gp_check_run():
+    if _NBA_RUNS_ACTIVE > 0:
+        raise _NbaGpRunBusy()
+
+
+_NBA_GP_BUILD_LOCK = None
+
+
+def _nba_gp_build_lock():
+    global _NBA_GP_BUILD_LOCK
+    if _NBA_GP_BUILD_LOCK is None:
+        _NBA_GP_BUILD_LOCK = asyncio.Lock()
+    return _NBA_GP_BUILD_LOCK
+
+
 async def _nba_gp_team_games(client, team_id, season, stype, sem):
     """Completed games for one team/season/type (compact, cached)."""
     key = f"tg:{team_id}:{season}:{stype}"
@@ -7125,13 +7165,17 @@ async def _nba_gp_team_games(client, team_id, season, stype, sem):
             pass
     data = None
     for attempt in range(2):
+        _nba_gp_check_run()
         try:
             async with sem:
+                _nba_gp_check_run()
                 r = await client.get(f"{_NBA_GP_ESPN}/teams/{team_id}/schedule",
                                      params={"season": season, "seasontype": stype})
             if r.status_code == 200:
                 data = r.json()
                 break
+        except _NbaGpRunBusy:
+            raise
         except Exception:
             pass
         await asyncio.sleep(0.5)
@@ -7614,7 +7658,8 @@ async def _nba_gp_build(ds: str) -> dict:
                           "away_rec": next((x.get("summary") for x in (a.get("records") or []) if x.get("type") == "total"), "")})
         if not games:
             return {"date": ds, "games": [], "message": "No NBA games are scheduled for this date."}
-        sem = asyncio.Semaphore(10)
+        _nba_gp_check_run()
+        sem = asyncio.Semaphore(4)
         need = set()
         for g in games:
             for s in range(season - 4, season + 1):
@@ -7623,6 +7668,8 @@ async def _nba_gp_build(ds: str) -> dict:
         need = sorted(need)
         res = await asyncio.gather(*[_nba_gp_team_games(client, t, s, ty, sem) for t, s, ty in need],
                                    return_exceptions=True)
+        if any(isinstance(v, _NbaGpRunBusy) for v in res):
+            raise _NbaGpRunBusy()
         tg: Dict[str, Dict] = {}
         missing = 0
         for (t, s, ty), v in zip(need, res):
@@ -7631,30 +7678,38 @@ async def _nba_gp_build(ds: str) -> dict:
                 v = []
             tg.setdefault(t, {})[(s, ty)] = v
 
-        async def _summary(eid):
-            key = f"sum:{eid}"
+        async def _summary(g):
+            # Keep only the extracted pieces in memory, never the full summary page.
+            key = f"sumbits:{g['event_id']}"
             hit = _nba_gp_mem_get(key, 240)
             if hit is not None:
                 return hit
+            _nba_gp_check_run()
             async with sem:
-                r = await client.get(f"{_NBA_GP_ESPN}/summary", params={"event": eid})
+                _nba_gp_check_run()
+                r = await client.get(f"{_NBA_GP_ESPN}/summary", params={"event": g["event_id"]})
             if r.status_code != 200:
                 raise RuntimeError(f"HTTP {r.status_code}")
-            return _nba_gp_mem_set(key, r.json())
-        sums = await asyncio.gather(*[_summary(g["event_id"]) for g in games], return_exceptions=True)
+            b = _nba_gp_summary_bits(r.json(), g["home"], g["away"], g["home_id"], g["away_id"])
+            del r
+            return _nba_gp_mem_set(key, b)
+        sums = await asyncio.gather(*[_summary(g) for g in games], return_exceptions=True)
+        if any(isinstance(v, _NbaGpRunBusy) for v in sums):
+            raise _NbaGpRunBusy()
         ref_cur, ref_prev = await asyncio.gather(_nba_gp_ref_season(client, season),
                                                  _nba_gp_ref_season(client, season - 1))
         bits = {}
         pids = set()
         for g, s in zip(games, sums):
-            if isinstance(s, Exception) or not isinstance(s, dict):
+            if isinstance(s, Exception) or not isinstance(s, tuple):
                 bits[g["event_id"]] = ([], {}, None, {g["home_id"]: [], g["away_id"]: []}, "")
                 continue
-            b = _nba_gp_summary_bits(s, g["home"], g["away"], g["home_id"], g["away_id"])
+            b = s
             bits[g["event_id"]] = b
             for rows in b[3].values():
                 pids.update(x["id"] for x in rows if x["id"])
-        psem = asyncio.Semaphore(8)
+        _nba_gp_check_run()
+        psem = asyncio.Semaphore(4)
         pids = sorted(pids)
         logs = await asyncio.gather(*[get_player_gamelogs_espn(p, s, psem, client)
                                       for p in pids for s in (season, season - 1)], return_exceptions=True)
@@ -7898,8 +7953,15 @@ async def nba_game_predictor(request: Request, date_str: str = ""):
     cache_key = f"gp:{ds}"
     data = _nba_gp_mem_get(cache_key, 180)
     if data is None:
+        if _NBA_RUNS_ACTIVE > 0:
+            raise HTTPException(status_code=409, detail="Run in progress. Load the Game Predictor after the run finishes.")
         try:
-            data = await asyncio.wait_for(_nba_gp_build(ds), timeout=100)
+            async with _nba_gp_build_lock():
+                data = _nba_gp_mem_get(cache_key, 180)
+                if data is None:
+                    data = await asyncio.wait_for(_nba_gp_build(ds), timeout=100)
+        except _NbaGpRunBusy:
+            raise HTTPException(status_code=409, detail="A run started, so the Game Predictor stepped aside. Load it again after the run finishes.")
         except asyncio.TimeoutError:
             raise HTTPException(status_code=504, detail="Game Predictor data took too long to load. Try again in a minute.")
         except Exception as exc:
