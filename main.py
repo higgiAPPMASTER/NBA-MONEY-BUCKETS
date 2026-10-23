@@ -3212,6 +3212,7 @@ document.addEventListener('keydown',function(e){if(e.key==='Escape')_nbaNavClose
       </div>
       <div class="nba-record-tools">
         <div class="nba-view-tabs" style="margin-left:0"><button id="nbaDowLaneAll" class="nba-view-btn active" onclick="_nbaDowSetLane('all')">Main + Overflow</button><button id="nbaDowLaneMain" class="nba-view-btn" onclick="_nbaDowSetLane('main')">Main</button><button id="nbaDowLaneOvf" class="nba-view-btn" onclick="_nbaDowSetLane('overflow')">Overflow</button><button id="nbaDowLaneCoach" class="nba-view-btn" onclick="_nbaDowSetLane('coach')">Edge Coach</button></div>
+        <label><span class="nba-record-label">Day</span><select id="nbaDowDay" class="nba-record-control" onchange="_nbaDowRender()"><option value="">All days</option><option value="0">Monday</option><option value="1">Tuesday</option><option value="2">Wednesday</option><option value="3">Thursday</option><option value="4">Friday</option><option value="5">Saturday</option><option value="6">Sunday</option></select></label>
         <label><span class="nba-record-label">Category</span><select id="nbaDowCat" class="nba-record-control" onchange="_nbaDowRender()"><option value="">All categories</option></select></label>
         <label><span class="nba-record-label">Side</span><select id="nbaDowSide" class="nba-record-control" onchange="_nbaDowRender()"><option value="">Overs + Unders</option><option value="OVER">Overs</option><option value="UNDER">Unders</option></select></label>
         <label><span class="nba-record-label">Range</span><select id="nbaDowRange" class="nba-record-control" onchange="_nbaDowRender()"><option value="all">All Time</option><option value="week">Last 7 days</option><option value="month">This month</option></select></label>
@@ -3239,11 +3240,12 @@ function rows(){
   return out;
 }
 function filtered(){
-  var cat=$('nbaDowCat').value,side=$('nbaDowSide').value,range=$('nbaDowRange').value,t=todayEt(),start='0001-01-01';
+  var cat=$('nbaDowCat').value,side=$('nbaDowSide').value,range=$('nbaDowRange').value,day=$('nbaDowDay').value,t=todayEt(),start='0001-01-01';
   if(range==='week'){var d=new Date(t+'T12:00:00Z');d.setUTCDate(d.getUTCDate()-6);start=d.toISOString().slice(0,10);}
   else if(range==='month'){start=t.slice(0,7)+'-01';}
   return rows().filter(function(r){
     if(r._date<start)return false;
+    if(day!==''&&wdIdx(r._date)!==Number(day))return false;
     if(cat&&(r.category||'')!==cat)return false;
     if(side&&String(r.side||'OVER').toUpperCase()!==side)return false;
     return true;
@@ -3277,20 +3279,27 @@ window._nbaDowRender=function(){
   var body=$('nbaDowBody');if(!body)return;
   if(!S.data[S.lane]){body.innerHTML='';return;}
   var list=filtered(),s=stake();
-  if(!list.length){body.innerHTML=_nbaRecordEmpty('No graded picks for these filters','Pick another range, lane, category or side.');return;}
-  var tot=agg(list),h=_nbaRecordSummary(tot.w,tot.l,tot.pend,tot.net,tot.staked,s);
+  if(!list.length){body.innerHTML=_nbaRecordEmpty('No graded picks for these filters','Pick another day, range, lane, category or side.');return;}
+  var selDay=$('nbaDowDay').value,days=selDay===''?[0,1,2,3,4,5,6]:[Number(selDay)];
+  var tot=agg(list),h='';
+  if(selDay!==''){
+    var sd={};list.forEach(function(r){sd[r._date]=1;});
+    h+='<div style="color:#94a3b8;font-size:.74rem;margin:0 0 10px">'+WD[Number(selDay)]+' only · slates: '+nbaTrkEsc(Object.keys(sd).sort().reverse().join(', '))+' · <a href="#" onclick="document.getElementById(&quot;nbaDowDay&quot;).value=&quot;&quot;;_nbaDowRender();return false" style="color:#818cf8">show all days</a></div>';
+  }
+  h+=_nbaRecordSummary(tot.w,tot.l,tot.pend,tot.net,tot.staked,s);
   var byDay=WD.map(function(){return [];});list.forEach(function(r){var i=wdIdx(r._date);if(i>=0)byDay[i].push(r);});
   var dh='';
   byDay.forEach(function(L,i){
+    if(days.indexOf(i)<0)return;
     var a=agg(L),n=a.w+a.l,dates={};L.forEach(function(r){dates[r._date]=1;});
-    dh+='<tr><td><b>'+WD[i]+'</b></td><td>'+Object.keys(dates).length+'</td><td>'+a.w+'-'+a.l+'</td>'+
+    dh+='<tr style="cursor:pointer" title="Show '+WD[i]+' only" onclick="document.getElementById(&quot;nbaDowDay&quot;).value=&quot;'+i+'&quot;;_nbaDowRender()"><td><b style="color:#a5b4fc;text-decoration:underline">'+WD[i]+'</b></td><td>'+Object.keys(dates).length+'</td><td>'+a.w+'-'+a.l+'</td>'+
       '<td style="color:'+(n?rateColor(a.w/n*100):'#64748b')+';font-weight:900">'+(n?(a.w/n*100).toFixed(1)+'%':'—')+'</td>'+
       '<td>'+sideCell(L.filter(function(r){return String(r.side||'OVER').toUpperCase()==='OVER';}))+'</td>'+
       '<td>'+sideCell(L.filter(function(r){return String(r.side||'OVER').toUpperCase()==='UNDER';}))+'</td>'+
       '<td style="color:'+(a.net>0?'#4ade80':a.net<0?'#f87171':'#e2e8f0')+';font-weight:900">'+(a.staked?money(a.net):'—')+'</td>'+
       '<td>'+(a.staked?(a.net/a.staked*100).toFixed(1)+'%':'—')+'</td></tr>';
   });
-  h+='<div class="nba-dow-h3">By day of week</div><div class="nba-dow-wrap"><table class="nba-dow-table"><thead><tr><th>Day</th><th>Slates</th><th>Record</th><th>Hit rate</th><th>Overs</th><th>Unders</th><th>Net P/L</th><th>ROI</th></tr></thead><tbody>'+dh+'</tbody></table></div>';
+  h+='<div class="nba-dow-h3">By day of week'+(selDay===''?' <span style="color:#64748b;font-weight:600;font-size:.7rem">· tap a day to see only that day</span>':'')+'</div><div class="nba-dow-wrap"><table class="nba-dow-table"><thead><tr><th>Day</th><th>Slates</th><th>Record</th><th>Hit rate</th><th>Overs</th><th>Unders</th><th>Net P/L</th><th>ROI</th></tr></thead><tbody>'+dh+'</tbody></table></div>';
   var cat=$('nbaDowCat').value,side=$('nbaDowSide').value;
   var coach=S.lane==='coach';
   var cats=cat?[cat]:(coach?[]:CATS.slice());list.forEach(function(r){var c=r.category||'';if(c&&cats.indexOf(c)<0)cats.push(c);});
@@ -3300,12 +3309,12 @@ window._nbaDowRender=function(){
     var L=list.filter(function(r){return (r.category||'')===c&&String(r.side||'OVER').toUpperCase()===sd;});
     if(coach&&!L.length)return;
     var row='<td><b>'+nbaTrkEsc(c)+'</b> <span class="nba-acc-side '+(sd==='OVER'?'over':'under')+'">'+sd+'</span></td>';
-    WD.forEach(function(_,i){row+=cell(agg(L.filter(function(r){return wdIdx(r._date)===i;})));});
-    var a=agg(L);row+=cell(a);
+    days.forEach(function(i){row+=cell(agg(L.filter(function(r){return wdIdx(r._date)===i;})));});
+    var a=agg(L);if(days.length>1)row+=cell(a);
     row+='<td style="color:'+(a.net>0?'#4ade80':a.net<0?'#f87171':'#e2e8f0')+';font-weight:900">'+(a.staked?money(a.net):'—')+'</td>';
     mh+='<tr>'+row+'</tr>';
   });});
-  h+='<div class="nba-dow-h3">Every category by day (hit rate · W-L)</div><div class="nba-dow-wrap"><table class="nba-dow-table"><thead><tr><th>Category / side</th>'+WD.map(function(d){return '<th>'+d.slice(0,3)+'</th>';}).join('')+'<th>Total</th><th>Net P/L</th></tr></thead><tbody>'+mh+'</tbody></table></div>';
+  h+='<div class="nba-dow-h3">'+(days.length>1?'Every category by day':'Every category on '+WD[days[0]])+' (hit rate · W-L)</div><div class="nba-dow-wrap"><table class="nba-dow-table"'+(days.length>1?'':' style="min-width:0"')+'><thead><tr><th>Category / side</th>'+days.map(function(i){return '<th>'+(days.length>1?WD[i].slice(0,3):WD[i])+'</th>';}).join('')+(days.length>1?'<th>Total</th>':'')+'<th>Net P/L</th></tr></thead><tbody>'+mh+'</tbody></table></div>';
   body.innerHTML=h;
 };
 window._nbaDowSetLane=function(l){
