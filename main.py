@@ -3207,11 +3207,11 @@ document.addEventListener('keydown',function(e){if(e.key==='Escape')_nbaNavClose
   <div class="card nba-trk-shell" style="padding:14px">
     <div class="nba-record-hero">
       <div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start;flex-wrap:wrap">
-        <div><div class="nba-record-kicker" style="color:#f59e0b">NBA Performance Center · Day of Week</div><h2 class="nba-record-title">&#128197; Day of Week Report</h2><div class="nba-record-sub">Hit rates for every category, Overs and Unders, by day of the week. Built from saved, graded Main and Overflow Track Record picks only. It never changes picks or starts grading. Hit rate counts every decided pick; P/L counts only picks with genuine saved odds.</div></div>
+        <div><div class="nba-record-kicker" style="color:#f59e0b">NBA Performance Center · Day of Week</div><h2 class="nba-record-title">&#128197; Day of Week Report</h2><div class="nba-record-sub">Hit rates for every category, Overs and Unders, by day of the week. Built from saved, graded Main, Overflow and Edge Coach Track Record picks only (Edge Coach is kept separate and shows each Coach category). It never changes picks or starts grading. Hit rate counts every decided pick; P/L counts only picks with genuine saved odds.</div></div>
         <button class="nba-view-btn" onclick="document.getElementById('nba-dow-section').style.display='none'">Close</button>
       </div>
       <div class="nba-record-tools">
-        <div class="nba-view-tabs" style="margin-left:0"><button id="nbaDowLaneAll" class="nba-view-btn active" onclick="_nbaDowSetLane('all')">Main + Overflow</button><button id="nbaDowLaneMain" class="nba-view-btn" onclick="_nbaDowSetLane('main')">Main</button><button id="nbaDowLaneOvf" class="nba-view-btn" onclick="_nbaDowSetLane('overflow')">Overflow</button></div>
+        <div class="nba-view-tabs" style="margin-left:0"><button id="nbaDowLaneAll" class="nba-view-btn active" onclick="_nbaDowSetLane('all')">Main + Overflow</button><button id="nbaDowLaneMain" class="nba-view-btn" onclick="_nbaDowSetLane('main')">Main</button><button id="nbaDowLaneOvf" class="nba-view-btn" onclick="_nbaDowSetLane('overflow')">Overflow</button><button id="nbaDowLaneCoach" class="nba-view-btn" onclick="_nbaDowSetLane('coach')">Edge Coach</button></div>
         <label><span class="nba-record-label">Category</span><select id="nbaDowCat" class="nba-record-control" onchange="_nbaDowRender()"><option value="">All categories</option></select></label>
         <label><span class="nba-record-label">Side</span><select id="nbaDowSide" class="nba-record-control" onchange="_nbaDowRender()"><option value="">Overs + Unders</option><option value="OVER">Overs</option><option value="UNDER">Unders</option></select></label>
         <label><span class="nba-record-label">Range</span><select id="nbaDowRange" class="nba-record-control" onchange="_nbaDowRender()"><option value="all">All Time</option><option value="week">Last 7 days</option><option value="month">This month</option></select></label>
@@ -3268,7 +3268,8 @@ function money(v){return (v>=0?'+':'−')+'$'+Math.abs(v).toFixed(2);}
 function sideCell(list){var a=agg(list),n=a.w+a.l;return n?'<span style="color:'+rateColor(a.w/n*100)+'">'+a.w+'-'+a.l+' · '+(a.w/n*100).toFixed(1)+'%</span>':'—';}
 function fillCats(){
   var sel=$('nbaDowCat'),cur=sel.value,seen={};
-  var list=CATS.slice();rows().forEach(function(r){var c=r.category||'';if(c&&list.indexOf(c)<0)list.push(c);});
+  var list=S.lane==='coach'?[]:CATS.slice();rows().forEach(function(r){var c=r.category||'';if(c&&list.indexOf(c)<0)list.push(c);});
+  if(S.lane==='coach')list.sort();
   sel.innerHTML='<option value="">All categories</option>'+list.map(function(c){return '<option value="'+nbaTrkEsc(c)+'">'+nbaTrkEsc(c)+'</option>';}).join('');
   if(list.indexOf(cur)>=0)sel.value=cur;
 }
@@ -3291,10 +3292,13 @@ window._nbaDowRender=function(){
   });
   h+='<div class="nba-dow-h3">By day of week</div><div class="nba-dow-wrap"><table class="nba-dow-table"><thead><tr><th>Day</th><th>Slates</th><th>Record</th><th>Hit rate</th><th>Overs</th><th>Unders</th><th>Net P/L</th><th>ROI</th></tr></thead><tbody>'+dh+'</tbody></table></div>';
   var cat=$('nbaDowCat').value,side=$('nbaDowSide').value;
-  var cats=cat?[cat]:CATS.slice();list.forEach(function(r){var c=r.category||'';if(c&&cats.indexOf(c)<0)cats.push(c);});
+  var coach=S.lane==='coach';
+  var cats=cat?[cat]:(coach?[]:CATS.slice());list.forEach(function(r){var c=r.category||'';if(c&&cats.indexOf(c)<0)cats.push(c);});
+  if(coach&&!cat)cats.sort();
   var sides=side?[side]:['OVER','UNDER'],mh='';
   cats.forEach(function(c){sides.forEach(function(sd){
     var L=list.filter(function(r){return (r.category||'')===c&&String(r.side||'OVER').toUpperCase()===sd;});
+    if(coach&&!L.length)return;
     var row='<td><b>'+nbaTrkEsc(c)+'</b> <span class="nba-acc-side '+(sd==='OVER'?'over':'under')+'">'+sd+'</span></td>';
     WD.forEach(function(_,i){row+=cell(agg(L.filter(function(r){return wdIdx(r._date)===i;})));});
     var a=agg(L);row+=cell(a);
@@ -3305,8 +3309,10 @@ window._nbaDowRender=function(){
   body.innerHTML=h;
 };
 window._nbaDowSetLane=function(l){
-  S.lane=(l==='overflow'||l==='main')?l:'all';
+  S.lane=(l==='overflow'||l==='main'||l==='coach')?l:'all';
+  $('nbaDowCat').value='';
   $('nbaDowLaneAll').classList.toggle('active',S.lane==='all');
+  $('nbaDowLaneCoach').classList.toggle('active',S.lane==='coach');
   $('nbaDowLaneMain').classList.toggle('active',S.lane==='main');
   $('nbaDowLaneOvf').classList.toggle('active',S.lane==='overflow');
   if(S.data[S.lane]){fillCats();window._nbaDowRender();}else window.loadNbaDowReport(true);
@@ -3315,12 +3321,13 @@ window.loadNbaDowReport=function(force){
   var lane=S.lane,id=++S.req,body=$('nbaDowBody'),st=$('nbaDowStatus');
   if(!force&&S.data[lane]){fillCats();window._nbaDowRender();return;}
   body.innerHTML=_nbaRecordEmpty('Loading saved results','Reading graded official picks.');st.textContent='';
-  fetch('/api/nba/day-of-week-record?lane='+lane).then(function(r){
+  var tq=lane==='coach'?'&_tok='+encodeURIComponent(localStorage.getItem('__mpa_token')||''):'';
+  fetch('/api/nba/day-of-week-record?lane='+lane+tq).then(function(r){
     return r.json().catch(function(){return {};}).then(function(d){if(!r.ok)throw new Error(d.detail||('HTTP '+r.status));return d;});
   }).then(function(d){
     if(id!==S.req)return;
     if(!d||!Array.isArray(d.dates))throw new Error('Unexpected record response');
-    S.data[lane]=d;st.textContent=(lane==='overflow'?'Overflow':lane==='main'?'Main':'Main + Overflow')+' records loaded: '+d.dates.length+' graded slates.';
+    S.data[lane]=d;st.textContent=(lane==='coach'?'Edge Coach':lane==='overflow'?'Overflow':lane==='main'?'Main':'Main + Overflow')+' records loaded: '+d.dates.length+' graded slates.';
     fillCats();window._nbaDowRender();
   }).catch(function(e){
     if(id!==S.req)return;
@@ -3335,12 +3342,12 @@ window.openNbaDowReport=function(){
 function csvCell(v){var t=String(v==null?'':v);if(/^[=+@-]/.test(t)&&isNaN(Number(t)))t="'"+t;return '"'+t.split('"').join('""')+'"';}
 window._nbaDowCsv=function(){
   var list=filtered(),s=stake();if(!list.length)return;
-  var lines=[['record','date','weekday','name','team','category','side','line','odds','actual','result','priced_profit'].map(csvCell).join(',')];
+  var lines=[['record','date','weekday','name','team','category','market','side','line','odds','actual','result','priced_profit'].map(csvCell).join(',')];
   list.forEach(function(r){
     var res=String(r.result||'').toUpperCase(),p='';
     if((res==='WIN'||res==='LOSS')&&_nbaTrkPriced(r.odds))p=nbaProfit(r.odds,s,res).toFixed(2);
     var i=wdIdx(r._date);
-    lines.push([r.is_overflow?'overflow':'main',r._date,i<0?'':WD[i],r.name||r.player,r.team,r.category,r.side,r.line,r.odds,r.actual,res,p].map(csvCell).join(','));
+    lines.push([S.lane==='coach'?'coach':(r.is_overflow?'overflow':'main'),r._date,i<0?'':WD[i],r.name||r.player,r.team,r.category,r.market||r.stat_label||r.stat||'',r.side,r.line,r.odds,r.actual,res,p].map(csvCell).join(','));
   });
   var blob=new Blob([lines.join(String.fromCharCode(13,10))],{type:'text/csv;charset=utf-8'});
   var a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='nba_day_of_week_'+S.lane+'.csv';
@@ -8498,11 +8505,35 @@ async def nba_overflow_track_record():
         return _JR({"detail":"Saved NBA Overflow record is unavailable. Please retry."}, status_code=503)
 
 @app.get("/api/nba/day-of-week-record")
-async def nba_day_of_week_record(lane: str = "all"):
+async def nba_day_of_week_record(request: Request, lane: str = "all"):
     """Read-only weekday report source: saved graded Main and/or Overflow
-    rows. Never starts grading and never feeds picks."""
+    rows, or the separate Edge Coach record. Never starts grading and never
+    feeds picks."""
     from fastapi.responses import JSONResponse as _JR
-    lane = lane if lane in ("main", "overflow") else "all"
+    lane = lane if lane in ("main", "overflow", "coach") else "all"
+    if lane == "coach":
+        if not get_user(request):
+            return _JR({"detail": "Subscription required — please log in via moneypicksarena.com"},
+                       status_code=401)
+        try:
+            saved = await asyncio.to_thread(_nba_hist_sb_get, {
+                "app": f"eq.{_NBA_COACH_APP}", "category": f"eq.{_NBA_COACH_DETAIL_CAT}",
+                "locked": "eq.true", "select": "date,detail", "limit": "1000"})
+        except RuntimeError:
+            return _JR({"detail": "Saved Edge Coach record is unavailable. Please retry."},
+                       status_code=503)
+        dates = []
+        for r in saved or []:
+            det = []
+            for x in r.get("detail") or []:
+                row = dict(x)
+                row["market"] = x.get("category") or x.get("stat_label") or x.get("stat") or ""
+                row["category"] = x.get("preset") or x.get("category") or "Coach Edge"
+                det.append(row)
+            if r.get("date") and det:
+                dates.append({"date": r["date"], "detail": det})
+        dates.sort(key=lambda d: d["date"], reverse=True)
+        return _JR({"dates": dates, "lane": "coach"})
     try:
         if lane != "all":
             data = await asyncio.to_thread(_nba_track_record_response, lane == "overflow")
