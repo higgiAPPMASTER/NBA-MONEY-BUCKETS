@@ -1,7 +1,7 @@
 
 # NBA Stats API blocks server IPs. ESPN gives schedule + rosters + player game logs free.
 
-import asyncio, pathlib, time
+import asyncio, pathlib, time, random
 import json
 import math
 import os
@@ -110,6 +110,17 @@ HISTORICAL_ODDS_MIN_DATE = "2023-05-03"
 # Historical requests are intentionally one-region and standard-market only.
 HISTORICAL_ODDS_REGION = "us"
 LIVE_ODDS_REGIONS = "us,us2,ca"
+# Same sportsbook order as the MLB/NFL apps. Live NBA props use the
+# highest-priority book that posts the market; its exact line and both side
+# prices stay together (never mixed with another book's line).
+_NBA_PRIORITY_BOOKS = ("draftkings", "fanduel", "betmgm", "williamhill_us", "caesars",
+                       "betrivers", "ballybet", "bet365", "espnbet",
+                       "bet99", "thescore", "fliff", "mybookieag", "betonlineag", "bovada")
+_NBA_BOOK_PRIORITY = {b: i for i, b in enumerate(_NBA_PRIORITY_BOOKS)}
+# Odds pulled by a run that stopped on ESPN are reused by the automatic retry
+# so a slow ESPN response never costs a second Odds API pull.
+_NBA_RETRY_ODDS: dict = {}
+_NBA_RETRY_ODDS_TTL = 900
 HISTORICAL_ODDS_TIMEOUT = 55
 HISTORICAL_ODDS_CONCURRENCY = 4
 HISTORICAL_REPLAY_SCHEMA = 11
@@ -324,11 +335,40 @@ def _nba_read_live_board(date_str: str):
     return board
 
 
-def _nba_save_picks_snapshot(date_str: str, result: dict):
-    """Save category/side Top 10 plus all remaining standard qualifying plays."""
+def _nba_main_board_ok(date_str: str, result: dict) -> bool:
+    """A complete live board (the per-game tipoff check happens per row)."""
+    if not isinstance(result, dict) or result.get("date") != date_str:
+        return False
     if (not _nba_official_board(result) or result.get("historical_replay")
-            or not _nba_coach_complete_pregame(date_str, result)):
+            or result.get("run_incomplete")):
+        return False
+    if not result.get("games") or not result.get("odds_loaded"):
+        return False
+    if result.get("log") and any(str(x).lower().startswith("error") for x in result["log"]):
+        return False
+    return True
+
+
+def _nba_tip_started(tipoff, now_utc) -> bool:
+    """Unknown tipoff counts as started, so it is never captured as pregame."""
+    try:
+        from datetime import timezone as _tz
+        t = datetime.fromisoformat(str(tipoff).replace("Z", "+00:00"))
+        if t.tzinfo is None:
+            t = t.replace(tzinfo=_tz.utc)
+        return now_utc >= t
+    except Exception:
+        return True
+
+
+def _nba_save_picks_snapshot(date_str: str, result: dict):
+    """Save category/side Top 10 plus all remaining standard qualifying plays.
+    Per game: rows for games not yet tipped come from the latest run; games
+    that already started keep their saved pregame rows (never rewritten)."""
+    if not _nba_main_board_ok(date_str, result):
         return
+    from datetime import timezone as _tz
+    now_utc = datetime.now(_tz.utc)
     # Never broaden/reclassify an older saved board or rewrite settled data.
     with _NBA_TRK_LOCK:
         existing_rows = _nba_hist_sb_get({"app":f"eq.{_NBA_TRK_APP}",
@@ -343,14 +383,18 @@ def _nba_save_picks_snapshot(date_str: str, result: dict):
                              "locked":"eq.true","select":"date","limit":"1"})
         if locked:
             return
-        flat = _nba_snapshot_standard_rows(result)
-        if not flat:
+        fresh = [r for r in _nba_snapshot_standard_rows(result)
+                 if not _nba_tip_started(r.get("tipoff"), now_utc)]
+        if not fresh:
             return
+        kept = [r for r in existing if _nba_tip_started(r.get("tipoff"), now_utc)]
+        flat = kept + fresh
         ok = _nba_sb_upsert(
             [{"app":_NBA_TRK_APP,"date":date_str,"category":_NBA_SNAP_CAT,
               "side":"ALL","wins":0,"losses":0,"locked":False,"detail":flat}],
             "app,date,category,side")
-    print(f"[nba_track] snapshot {'saved' if ok else 'FAILED'}: {len(flat)} picks -> {date_str}")
+    print(f"[nba_track] snapshot {'saved' if ok else 'FAILED'}: {len(fresh)} pregame + "
+          f"{len(kept)} locked started-game picks -> {date_str}")
 
 
 def _nba_snapshot_standard_rows(result: dict) -> list:
@@ -424,16 +468,30 @@ def _nba_american_profit_trk(odds, stake: float, result: str) -> float:
     if o<0: return round(stake*100/abs(o),2)
     return round(stake*0.91,2)
 
+def _nba_name_key(name) -> str:
+    """Sportsbook vs ESPN names: accents, punctuation and Jr./Sr./II-IV."""
+    s = unicodedata.normalize("NFKD", str(name or ""))
+    s = "".join(c for c in s if not unicodedata.combining(c)).lower()
+    s = re.sub(r"[^a-z ]", " ", s.replace("'", "").replace("\u2019", "").replace(".", ""))
+    s = re.sub(r"\s+", " ", s).strip()
+    s = re.sub(r"\s(jr|sr|ii|iii|iv|v)$", "", s).strip()
+    return s
+
 def _nba_grade_date(date_str: str, snap: list) -> dict:
     from collections import defaultdict as _dd
     box      = {name: stats for name, stats in _nba_box_lookup(date_str).items()
                 if stats.get("season_type") in (2, 3)}
     any_game = bool(box)
-    all_final= any_game and all(v.get("final",False) for v in box.values())
+    slate_ok = bool(globals().get("_NBA_BOX_COMPLETE_CACHE", {}).get(date_str))
+    fetch_ok = bool(globals().get("_NBA_BOX_FETCH_OK", {}).get(date_str))
+    all_final= any_game and slate_ok and all(v.get("final",False) for v in box.values())
+    box_norm = {}
+    for _n, _st in box.items():
+        box_norm.setdefault(_nba_name_key(_n), _st)
     main_rows, ovf_rows = [], []
     for p in snap:
         name_key = (p.get("name") or "").lower().strip()
-        pd       = (box or {}).get(name_key, {})
+        pd       = box.get(name_key) or box_norm.get(_nba_name_key(name_key)) or {}
         sk       = p.get("stat_key","")
         line_raw = p.get("line")
         odds     = p.get("odds")
@@ -460,7 +518,8 @@ def _nba_grade_date(date_str: str, snap: list) -> dict:
             main_rows.append(row)
         else:
             ovf_rows.append({**row,"category":"NBA Overflow"})
-    return {"any_game":any_game,"all_final":all_final,"main":main_rows,"overflow":ovf_rows}
+    return {"any_game":any_game,"all_final":all_final,"fetch_ok":fetch_ok,
+            "main":main_rows,"overflow":ovf_rows}
 
 def _nba_aggregate_graded(graded: dict) -> dict:
     agg: dict = {}
@@ -481,8 +540,7 @@ def _nba_detail_graded(graded: dict) -> list:
     return out
 
 def _nba_update_track_ledger():
-    from datetime import date as _d
-    today = _d.today().isoformat()
+    today = _nba_today().isoformat()
     with _NBA_TRK_LOCK:
         locked = {r["date"] for r in (_nba_sb_get(
             {"app":f"eq.{_NBA_TRK_APP}","category":"eq.__ledger__",
@@ -498,9 +556,12 @@ def _nba_update_track_ledger():
             if not graded.get("any_game"): continue
             try:
                 from datetime import date as _dd2
-                old_enough = (_dd2.today()-_dd2.fromisoformat(d)).days>=2
+                old_enough = (_nba_today()-_dd2.fromisoformat(d)).days>=2
             except Exception: old_enough=False
-            if not graded.get("all_final") and not old_enough: continue
+            # Old dates may lock with postponed games, but never on an ESPN
+            # fetch failure (that would permanently drop picks from the record).
+            if not graded.get("all_final") and not (old_enough and graded.get("fetch_ok")):
+                continue
             agg = _nba_aggregate_graded(graded)
             det = _nba_detail_graded(graded)
             upserts += [
@@ -522,6 +583,16 @@ def _nba_trk_bg(date_str: str, result: dict):
     except Exception as exc:
         print(f"[nba_track] snapshot NOT saved for {date_str}: {exc}")
     _nba_th.Thread(target=_nba_update_track_ledger, daemon=True).start()
+
+_NBA_TRK_CACHED_TS: dict = {}
+
+def _nba_trk_bg_throttled(date_str: str, result: dict):
+    """Cached boards re-attempt the Track Record save at most every 10 min."""
+    now = time.time()
+    if now - _NBA_TRK_CACHED_TS.get(date_str, 0) < 600:
+        return
+    _NBA_TRK_CACHED_TS[date_str] = now
+    _nba_th.Thread(target=_nba_trk_bg, args=(date_str, result), daemon=True).start()
 
 _nba_th.Thread(target=_nba_update_track_ledger, daemon=True).start()
 
@@ -655,6 +726,7 @@ def _nba_fg3m_logs_sane(result: dict) -> bool:
 
 _NBA_BOX_CACHE: dict = {}
 _NBA_BOX_COMPLETE_CACHE: dict = {}
+_NBA_BOX_FETCH_OK: dict = {}
 _NBA_BOX_LOCK = _nba_th.Lock()
 _NBA_BOX_TTL = 120
 
@@ -707,8 +779,10 @@ def _nba_box_lookup_raw(date_str: str):
             events = scoreboard.get("events", [])
         except Exception as retry_error:
             print(f"[nba_box] scoreboard failed {date_str}: {retry_error}")
+            globals().setdefault("_NBA_BOX_FETCH_OK", {})[date_str] = False
             return results, False
     complete = True
+    fetch_ok = True
     for ev in events:
         season_type = _nba_season_type(ev, scoreboard)
         is_final = ev.get("status", {}).get("type", {}).get("completed", False)
@@ -718,16 +792,21 @@ def _nba_box_lookup_raw(date_str: str):
         if not ev_id:
             complete = False
             continue
-        try:
-            bs = httpx.get(
-                f"https://site.api.espn.com/apis/site/v2/sports/basketball/nba/summary?event={ev_id}",
-                timeout=15)
-            if bs.status_code != 200:
-                complete = False
-                continue
-            boxscore = bs.json().get("boxscore", {})
-        except Exception:
+        boxscore = None
+        for _try in range(3):
+            try:
+                bs = httpx.get(
+                    f"https://site.api.espn.com/apis/site/v2/sports/basketball/nba/summary?event={ev_id}",
+                    timeout=15)
+                if bs.status_code == 200:
+                    boxscore = bs.json().get("boxscore", {})
+                    break
+            except Exception:
+                pass
+            time.sleep(0.7 * (_try + 1))
+        if boxscore is None:
             complete = False
+            fetch_ok = False
             continue
         for team in boxscore.get("players", []):
             team_meta = team.get("team", {}) or {}
@@ -753,6 +832,7 @@ def _nba_box_lookup_raw(date_str: str):
                         if v is not None:
                             ps[sk] = v
                     results[name] = ps
+    globals().setdefault("_NBA_BOX_FETCH_OK", {})[date_str] = fetch_ok
     return results, complete
 
 def _nba_settle_cached(bet: dict, name_stats: dict) -> bool:
@@ -969,19 +1049,30 @@ async def get_today_games(date_str: str = None) -> List[Dict]:
 
 
 async def get_team_roster_espn(team_id: str) -> List[Dict]:
+    """ESPN roster with retries. Raises when ESPN never answers, so the run
+    can stop explicitly instead of silently dropping a whole team."""
     url = f"https://site.api.espn.com/apis/site/v2/sports/basketball/nba/teams/{team_id}/roster"
-    try:
-        async with httpx.AsyncClient(timeout=20) as c:
-            await asyncio.sleep(0.1)
-            r = await c.get(url)
+    last_error = None
+    for attempt in range(4):
+        try:
+            async with httpx.AsyncClient(timeout=20) as c:
+                await asyncio.sleep(0.1)
+                r = await c.get(url)
+            if r.status_code != 200:
+                raise RuntimeError(f"HTTP {r.status_code}")
             data = r.json()
-        return [{'id': p['id'], 'name': p.get('displayName', ''),
-                 'jersey': p.get('jersey', ''),
-                 'position': (p.get('position') or {}).get('abbreviation', '')}
-                for p in data.get('athletes', [])]
-    except Exception as e:
-        print(f"  Roster error {team_id}: {e}")
-        return []
+            athletes = data.get('athletes', []) if isinstance(data, dict) else []
+            if not athletes:
+                raise RuntimeError("empty roster")
+            return [{'id': p['id'], 'name': p.get('displayName', ''),
+                     'jersey': p.get('jersey', ''),
+                     'position': (p.get('position') or {}).get('abbreviation', '')}
+                    for p in athletes]
+        except Exception as e:
+            last_error = e
+            print(f"  Roster error {team_id} (attempt {attempt + 1}): {e}")
+            await asyncio.sleep(0.8 * (attempt + 1))
+    raise RuntimeError(f"ESPN roster {team_id} unavailable: {last_error}")
 
 
 async def get_player_gamelogs_espn(player_id: str, season: int,
@@ -1006,18 +1097,31 @@ async def get_player_gamelogs_espn(player_id: str, season: int,
             pass
     url = (f"https://site.web.api.espn.com/apis/common/v3/sports/"
            f"basketball/nba/athletes/{player_id}/gamelog")
-    async with sem:
-        try:
-            if client is None:
-                async with httpx.AsyncClient(timeout=8) as c:
-                    r = await c.get(url, params={'season': season})
-            else:
-                r = await client.get(url, params={'season': season})
-            if r.status_code != 200:
-                return []
-            gl = r.json()
-        except Exception:
-            return []
+    gl = None
+    for attempt in range(3):
+        retry = False
+        async with sem:
+            try:
+                if client is None:
+                    async with httpx.AsyncClient(timeout=8) as c:
+                        r = await c.get(url, params={'season': season})
+                else:
+                    r = await client.get(url, params={'season': season})
+                if r.status_code == 200:
+                    gl = r.json()
+                elif r.status_code == 429 or r.status_code >= 500:
+                    retry = True
+                else:
+                    return []
+            except Exception:
+                retry = True
+        if gl is not None or not retry:
+            break
+        # ESPN throttling/timeouts: back off and try again instead of
+        # silently losing this player's season.
+        await asyncio.sleep(0.6 * (attempt + 1) + random.random() * 0.4)
+    if not isinstance(gl, dict):
+        return []
 
     events = gl.get('events', {})
 
@@ -1189,7 +1293,9 @@ async def get_odds_lines(today_str, alternate_only: bool = False):
                 data = r2.json()
                 seen = set()
                 seen_alternates = set()
-                for book in data.get('bookmakers', []):
+                _books = sorted(data.get('bookmakers', []) or [],
+                                key=lambda b: _NBA_BOOK_PRIORITY.get(b.get('key', ''), 999))
+                for book in _books:
                     for mkt in book.get('markets', []):
                         market_key = mkt.get('key', '')
                         stat = requested_market_map.get(market_key)
@@ -2121,6 +2227,9 @@ async def _run_analysis_core(selected_date: str = None, force: bool = False) -> 
             if not historical_replay:
                 try: _nba_coach_capture_pregame(today_str, _fc)
                 except Exception as _ce: print(f"[nba_coach_track] cached capture failed: {_ce}")
+                # A saved run must also reach the Track Record (games not yet
+                # tipped), even if its first save attempt failed.
+                _nba_trk_bg_throttled(today_str, _fc)
             return _fc
         if (_cache.get('date') == today_str and _cache.get('picks') is not None
                 and _cache.get("stat_parser_version") == 3
@@ -2133,6 +2242,7 @@ async def _run_analysis_core(selected_date: str = None, force: bool = False) -> 
                 _schedule_nba_alternates_warm(today_str)
                 try: _nba_coach_capture_pregame(today_str, _cache)
                 except Exception as _ce: print(f"[nba_coach_track] cached capture failed: {_ce}")
+                _nba_trk_bg_throttled(today_str, dict(_cache))
             return _cache
 
     log = []
@@ -2177,7 +2287,12 @@ async def _run_analysis_core(selected_date: str = None, force: bool = False) -> 
         return result
     else:
         try:
-            odds_raw = await get_odds_lines(today_str)
+            _retry = _NBA_RETRY_ODDS.pop(today_str, None)
+            if _retry and time.time() - _retry[0] < _NBA_RETRY_ODDS_TTL:
+                odds_raw = _retry[1]
+                log.append("OddsAPI: reusing lines from the run that stopped on ESPN")
+            else:
+                odds_raw = await get_odds_lines(today_str)
             odds_props = odds_raw
             log.append(f"OddsAPI: {len(odds_raw)} lines")
         except Exception as e:
@@ -2230,6 +2345,18 @@ async def _run_analysis_core(selected_date: str = None, force: bool = False) -> 
     rosters: Dict[str, List[Dict]] = {}
     for tid, res in zip(team_ids, roster_results):
         rosters[tid] = res if isinstance(res, list) else []
+    _failed_rosters = [tid_to_abbr.get(tid, tid) for tid, res in zip(team_ids, roster_results)
+                       if not isinstance(res, list)]
+    if _failed_rosters:
+        if not historical_replay:
+            _NBA_RETRY_ODDS[today_str] = (time.time(), odds_raw)
+        return {
+            'date': today_str, 'picks': [], 'all_picks': [], 'games': games,
+            'historical_replay': historical_replay, 'total': 0,
+            'run_incomplete': True,
+            'log': ['Error: ESPN did not return the roster for '
+                    + ', '.join(_failed_rosters) + '. Retrying.'],
+        }
     total_players = sum(len(v) for v in rosters.values())
     log.append(f"{total_players} players loaded")
 
@@ -2275,6 +2402,8 @@ async def _run_analysis_core(selected_date: str = None, force: bool = False) -> 
     try:
         log_results = await asyncio.wait_for(asyncio.shield(fetch_task), timeout=90)
     except asyncio.TimeoutError:
+        if not historical_replay:
+            _NBA_RETRY_ODDS[today_str] = (time.time(), odds_raw)
         return {
             'date': today_str, 'picks': [], 'all_picks': [], 'games': games,
             'historical_replay': historical_replay, 'total': 0,
@@ -2598,7 +2727,7 @@ async def _run_analysis_core(selected_date: str = None, force: bool = False) -> 
     else:
         print(f"[Cache] SKIP write — no prop lines yet for {today_str} (will retry on next request)")
     if not historical_replay:
-        _nba_trk_bg(today_str, result)
+        _nba_th.Thread(target=_nba_trk_bg, args=(today_str, result), daemon=True).start()
     # Coach snapshots are deliberately separate from the normal NBA ledger.
     # Only a complete, server-generated board may enter the Coach record.
     try:
@@ -4029,9 +4158,24 @@ async function runPicks(force=false){
   try{
     const _nbaTok=localStorage.getItem('__mpa_token')||'';
     const _adm=localStorage.getItem('__mpa_admin')||'';
-    const r=await fetch('/run?_tok='+encodeURIComponent(_nbaTok)+'&admin='+encodeURIComponent(_adm),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({date:selectedDate,force:!!force})});
-    if(!r.ok)throw new Error('Server error '+r.status);
-    const data=_nbaNormalizeHistoricalData(await r.json());
+    // ESPN can be slow; its downloads keep going on the server, so a stopped
+    // run is retried automatically (saved sportsbook lines are reused).
+    let data=null;
+    const _maxTries=6;
+    for(let _try=1;_try<=_maxTries;_try++){
+      const r=await fetch('/run?_tok='+encodeURIComponent(_nbaTok)+'&admin='+encodeURIComponent(_adm),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({date:selectedDate,force:!!force})});
+      if(!r.ok)throw new Error('Server error '+r.status);
+      data=_nbaNormalizeHistoricalData(await r.json());
+      if(!data.run_incomplete||_try===_maxTries)break;
+      document.getElementById('content').innerHTML=`
+        <div class="msg-card">
+          <div class="loading-ball"></div>
+          <div class="ball-shadow"></div>
+          <h2 style="color:#FDB827">Still Loading ESPN Data</h2>
+          <p>ESPN is responding slowly. Continuing automatically (attempt ${_try+1} of ${_maxTries}) for <strong style="color:#FDB827">${selectedDate}</strong>.</p>
+        </div>`;
+      await new Promise(function(res){setTimeout(res,3000);});
+    }
     window.__NBA_BOARD_DATE__=data.date||selectedDate;
     window.__NBA_HISTORICAL_REPLAY__=!!data.historical_replay;
     window.__NBA_HISTORICAL_SNAPSHOT__=data.historical_snapshot||'';
@@ -4051,7 +4195,7 @@ async function runPicks(force=false){
     document.querySelectorAll('#filterBar .filter-btn[data-top-side]').forEach(b=>b.classList.toggle('active',b.dataset.topSide==='ALL'));
     const log=data.log||[];
     if(data.run_incomplete){
-      document.getElementById('content').innerHTML=`<div class="msg-card"><span class="ico"></span><h2>Run Didn&#39;t Finish</h2><p>${log[log.length-1]||'Player history did not finish loading.'} Press Get Picks again in a minute.</p></div>`;
+      document.getElementById('content').innerHTML=`<div class="msg-card"><span class="ico"></span><h2>Run Didn&#39;t Finish</h2><p>${log[log.length-1]||'Player history did not finish loading.'} ESPN did not finish after several automatic retries. Press Run again in a minute.</p></div>`;
       return;
     }
     if(!top10.length && !allPicksData.length){
@@ -4610,7 +4754,7 @@ async function loadNbaTrackRecord(record){
         var o = document.createElement('option'); o.value = ''; o.textContent = 'No saved dates'; ds.appendChild(o);
       } else {
         data.forEach(function(x){
-          var o = document.createElement('option'); o.value = x.date; o.textContent = x.date; ds.appendChild(o);
+          var o = document.createElement('option'); o.value = x.date; o.textContent = x.date+(x.pending?' (pending)':''); ds.appendChild(o);
         });
         ds.value = data.some(function(x){return x.date===previousDate;})?previousDate:data[0].date;
       }
@@ -8439,6 +8583,24 @@ def _nba_track_record_response(overflow: bool = False) -> dict:
     det_rows = _nba_hist_sb_get({"app":f"eq.{_NBA_TRK_APP}","category":"eq.__detail__",
                             "locked":"eq.true","select":"date,detail","limit":"365"})
     detail_by_date = {r["date"]:(r.get("detail") or []) for r in (det_rows or [])}
+    # Saved pregame picks that are not graded/locked yet show as PENDING
+    # (never counted in W/L, profit or ROI) instead of being invisible.
+    pending_dates = set()
+    try:
+        cutoff = (_nba_today() - timedelta(days=10)).isoformat()
+        for d in _nba_list_snap_dates():
+            if d in detail_by_date or d < cutoff:
+                continue
+            snap = _nba_load_picks_snapshot(d)
+            if not snap:
+                continue
+            detail_by_date[d] = [{**{k: p.get(k) for k in
+                ("name","team","category","side","stat_key","line","odds","book",
+                 "rank","is_overflow","capture_scope")}, "result": "PENDING",
+                 "actual": None, "profit": None} for p in snap]
+            pending_dates.add(d)
+    except Exception as exc:
+        print(f"[nba_track] pending snapshot read failed: {exc}")
     dates = sorted(detail_by_date.keys(), reverse=True)
     result = []
     for d in dates:
@@ -8487,6 +8649,7 @@ def _nba_track_record_response(overflow: bool = False) -> dict:
                            "rate":round(e["wins"]/total*100,1) if total else None})
         by_cat.sort(key=lambda x:(x.get("roi") or -999),reverse=True)
         result.append({"date":d,"wins":wins,"losses":losses,
+                       "pending": d in pending_dates,
                        "net_pl":net_pl,"roi":roi,"staked":staked,
                        "priced_plays":len(priced),"by_cat":by_cat,"detail":det})
     return {"dates":result,"stake":_NBA_TRK_STAKE,
@@ -8497,9 +8660,14 @@ def _nba_track_record_response(overflow: bool = False) -> dict:
 async def nba_track_record():
     """Ordinary Main only; overflow never contributes to these totals."""
     from fastapi.responses import JSONResponse as _JR
-    _nba_th.Thread(target=_nba_update_track_ledger, daemon=True).start()
+    # Grade finished slates before answering (bounded) so yesterday appears
+    # on the first open; a slow ESPN keeps grading in the background.
     try:
-        return _JR(_nba_track_record_response(False))
+        await asyncio.wait_for(asyncio.to_thread(_nba_update_track_ledger), timeout=40)
+    except Exception as exc:
+        print(f"[nba_track] grading still running/failed on open: {exc!r}")
+    try:
+        return _JR(await asyncio.to_thread(_nba_track_record_response, False))
     except RuntimeError:
         return _JR({"detail":"Saved NBA Main record is unavailable. Please retry."}, status_code=503)
 
@@ -8509,7 +8677,7 @@ async def nba_overflow_track_record():
     """Read saved overflow grades with original markets; no grading on open."""
     from fastapi.responses import JSONResponse as _JR
     try:
-        return _JR(_nba_track_record_response(True))
+        return _JR(await asyncio.to_thread(_nba_track_record_response, True))
     except RuntimeError:
         return _JR({"detail":"Saved NBA Overflow record is unavailable. Please retry."}, status_code=503)
 
