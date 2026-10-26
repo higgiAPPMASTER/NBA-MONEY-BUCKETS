@@ -3420,9 +3420,11 @@ footer{text-align:center;padding:32px 24px;color:#4b5563;font-size:.78rem;border
     <button type="button" role="menuitem" class="nba-menu-item" style="--c:#d97706" onclick="_nbaNavGo(openNbaDowReport)">&#128197; Day of Week Trends</button>
     <button type="button" role="menuitem" class="nba-menu-item" style="--c:#7c3aed" onclick="_nbaNavGo(function(){openNbaCoachTrack();})">&#129504; Coach Track Record</button>
     <button type="button" role="menuitem" class="nba-menu-item" style="--c:#8b5cf6" onclick="_nbaNavGo(function(){openNbaGpRecord();})">&#128302; Game Predictor Record</button>
+    <button type="button" role="menuitem" class="nba-menu-item" style="--c:#14b8a6" onclick="_nbaNavGo(function(){openNbaSimRecord();})">&#127922; Sim Record</button>
     <div class="nba-menu-head tools" role="presentation">&#128736;&#65039; Tools</div>
     <button type="button" role="menuitem" class="nba-menu-item" style="--c:#ea580c" onclick="_nbaNavGo(openNbaHotColdBoard)">&#128293; Hot / Cold Board</button>
     <button type="button" role="menuitem" class="nba-menu-item" style="--c:#8b5cf6" onclick="_nbaNavGo(function(){openNbaGamePredictor();})">&#128302; Game Predictor</button>
+    <button type="button" role="menuitem" class="nba-menu-item" style="--c:#14b8a6" onclick="_nbaNavGo(function(){openNbaGameSim();})">&#127922; 10K Game Simulator</button>
     <button type="button" role="menuitem" class="nba-menu-item admin-only" style="--c:#d97706" onclick="_nbaNavGo(function(){var c=document.getElementById('parlayCard');if(c)c.scrollIntoView({behavior:'smooth',block:'center'});})">&#127920; Auto Parlay Builder</button>
     <button type="button" role="menuitem" class="nba-menu-item" style="--c:#a855f7" onclick="_nbaNavGo(function(){showNbaPerfectParlayBuilder();})">&#10024; Perfect Parlay</button>
     <button type="button" role="menuitem" class="nba-menu-item admin-only" style="--c:#0e7490" onclick="_nbaNavGo(function(){openNbaMyBets();})">&#128176; My Bets</button>
@@ -6758,6 +6760,217 @@ function _ngpIdle(){
 """
 
 
+NBA_SIM_HTML = r"""
+<style>
+.nsm-shell{border-color:rgba(45,212,191,.45)!important;background:radial-gradient(circle at 95% 0%,rgba(20,184,166,.18),transparent 40%),linear-gradient(145deg,#0c1a1c,#0a0a14)!important}
+.nsm-shell .ngp-badge{background:radial-gradient(circle at 30% 25%,rgba(45,212,191,.4),rgba(56,189,248,.2));border-color:rgba(94,234,212,.5)}
+.nsm-shell .ngp-kicker{color:#2dd4bf}
+.nsm-shell .ngp-btn{color:#99f6e4;border-color:rgba(45,212,191,.45);background:#0f2124}
+.nsm-shell .ngp-btn:hover{background:rgba(45,212,191,.14)}
+.nsm-shell .ngp-hero{background:linear-gradient(135deg,rgba(45,212,191,.16),rgba(45,212,191,.04));border-color:rgba(45,212,191,.35)}
+.nsm-shell .ngp-hero .score{color:#99f6e4}
+.nsm-shell .ngp-box.pick{border-color:rgba(45,212,191,.5);background:rgba(45,212,191,.08)}.nsm-shell .ngp-box.pick .v{color:#5eead4}
+.nsm-shell .ngp-sec>summary{color:#5eead4}
+.nsm-dist{display:grid;gap:4px;margin-top:6px}
+.nsm-drow{display:grid;grid-template-columns:96px 1fr 42px;gap:6px;align-items:center;font-size:.64rem;color:#cbd5e1}
+.nsm-dbar{height:8px;border-radius:999px;background:#13202a;overflow:hidden}
+.nsm-dbar i{display:block;height:100%;background:linear-gradient(90deg,#14b8a6,#5eead4)}
+.nsm-dbar i.a{background:linear-gradient(90deg,#3b82f6,#60a5fa)}.nsm-dbar i.h{background:linear-gradient(90deg,#f59e0b,#fbbf24)}
+.nsm-drow.line{color:#fde68a;font-weight:900}
+.nsm-pos{color:#4ade80;font-weight:900}.nsm-neg{color:#f87171;font-weight:900}
+.nsm-filters{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:10px}
+.nsm-filters button{background:#0f1a1d;color:#94a3b8;border:1px solid #1f3a3d;border-radius:999px;padding:4px 10px;font-size:.64rem;font-weight:900;cursor:pointer}
+.nsm-filters button.on{color:#0b1416;background:#2dd4bf;border-color:#2dd4bf}
+.nsm-filters input{width:70px;background:#0b1416;color:#e2e8f0;border:1px solid #1f3a3d;border-radius:8px;padding:3px 6px;font-size:.66rem}
+</style>
+<div class="card ngp-shell nsm-shell" id="nbaSimSection">
+  <div class="ngp-head">
+    <div class="ngp-badge">&#127922;</div>
+    <div><div class="ngp-kicker">10,000 simulations &middot; every game</div><h2 class="ngp-title">10K Game Simulator</h2>
+      <div class="ngp-sub">Each game is played 10,000 times. Win %, likely scores, spread cover % and Over/Under % come straight from the simulated results. Separate from the Game Predictor.</div></div>
+    <div class="ngp-side"><button type="button" class="ngp-btn" id="nbaSimRunBtn" onclick="nbaSimRun()">&#127922; Run Sims</button><button type="button" class="ngp-btn" onclick="openNbaSimRecord()">&#128200; Sim Record</button></div>
+  </div>
+  <div id="nbaSimRecordStrip" class="ngp-rec-strip"></div>
+  <div id="nbaSimMsg" class="ngp-msg" role="status"></div>
+  <div id="nbaSimGrid" class="ngp-grid"></div>
+  <div id="nbaSimRecordPanel" class="ngp-recpanel" style="display:none"></div>
+  <details class="ngp-how"><summary>&#9432; How the simulator works</summary><div>
+    <b>Expected points:</b> each team's home or road scoring is multiplied against the opponent's home or road defense, relative to league home and road scoring (last season anchors early; this season takes over as games are played).<br>
+    <b>Adjustments:</b> last 10 form versus season level (max &plusmn;4 per team), back-to-backs and 3-in-4 nights, scoring lost to injured rotation players, and the posted referee crew's scoring tendency.<br>
+    <b>10,000 games:</b> both scores are drawn with a shared pace factor, so high- and low-scoring games happen together the way they do on the court. Tied games go to simulated 5-minute overtimes until someone wins. The sim does not model late-game fouling, so OT % can read a little low.<br>
+    <b>Picks:</b> the winner is the team that wins more simulations; spread and total picks are the side that covers or hits more often against ESPN's posted line. Edge = sim % minus the price's implied %. No line, no pick. Prices shorter than -1000 are never shown.<br>
+    <b>Sim Record:</b> the last sim before each tip-off is saved and graded after the final. Started games show the saved pregame sim. Profit uses only real posted prices; picks without a price count in W/L only. Preseason games are never tracked. Kept separate from the Game Predictor and every player-prop record.
+  </div></details>
+</div>
+<script>
+var __nbaSim={data:null,loading:false,record:null,period:'all',stake:100};
+function _nsmPct(v){return v==null?'—':Number(v).toFixed(1)+'%';}
+function _nsmEdge(v){if(v==null)return '';var n=Number(v);return '<span class="'+(n>0?'nsm-pos':'nsm-neg')+'">'+(n>0?'+':'')+n.toFixed(1)+'%</span>';}
+function _nsmDist(rows,mode){
+  var mx=0;(rows||[]).forEach(function(r){if((r.pct||0)>mx)mx=r.pct||0;});
+  return '<div class="nsm-dist">'+(rows||[]).map(function(r){
+    var w=mx?Math.round((r.pct||0)/mx*100):0,cls=mode==='m'?(r.side==='home'?'h':'a'):'';
+    return '<div class="nsm-drow'+(r.has_line?' line':'')+'"><span>'+_ngpEsc(r.label)+(r.has_line?' &#9668; line':'')+'</span><div class="nsm-dbar"><i class="'+cls+'" style="width:'+w+'%"></i></div><span style="text-align:right">'+_nsmPct(r.pct)+'</span></div>';
+  }).join('')+'</div>';
+}
+function _nsmCard(g){
+  var s=g.sim,b=g.book||{};
+  var right=g.completed?'<b style="color:#fff">FINAL '+_ngpEsc(g.away)+' '+g.away_score+' – '+g.home_score+' '+_ngpEsc(g.home)+'</b>':(g.state==='in'?'<span style="color:#fca5a5">'+_ngpEsc(g.status||'Live')+'</span>':_ngpTime(g));
+  var tags='';
+  if(g.savedSim)tags+='<span class="ngp-tag saved">SAVED PREGAME SIM</span>';
+  if(g.retro)tags+='<span class="ngp-tag retro">RETRO &middot; NOT TRACKED</span>';
+  if(!g.tracked)tags+='<span class="ngp-tag retro">PRESEASON &middot; NOT TRACKED</span>';
+  if(g.state==='in')tags+='<span class="ngp-tag live">LIVE</span>';
+  var head='<div class="ngp-top"><div class="ngp-mu"><img src="'+_ngpEsc(g.away_logo)+'" alt="" onerror="this.style.display=&#39;none&#39;">'+_ngpEsc(g.away)+' <span class="ngp-at">@</span> '+_ngpEsc(g.home)+'<img src="'+_ngpEsc(g.home_logo)+'" alt="" onerror="this.style.display=&#39;none&#39;"></div><div class="ngp-time">'+right+'<br>'+_ngpEsc(g.venue||'')+'</div></div>'+(tags?'<div class="ngp-tags">'+tags+'</div>':'');
+  if(!s)return '<div class="ngp-card">'+head+'<div class="ngp-note">'+_ngpEsc(g.simError||'No simulation for this game.')+'</div></div>';
+  var p=s.picks||{},w=p.winner||{},ats=p.ats,ou=p.ou;
+  var wHome=w.pick===g.home,logo=wHome?g.home_logo:g.away_logo,name=wHome?(g.home_name||g.home):(g.away_name||g.away);
+  var hp=s.homeWinPct||0,ap=s.awayWinPct||0;
+  function odds(o){return o!=null?_ngpOdds(o):'no price';}
+  var wBox='<div class="ngp-box pick"><div class="k">Winner</div><div class="v">'+_ngpEsc(w.pick)+' '+_nsmPct(w.prob)+'</div><div class="s">ML '+odds(w.odds)+(w.edge!=null?' · edge '+_nsmEdge(w.edge):'')+'</div></div>';
+  var aBox=ats?'<div class="ngp-box pick"><div class="k">Spread</div><div class="v">'+_ngpEsc(ats.pick)+' '+_ngpSpread(ats.line)+'</div><div class="s">covers '+_nsmPct(ats.prob)+' · '+odds(ats.odds)+(ats.edge!=null?' · '+_nsmEdge(ats.edge):'')+'</div></div>':'<div class="ngp-box lean"><div class="k">Spread</div><div class="v">—</div><div class="s">No posted spread</div></div>';
+  var oBox=ou?'<div class="ngp-box '+(ou.pick==='OVER'?'over':'under')+'"><div class="k">Total</div><div class="v">'+ou.pick+' '+ou.line+'</div><div class="s">hits '+_nsmPct(ou.prob)+' · '+odds(ou.odds)+(ou.edge!=null?' · '+_nsmEdge(ou.edge):'')+'</div></div>':'<div class="ngp-box lean"><div class="k">Total</div><div class="v">—</div><div class="s">No posted total</div></div>';
+  var res='';
+  if(g.result){var r=g.result;res='<div class="ngp-res">'+(r.winner?'<span class="ngp-chip '+r.winner.result+'">Winner '+r.winner.result+'</span>':'')+(r.ats?'<span class="ngp-chip '+r.ats.result+'">Spread '+r.ats.result+'</span>':'')+(r.ou?'<span class="ngp-chip '+r.ou.result+'">Total '+r.ou.result+' ('+r.ou.final_total+')</span>':'')+'</div>';}
+  var stats='<div class="ngp-boxes">'
+    +'<div class="ngp-box"><div class="k">Avg score</div><div class="v">'+s.avgAway+' – '+s.avgHome+'</div><div class="s">'+_ngpEsc(g.away)+' – '+_ngpEsc(g.home)+'</div></div>'
+    +'<div class="ngp-box"><div class="k">Avg total</div><div class="v">'+s.avgTotal+'</div><div class="s">'+(s.totalP10!=null?'80% range '+s.totalP10+'–'+s.totalP90:'')+'</div></div>'
+    +'<div class="ngp-box"><div class="k">Overtime</div><div class="v">'+_nsmPct(s.otPct)+'</div><div class="s">of 10,000 games</div></div>'
+    +'<div class="ngp-box"><div class="k">Close (&le;5)</div><div class="v">'+_nsmPct(s.closePct)+'</div><div class="s">final margin</div></div>'
+    +'<div class="ngp-box"><div class="k">Blowout (15+)</div><div class="v">'+_nsmPct(s.blowoutPct)+'</div><div class="s">final margin</div></div>'
+    +'<div class="ngp-box"><div class="k">Book</div><div class="v" style="font-size:.78rem">'+(b.home_spread!=null?_ngpEsc(g.home)+' '+_ngpSpread(b.home_spread):'—')+'</div><div class="s">O/U '+(b.total!=null?b.total:'—')+(b.book?' · '+_ngpEsc(b.book):'')+'</div></div>'
+    +'</div>';
+  var sides='';
+  if(ats&&ats.home_cover_pct!=null)sides+='<div class="ngp-ml"><span>'+_ngpEsc(g.home)+' '+_ngpSpread(b.home_spread)+' covers <b>'+_nsmPct(ats.home_cover_pct)+'</b></span><span>'+_ngpEsc(g.away)+' '+_ngpSpread(b.home_spread==null?null:-b.home_spread)+' covers <b>'+_nsmPct(ats.away_cover_pct)+'</b></span>'+(ats.push_pct?'<span>push <b>'+_nsmPct(ats.push_pct)+'</b></span>':'')+'</div>';
+  if(ou&&ou.over_pct!=null)sides+='<div class="ngp-ml"><span>Over '+ou.line+' <b>'+_nsmPct(ou.over_pct)+'</b></span><span>Under '+ou.line+' <b>'+_nsmPct(ou.under_pct)+'</b></span>'+(ou.push_pct?'<span>push <b>'+_nsmPct(ou.push_pct)+'</b></span>':'')+'</div>';
+  var detail='';
+  if(s.marginDist)detail+='<details class="ngp-sec"><summary>Winning margin distribution</summary>'+_nsmDist(s.marginDist,'m')+(s.marginMed!=null?'<div class="ngp-note">Median margin '+_ngpEsc(g.home)+' '+_ngpSigned(s.marginMed,0)+' · 80% range '+_ngpSigned(s.marginP10,0)+' to '+_ngpSigned(s.marginP90,0)+' (home view)</div>':'')+'</details>';
+  if(s.totalDist)detail+='<details class="ngp-sec"><summary>Total points distribution</summary>'+_nsmDist(s.totalDist,'t')+'<div class="ngp-note">Median total '+s.medTotal+'.</div></details>';
+  if(s.topScores)detail+='<details class="ngp-sec"><summary>Most common final scores</summary><table class="ngp-tbl"><thead><tr><th>Final</th><th>Winner</th><th>Share of sims</th></tr></thead><tbody>'+s.topScores.map(function(t){return '<tr><td>'+_ngpEsc(g.away)+' '+t.away+' – '+t.home+' '+_ngpEsc(g.home)+'</td><td>'+_ngpEsc(t.home>t.away?g.home:g.away)+'</td><td>'+_nsmPct(t.pct)+'</td></tr>';}).join('')+'</tbody></table><div class="ngp-note">Exact scores are spread thin across 10,000 games, so even the most common one is rare.</div></details>';
+  if(s.factors)detail+='<details class="ngp-sec"><summary>Sim inputs</summary><table class="ngp-tbl"><thead><tr><th>Factor</th><th>'+_ngpEsc(g.away)+'</th><th>'+_ngpEsc(g.home)+'</th></tr></thead><tbody>'+s.factors.map(function(f,i){
+      var base=i===0;return '<tr><td><b>'+_ngpEsc(f.name)+'</b><div style="color:#8b93a7;font-weight:500">'+_ngpEsc(f.note||'')+'</div></td><td class="'+(base?'':_ngpCls(f.away))+'">'+(base?f.away:_ngpSigned(f.away))+'</td><td class="'+(base?'':_ngpCls(f.home))+'">'+(base?f.home:_ngpSigned(f.home))+'</td></tr>';
+    }).join('')+'<tr><td><b>Expected points</b></td><td><b>'+s.expAway+'</b></td><td><b>'+s.expHome+'</b></td></tr></tbody></table></details>';
+  return '<div class="ngp-card'+(g.completed?' final':'')+'">'+head
+    +'<div class="ngp-hero"><img src="'+_ngpEsc(logo)+'" alt="" onerror="this.style.display=&#39;none&#39;"><div><div class="lbl">SIM WINNER</div><div class="team">'+_ngpEsc(name)+'</div><div class="score">Avg '+_ngpEsc(g.away)+' '+s.avgAway+' – '+s.avgHome+' '+_ngpEsc(g.home)+'</div></div><div class="prob"><b>'+_nsmPct(w.prob)+'</b><small>OF '+(s.sims||10000).toLocaleString()+' SIMS</small></div></div>'
+    +'<div class="ngp-bar-l"><span style="color:#60a5fa">'+_ngpEsc(g.away)+' '+_nsmPct(ap)+'</span><span style="color:#fbbf24">'+_nsmPct(hp)+' '+_ngpEsc(g.home)+'</span></div>'
+    +'<div class="ngp-bar"><div class="a" style="width:'+ap+'%"></div><div class="h" style="width:'+hp+'%"></div></div>'
+    +'<div class="ngp-boxes">'+wBox+aBox+oBox+'</div>'+sides+res+stats+detail+'</div>';
+}
+function nbaSimRun(){
+  var ds=_ngpDate(),grid=document.getElementById('nbaSimGrid'),msg=document.getElementById('nbaSimMsg'),btn=document.getElementById('nbaSimRunBtn');
+  if(!grid||__nbaSim.loading)return;
+  __nbaSim.loading=true;if(btn)btn.innerHTML='&#8987; Simulating…';
+  msg.textContent='Running 10,000 simulations per game for '+ds+'… the first run of the day can take up to a minute.';
+  fetch('/api/nba/game-sim?date_str='+encodeURIComponent(ds)+'&'+_ngpQS()+'&_r='+Date.now())
+    .then(function(r){return r.json().then(function(j){if(!r.ok)throw new Error(j.detail||('HTTP '+r.status));return j;});})
+    .then(function(d){
+      __nbaSim.data=d;var gs=d.games||[];
+      if(!gs.length){msg.textContent=d.message||'No NBA games on this date.';grid.innerHTML='';return;}
+      msg.innerHTML='<span style="color:#94a3b8">'+gs.length+' game'+(gs.length===1?'':'s')+' &middot; 10,000 sims each'+(d.partialHistory?' &middot; some team history could not be loaded; affected games use what was available':'')+'</span>';
+      grid.innerHTML=gs.map(function(g){try{return _nsmCard(g);}catch(e){return '<div class="ngp-card"><div class="ngp-note">Could not draw this game: '+_ngpEsc(e.message)+'</div></div>';}}).join('');
+      nbaSimLoadRecord();
+    })
+    .catch(function(e){msg.textContent='Simulator unavailable: '+e.message;})
+    .then(function(){__nbaSim.loading=false;if(btn)btn.innerHTML='&#127922; Run Sims';});
+}
+function _nsmInPeriod(ds){
+  var per=__nbaSim.period;if(per==='all')return true;
+  var t=new Date('__TODAY__T12:00:00'),d=new Date(ds+'T12:00:00');var diff=Math.round((t-d)/86400000);
+  if(per==='day')return diff===0;
+  if(per==='week')return diff>=0&&diff<7;
+  if(per==='month')return diff>=0&&diff<30;
+  return true;
+}
+function _nsmTotals(days){
+  function blank(){return {wins:0,losses:0,pushes:0,profit:0,priced:0,pending:0};}
+  var tot={winner:blank(),ats:blank(),ou:blank()},buckets={};
+  days.forEach(function(day){
+    (day.games||[]).forEach(function(r){
+      ['winner','ats','ou'].forEach(function(k){
+        var x=r[k];if(!x||!x.result)return;
+        var bk=x.bucket||'—';buckets[k+'|'+bk]=buckets[k+'|'+bk]||blank();
+        [tot[k],buckets[k+'|'+bk]].forEach(function(b){
+          b.wins+=x.result==='WIN'?1:0;b.losses+=x.result==='LOSS'?1:0;b.pushes+=x.result==='PUSH'?1:0;
+          if(x.profit!=null){b.profit+=x.profit;if(x.result!=='PUSH')b.priced+=1;}
+        });
+      });
+    });
+    (day.pending||[]).forEach(function(p){['winner','ats','ou'].forEach(function(k){if((p.picks||{})[k])tot[k].pending+=1;});});
+  });
+  return {tot:tot,buckets:buckets};
+}
+function _nsmLine(b){
+  var n=b.wins+b.losses,st=__nbaSim.stake/100;
+  return {rec:b.wins+'-'+b.losses+(b.pushes?'-'+b.pushes:''),pct:n?(b.wins/n*100).toFixed(1)+'%':'—',
+    pl:b.priced?_ngpMoney(b.profit*st):'—',roi:b.priced?(b.profit/(b.priced*100)*100).toFixed(1)+'%':'—'};
+}
+function nbaSimLoadRecord(){
+  fetch('/api/nba/game-sim/record?'+_ngpQS()).then(function(r){return r.ok?r.json():null;}).then(function(d){
+    if(!d)return;__nbaSim.record=d;__nbaSim._hasToday=(d.days||[]).some(function(x){return x.date==='__TODAY__';});
+    _nsmRenderStrip();var p=document.getElementById('nbaSimRecordPanel');if(p&&p.style.display!=='none')_nsmRenderRecord();
+  }).catch(function(){});
+}
+function _nsmRenderStrip(){
+  var el=document.getElementById('nbaSimRecordStrip'),d=__nbaSim.record;if(!el||!d)return;
+  var t=_nsmTotals(d.days||[]).tot;
+  function box(k,label){var b=t[k],l=_nsmLine(b);return '<div class="ngp-rec-box" onclick="openNbaSimRecord()"><div class="k">'+label+'</div><div class="v">'+l.rec+' <span style="color:#2dd4bf;font-size:.8rem">'+l.pct+'</span></div><div class="s">'+(b.priced?l.pl+' · ROI '+l.roi+' at $'+__nbaSim.stake:(b.wins+b.losses?'W/L only (no prices)':'No graded games yet'))+(b.pending?' · '+b.pending+' pending':'')+'</div></div>';}
+  el.innerHTML=box('winner','Sim winner')+box('ats','Sim spread')+box('ou','Sim total');
+}
+function nbaSimSetPeriod(p){__nbaSim.period=p;_nsmRenderRecord();}
+function nbaSimSetStake(v){var n=Number(v);if(isFinite(n)&&n>0){__nbaSim.stake=n;_nsmRenderRecord();_nsmRenderStrip();}}
+function _nsmRenderRecord(){
+  var p=document.getElementById('nbaSimRecordPanel'),d=__nbaSim.record;if(!p)return;
+  if(!d){p.innerHTML='<div class="ngp-note">Loading Sim Record…</div>';return;}
+  var days=(d.days||[]).filter(function(x){return _nsmInPeriod(x.date);});
+  var agg=_nsmTotals(days),t=agg.tot;
+  var per=['day','week','month','all'].map(function(k){return '<button type="button" class="'+(__nbaSim.period===k?'on':'')+'" onclick="nbaSimSetPeriod(&#39;'+k+'&#39;)">'+({day:'Today',week:'Week',month:'Month',all:'All time'})[k]+'</button>';}).join('');
+  var html='<div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><div style="color:#fff;font-weight:900;font-size:1rem">&#128200; Sim Record</div><button type="button" class="ngp-btn" onclick="document.getElementById(&#39;nbaSimRecordPanel&#39;).style.display=&#39;none&#39;">Close</button></div>'
+    +'<div class="nsm-filters">'+per+'<span style="color:#94a3b8;font-size:.64rem;margin-left:6px">Stake $</span><input type="number" min="1" value="'+__nbaSim.stake+'" onchange="nbaSimSetStake(this.value)"></div>';
+  var sum='<table class="ngp-tbl"><thead><tr><th>Market</th><th>W-L-P</th><th>Win %</th><th>P/L</th><th>ROI</th><th>Pending</th></tr></thead><tbody>';
+  [['winner','Winner'],['ats','Spread'],['ou','Total']].forEach(function(m){var b=t[m[0]],l=_nsmLine(b);sum+='<tr><td><b>'+m[1]+'</b></td><td>'+l.rec+'</td><td>'+l.pct+'</td><td>'+l.pl+'</td><td>'+l.roi+'</td><td>'+b.pending+'</td></tr>';});
+  sum+='</tbody></table>';
+  var bk='<table class="ngp-tbl"><thead><tr><th>Sim confidence</th><th>Winner</th><th>Spread</th><th>Total</th></tr></thead><tbody>';
+  ['65%+','60-65%','55-60%','50-55%'].forEach(function(lbl){
+    bk+='<tr><td><b>'+lbl+'</b></td>'+['winner','ats','ou'].map(function(k){var b=agg.buckets[k+'|'+lbl];if(!b)return '<td class="n">—</td>';var l=_nsmLine(b);return '<td>'+l.rec+' · '+l.pct+(b.priced?' · '+l.pl:'')+'</td>';}).join('')+'</tr>';
+  });
+  bk+='</tbody></table>';
+  html+=sum+'<div class="ngp-note" style="margin-top:12px;color:#5eead4;font-weight:900">By sim confidence</div>'+bk
+    +'<div class="ngp-note">Saved pregame sims only, graded after the final. Profit uses only the real posted price saved with the pick; picks without a price count in W/L only. Pending picks never count as losses.</div>';
+  if(!days.length)html+='<div class="ngp-note" style="font-size:.74rem">No saved sims in this period yet. Sims are saved each time Run Sims is used before tip-off.</div>';
+  function cell(x,lbl){if(!x)return '<span class="n">no line</span>';return lbl+' <span class="ngp-chip '+x.result+'">'+x.result+'</span>'+(x.odds!=null?' <span class="n">'+_ngpOdds(x.odds)+'</span>':'');}
+  html+=days.map(function(day){
+    var a=_nsmTotals([day]).tot;
+    var rows=(day.games||[]).map(function(r){
+      return '<tr><td>'+_ngpEsc(r.away)+' @ '+_ngpEsc(r.home)+'</td><td>'+r.away_score+'–'+r.home_score+'</td>'
+        +'<td>'+cell(r.winner,r.winner?_ngpEsc(r.winner.pick)+' '+_nsmPct(r.winner.prob):'')+'</td>'
+        +'<td>'+cell(r.ats,r.ats?_ngpEsc(r.ats.pick)+' '+_ngpSpread(r.ats.line):'')+'</td>'
+        +'<td>'+cell(r.ou,r.ou?r.ou.pick+' '+r.ou.line:'')+'</td></tr>';
+    }).join('');
+    var pend=(day.pending||[]).map(function(pp){var k=pp.picks||{};
+      return '<tr><td>'+_ngpEsc(pp.away)+' @ '+_ngpEsc(pp.home)+'</td><td class="n">pending</td><td>'+(k.winner?_ngpEsc(k.winner.pick)+' '+_nsmPct(k.winner.prob):'—')+'</td><td>'+(k.ats?_ngpEsc(k.ats.pick)+' '+_ngpSpread(k.ats.line):'<span class="n">no line</span>')+'</td><td>'+(k.ou?k.ou.pick+' '+k.ou.line:'<span class="n">no line</span>')+'</td></tr>';}).join('');
+    return '<details class="ngp-day"><summary><span>'+_ngpEsc(day.date)+'</span><span>Winner '+_nsmLine(a.winner).rec+' · Spread '+_nsmLine(a.ats).rec+' · Total '+_nsmLine(a.ou).rec+((day.pending||[]).length?' · <span style="color:#94a3b8">'+day.pending.length+' pending</span>':'')+'</span></summary>'
+      +'<div class="body"><table class="ngp-tbl"><thead><tr><th>Game</th><th>Final</th><th>Winner</th><th>Spread</th><th>Total</th></tr></thead><tbody>'+rows+pend+'</tbody></table></div></details>';
+  }).join('');
+  p.innerHTML=html;
+}
+function openNbaSimRecord(){
+  var p=document.getElementById('nbaSimRecordPanel');if(!p)return;
+  p.style.display='block';_nsmRenderRecord();if(!__nbaSim.record)nbaSimLoadRecord();
+  p.scrollIntoView({behavior:'smooth',block:'start'});
+}
+function openNbaGameSim(){var s=document.getElementById('nbaSimSection');if(s)s.scrollIntoView({behavior:'smooth',block:'start'});}
+function _nsmIdle(){
+  var msg=document.getElementById('nbaSimMsg'),grid=document.getElementById('nbaSimGrid');
+  __nbaSim.data=null;if(grid)grid.innerHTML='';
+  if(msg)msg.innerHTML='<span style="color:#94a3b8">Sims run only when you ask, so they never slow down a player-prop run. Click <b style="color:#5eead4">Run Sims</b> for '+_ngpEsc(_ngpDate())+'.</span>';
+}
+(function(){
+  function init(){var dp=document.getElementById('datePicker');if(dp)dp.addEventListener('change',function(){if(!__nbaSim.loading)_nsmIdle();});_nsmIdle();}
+  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',init);else init();
+})();
+</script>
+"""
+
 @app.get("/api/bets")
 async def nba_get_bets(request: Request, token: str = "", admin: str = "", settle: bool = True):
     from fastapi import HTTPException
@@ -9104,6 +9317,465 @@ async def nba_game_predictor_record(request: Request):
         raise HTTPException(status_code=504, detail="Game Predictor record took too long to load.")
 
 
+# ─── NBA 10K Game Simulator (separate from the Game Predictor) ───────────────
+# On demand only. Reuses the Game Predictor's free ESPN inputs (team home/road
+# scoring, last 10, rest, injuries, referee crews, posted book lines) but runs
+# its own scoring engine: opponent-adjusted multiplicative ratings and 10,000
+# correlated Monte Carlo games per matchup, including simulated overtime.
+# Its pregame picks are saved and graded in their own record namespace.
+_NBA_SIM_APP = "nba_game_sim"
+_NBA_SIM_SNAP_CAT = "__sim_snapshot__"
+_NBA_SIM_GRADED_CAT = "__sim_graded__"
+_NBA_SIM_N = 10000
+_NBA_SIM_SD = 11.65        # per-team final-score SD around the model mean
+_NBA_SIM_RHO = 0.33        # shared pace: margin SD ~13.5, total SD ~19 (market-error scale)
+_NBA_SIM_OT_SD = 3.5       # per-team points SD in one 5-minute overtime
+_NBA_SIM_PRIOR_HOME = 115.0
+_NBA_SIM_PRIOR_ROAD = 112.6
+_NBA_SIM_LOCK = _nba_th.Lock()
+_NBA_SIM_BUCKETS = ((65, "65%+"), (60, "60-65%"), (55, "55-60%"), (0, "50-55%"))
+
+
+def _nba_sim_bucket(prob):
+    p = float(prob or 0)
+    return next(lbl for lo, lbl in _NBA_SIM_BUCKETS if p >= lo)
+
+
+def _nba_sim_league(games):
+    """League home/road scoring levels from the slate, shrunk to fixed priors."""
+    home_pts, road_pts = [], []
+    for g in games:
+        hp, ap = g.get("homeProfile") or {}, g.get("awayProfile") or {}
+        try:
+            h_pf, h_pa, _ = _nba_gp_blend(hp["cur_venue"], hp["prev_venue"])
+            a_pf, a_pa, _ = _nba_gp_blend(ap["cur_venue"], ap["prev_venue"])
+        except Exception:
+            continue
+        home_pts += [h_pf, a_pa]     # both measure home-team scoring
+        road_pts += [h_pa, a_pf]     # both measure road-team scoring
+    k = 6.0
+    lh = (sum(home_pts) + k * _NBA_SIM_PRIOR_HOME) / (len(home_pts) + k)
+    lr = (sum(road_pts) + k * _NBA_SIM_PRIOR_ROAD) / (len(road_pts) + k)
+    return lh, lr
+
+
+def _nba_sim_expected(g, lh, lr):
+    hp, ap = g["homeProfile"], g["awayProfile"]
+    factors = []
+    h_pf, h_pa, hw = _nba_gp_blend(hp["cur_venue"], hp["prev_venue"])
+    a_pf, a_pa, aw = _nba_gp_blend(ap["cur_venue"], ap["prev_venue"])
+    eh = h_pf * a_pa / lh
+    ea = a_pf * h_pa / lr
+    factors.append({"name": "Opponent-adjusted ratings", "home": round(eh, 1), "away": round(ea, 1),
+                    "note": f"{g['home']} home offense x {g['away']} road defense, and the reverse, "
+                            f"relative to league home {lh:.1f} / road {lr:.1f} "
+                            f"({int(hw * 100)}% / {int(aw * 100)}% this season)"})
+    hs_pf, hs_pa, _ = _nba_gp_blend(hp["cur"], hp["prev"])
+    as_pf, as_pa, _ = _nba_gp_blend(ap["cur"], ap["prev"])
+    fh = fa = 0.0
+    if hp["l10"]["games"] >= 5 and ap["l10"]["games"] >= 5:
+        fh = _nba_gp_clamp(0.3 * (hp["l10"]["pf"] - hs_pf), -3.0, 3.0) + \
+             _nba_gp_clamp(0.3 * (ap["l10"]["pa"] - as_pa), -3.0, 3.0)
+        fa = _nba_gp_clamp(0.3 * (ap["l10"]["pf"] - as_pf), -3.0, 3.0) + \
+             _nba_gp_clamp(0.3 * (hp["l10"]["pa"] - hs_pa), -3.0, 3.0)
+        fh, fa = _nba_gp_clamp(fh, -4.0, 4.0), _nba_gp_clamp(fa, -4.0, 4.0)
+    eh += fh; ea += fa
+    factors.append({"name": "Last 10 form", "home": round(fh, 1), "away": round(fa, 1),
+                    "note": f"{g['home']} L10 {hp['l10']['w']}-{hp['l10']['l']} · "
+                            f"{g['away']} L10 {ap['l10']['w']}-{ap['l10']['l']} vs season level"})
+    rh = ra = 0.0
+    notes = []
+    for side, prof, abbr in (("h", hp, g["home"]), ("a", ap, g["away"])):
+        own = opp = 0.0
+        if prof.get("b2b"):
+            own, opp = -1.5, 0.7
+            notes.append(f"{abbr} back-to-back")
+        if prof.get("three_in_four"):
+            own -= 0.7
+            notes.append(f"{abbr} 3 in 4 nights")
+        if side == "h":
+            rh += own; ra += opp
+        else:
+            ra += own; rh += opp
+    eh += rh; ea += ra
+    factors.append({"name": "Rest", "home": round(rh, 1), "away": round(ra, 1),
+                    "note": "; ".join(notes) or "No back-to-back or 3-in-4 on either side"})
+    lost_h, lost_a = float(g.get("lostHome") or 0), float(g.get("lostAway") or 0)
+    eh -= lost_h; ea -= lost_a
+    factors.append({"name": "Injuries", "home": -round(lost_h, 1), "away": -round(lost_a, 1),
+                    "note": "Expected scoring lost to Out/Doubtful/Questionable rotation players"})
+    crew = g.get("crew") or {}
+    t_adj, m_adj = float(crew.get("total_adj") or 0), float(crew.get("margin_adj") or 0)
+    tot = eh + ea
+    r_h = t_adj * eh / tot + m_adj / 2.0 if tot else 0.0
+    r_a = t_adj * ea / tot - m_adj / 2.0 if tot else 0.0
+    eh += r_h; ea += r_a
+    factors.append({"name": "Referee crew", "home": round(r_h, 1), "away": round(r_a, 1),
+                    "note": "Posted crew's scoring tendency" if (t_adj or m_adj) else "No crew adjustment"})
+    return _nba_gp_clamp(eh, 85.0, 145.0), _nba_gp_clamp(ea, 85.0, 145.0), factors
+
+
+def _nba_sim_pct(n, d):
+    return round(n / d * 100.0, 1) if d else None
+
+
+def _nba_sim_run_one(g, lh, lr, ds):
+    mu_h, mu_a, factors = _nba_sim_expected(g, lh, lr)
+    seed = int(hashlib.sha256(f"{ds}|{g['event_id']}|{mu_h:.3f}|{mu_a:.3f}".encode()).hexdigest()[:12], 16)
+    rng = random.Random(seed)
+    a, b = math.sqrt(_NBA_SIM_RHO), math.sqrt(1.0 - _NBA_SIM_RHO)
+    sd = _NBA_SIM_SD
+    ot_h, ot_a = mu_h * 5.0 / 48.0 * 0.9, mu_a * 5.0 / 48.0 * 0.9
+    book = g.get("book") or {}
+    spread = book.get("home_spread")
+    total_line = book.get("total")
+    n = _NBA_SIM_N
+    home_w = ot = close = blow = 0
+    h_cov = a_cov = s_push = over = under = t_push = 0
+    sum_h = sum_a = 0
+    totals, margins = [], []
+    scores: Dict[str, int] = {}
+    for _ in range(n):
+        z0 = rng.gauss(0.0, 1.0)
+        h = int(round(mu_h + sd * (a * z0 + b * rng.gauss(0.0, 1.0))))
+        w = int(round(mu_a + sd * (a * z0 + b * rng.gauss(0.0, 1.0))))
+        periods = 0
+        while h == w:
+            periods += 1
+            if periods > 6:
+                if rng.random() < 0.5:
+                    h += 1
+                else:
+                    w += 1
+                break
+            z = rng.gauss(0.0, 1.0)
+            h += int(round(ot_h + _NBA_SIM_OT_SD * (0.4 * z + 0.9165 * rng.gauss(0.0, 1.0))))
+            w += int(round(ot_a + _NBA_SIM_OT_SD * (0.4 * z + 0.9165 * rng.gauss(0.0, 1.0))))
+        if periods:
+            ot += 1
+        m, t = h - w, h + w
+        home_w += m > 0
+        close += abs(m) <= 5
+        blow += abs(m) >= 15
+        sum_h += h; sum_a += w
+        totals.append(t); margins.append(m)
+        k = f"{h}-{w}"
+        scores[k] = scores.get(k, 0) + 1
+        if spread is not None:
+            adj = m + float(spread)
+            if adj > 0: h_cov += 1
+            elif adj < 0: a_cov += 1
+            else: s_push += 1
+        if total_line is not None:
+            tl = float(total_line)
+            if t > tl: over += 1
+            elif t < tl: under += 1
+            else: t_push += 1
+    totals.sort(); margins.sort()
+    q = lambda arr, p: arr[min(len(arr) - 1, int(p * len(arr)))]
+    home_pct = _nba_sim_pct(home_w, n)
+    away_pct = round(100.0 - home_pct, 1)
+    # Margin and total distributions.
+    mb = [("away", 15, None, f"{g['away']} by 15+"), ("away", 6, 14, f"{g['away']} by 6-14"),
+          ("away", 1, 5, f"{g['away']} by 1-5"), ("home", 1, 5, f"{g['home']} by 1-5"),
+          ("home", 6, 14, f"{g['home']} by 6-14"), ("home", 15, None, f"{g['home']} by 15+")]
+    margin_dist = []
+    for side, lo, hi, label in mb:
+        cnt = sum(1 for m in margins if (m > 0 if side == "home" else m < 0)
+                  and abs(m) >= lo and (hi is None or abs(m) <= hi))
+        margin_dist.append({"label": label, "side": side, "pct": _nba_sim_pct(cnt, n)})
+    lo_b = int(q(totals, 0.02) // 10 * 10)
+    hi_b = int(q(totals, 0.98) // 10 * 10)
+    total_dist = []
+    for start in range(lo_b, hi_b + 10, 10):
+        cnt = sum(1 for t in totals if start <= t < start + 10)
+        if start == lo_b:
+            cnt += sum(1 for t in totals if t < lo_b)
+        if start == hi_b:
+            cnt += sum(1 for t in totals if t >= hi_b + 10)
+        total_dist.append({"label": f"{start}-{start + 9}", "pct": _nba_sim_pct(cnt, n),
+                           "has_line": total_line is not None and start <= float(total_line) < start + 10})
+    top_scores = [{"score": k, "home": int(k.split("-")[0]), "away": int(k.split("-")[1]),
+                   "pct": _nba_sim_pct(v, n)}
+                  for k, v in sorted(scores.items(), key=lambda kv: (-kv[1], kv[0]))[:5]]
+
+    def edge(prob_win, odds):
+        imp = _nba_gp_implied(odds) if _nba_gp_odds_ok(odds) else None
+        return (round(imp * 100, 1) if imp is not None else None,
+                round(prob_win - imp * 100, 1) if imp is not None else None)
+
+    # Winner pick.
+    win_team = g["home"] if home_w * 2 >= n else g["away"]
+    win_prob = home_pct if win_team == g["home"] else away_pct
+    win_odds = book.get("home_ml") if win_team == g["home"] else book.get("away_ml")
+    win_odds = win_odds if _nba_gp_odds_ok(win_odds) else None
+    w_imp, w_edge = edge(win_prob, win_odds)
+    picks = {"winner": {"pick": win_team, "prob": win_prob, "odds": win_odds,
+                        "implied": w_imp, "edge": w_edge, "bucket": _nba_sim_bucket(win_prob)}}
+    if spread is not None:
+        home_side = h_cov >= a_cov
+        cov = h_cov if home_side else a_cov
+        decided = n - s_push
+        prob = _nba_sim_pct(cov, decided)
+        odds = book.get("home_spread_odds") if home_side else book.get("away_spread_odds")
+        odds = odds if _nba_gp_odds_ok(odds) else None
+        imp, ed = edge(prob, odds)
+        picks["ats"] = {"pick": g["home"] if home_side else g["away"],
+                        "line": float(spread) if home_side else -float(spread),
+                        "prob": prob, "cover_pct": _nba_sim_pct(cov, n), "push_pct": _nba_sim_pct(s_push, n),
+                        "home_cover_pct": _nba_sim_pct(h_cov, n), "away_cover_pct": _nba_sim_pct(a_cov, n),
+                        "odds": odds, "implied": imp, "edge": ed, "bucket": _nba_sim_bucket(prob)}
+    if total_line is not None:
+        is_over = over >= under
+        hit = over if is_over else under
+        prob = _nba_sim_pct(hit, n - t_push)
+        odds = book.get("over_odds") if is_over else book.get("under_odds")
+        odds = odds if _nba_gp_odds_ok(odds) else None
+        imp, ed = edge(prob, odds)
+        picks["ou"] = {"pick": "OVER" if is_over else "UNDER", "line": float(total_line), "prob": prob,
+                       "over_pct": _nba_sim_pct(over, n), "under_pct": _nba_sim_pct(under, n),
+                       "push_pct": _nba_sim_pct(t_push, n), "odds": odds, "implied": imp, "edge": ed,
+                       "bucket": _nba_sim_bucket(prob)}
+    return {"sims": n, "expHome": round(mu_h, 1), "expAway": round(mu_a, 1),
+            "avgHome": round(sum_h / n, 1), "avgAway": round(sum_a / n, 1),
+            "avgTotal": round((sum_h + sum_a) / n, 1), "medTotal": q(totals, 0.5),
+            "totalP10": q(totals, 0.10), "totalP90": q(totals, 0.90),
+            "marginP10": q(margins, 0.10), "marginMed": q(margins, 0.5), "marginP90": q(margins, 0.90),
+            "homeWinPct": home_pct, "awayWinPct": away_pct,
+            "otPct": _nba_sim_pct(ot, n), "closePct": _nba_sim_pct(close, n),
+            "blowoutPct": _nba_sim_pct(blow, n),
+            "marginDist": margin_dist, "totalDist": total_dist, "topScores": top_scores,
+            "picks": picks, "factors": factors}
+
+
+def _nba_sim_build(gp: dict) -> dict:
+    ds = gp.get("date")
+    games = [g for g in (gp.get("games") or []) if g.get("homeProfile") and g.get("awayProfile")]
+    lh, lr = _nba_sim_league(games)
+    out = []
+    for g in games:
+        base = {k: g.get(k) for k in ("event_id", "tip", "stype", "home", "away", "home_id", "away_id",
+                                      "home_name", "away_name", "home_logo", "away_logo", "state", "status",
+                                      "completed", "home_score", "away_score", "home_rec", "away_rec",
+                                      "venue", "book")}
+        try:
+            base["sim"] = _nba_sim_run_one(g, lh, lr, ds)
+        except Exception as exc:
+            print(f"[nba_sim] {g.get('away')}@{g.get('home')} failed: {exc}")
+            base["sim"] = None
+            base["simError"] = "Simulation inputs were incomplete for this game."
+        out.append(base)
+    return {"date": ds, "games": out, "sims": _NBA_SIM_N,
+            "league": {"home": round(lh, 1), "road": round(lr, 1)},
+            "partialHistory": bool(gp.get("partialHistory")),
+            "generatedAt": datetime.utcnow().isoformat(timespec="seconds") + "Z"}
+
+
+def _nba_sim_compact(g):
+    s = g.get("sim") or {}
+    keep = ("expHome", "expAway", "avgHome", "avgAway", "avgTotal", "homeWinPct", "awayWinPct",
+            "otPct", "closePct", "blowoutPct", "medTotal", "picks", "sims")
+    return {**{k: g.get(k) for k in ("event_id", "tip", "stype", "home", "away", "book")},
+            "sim": {k: s.get(k) for k in keep},
+            "saved_at": datetime.utcnow().isoformat(timespec="seconds") + "Z"}
+
+
+def _nba_sim_snapshot_doc(ds):
+    rows = _nba_sb_get({"app": f"eq.{_NBA_SIM_APP}", "category": f"eq.{_NBA_SIM_SNAP_CAT}",
+                        "side": "eq.ALL", "date": f"eq.{ds}", "select": "detail", "limit": "1"})
+    det = (rows[0].get("detail") if rows else None) or {}
+    return det if isinstance(det, dict) else {}
+
+
+def _nba_sim_save_snapshot(ds, games):
+    """Latest pregame sim per game wins; each game freezes at its tip-off.
+    Preseason games are never tracked."""
+    now = datetime.utcnow()
+    fresh = {}
+    for g in games:
+        if g.get("stype") not in (2, 3) or g.get("state") != "pre" or not g.get("sim"):
+            continue
+        try:
+            tip = datetime.fromisoformat(str(g.get("tip")).replace("Z", "+00:00")).replace(tzinfo=None)
+        except Exception:
+            continue
+        if now >= tip:
+            continue
+        fresh[str(g["event_id"])] = _nba_sim_compact(g)
+    if not fresh:
+        return
+    with _NBA_SIM_LOCK:
+        doc = _nba_sim_snapshot_doc(ds)
+        for eid, row in fresh.items():
+            old = doc.get(eid)
+            if old:
+                try:
+                    tip = datetime.fromisoformat(str(old.get("tip")).replace("Z", "+00:00")).replace(tzinfo=None)
+                    if now >= tip:
+                        continue
+                except Exception:
+                    pass
+            doc[eid] = row
+        ok = _nba_sb_upsert([{"app": _NBA_SIM_APP, "date": ds, "category": _NBA_SIM_SNAP_CAT, "side": "ALL",
+                              "wins": 0, "losses": 0, "locked": False, "detail": doc}],
+                            "app,date,category,side")
+    print(f"[nba_sim] snapshot {'saved' if ok else 'FAILED'}: {len(fresh)} games -> {ds}")
+
+
+def _nba_sim_profit(odds, result):
+    """Per $100. Genuine prices only; no assumed -110."""
+    o = _nba_gp_num(odds)
+    if o is None or not _nba_gp_odds_ok(o):
+        return None
+    if result == "WIN":
+        return round(100.0 * (o / 100.0 if o > 0 else 100.0 / -o), 2)
+    if result == "LOSS":
+        return -100.0
+    return 0.0
+
+
+def _nba_sim_grade(p, hs, as_):
+    home, away = p.get("home"), p.get("away")
+    picks = (p.get("sim") or {}).get("picks") or {}
+    out = {"event_id": p.get("event_id"), "home": home, "away": away, "home_score": hs, "away_score": as_,
+           "expHome": (p.get("sim") or {}).get("expHome"), "expAway": (p.get("sim") or {}).get("expAway")}
+    w = picks.get("winner")
+    if w:
+        res = "WIN" if w.get("pick") == (home if hs > as_ else away) else "LOSS"
+        out["winner"] = {**w, "result": res, "profit": _nba_sim_profit(w.get("odds"), res)}
+    s = picks.get("ats")
+    if s and s.get("line") is not None:
+        mine, theirs = (hs, as_) if s.get("pick") == home else (as_, hs)
+        adj = mine + float(s["line"]) - theirs
+        res = "PUSH" if adj == 0 else ("WIN" if adj > 0 else "LOSS")
+        out["ats"] = {**s, "result": res, "profit": _nba_sim_profit(s.get("odds"), res)}
+    t = picks.get("ou")
+    if t and t.get("line") is not None:
+        tot, line = hs + as_, float(t["line"])
+        res = "PUSH" if tot == line else ("WIN" if (tot > line) == (t.get("pick") == "OVER") else "LOSS")
+        out["ou"] = {**t, "result": res, "profit": _nba_sim_profit(t.get("odds"), res), "final_total": tot}
+    return out
+
+
+async def _nba_sim_record() -> dict:
+    snaps = _nba_sb_get({"app": f"eq.{_NBA_SIM_APP}", "category": f"eq.{_NBA_SIM_SNAP_CAT}",
+                         "select": "date,detail", "limit": "2000"}) or []
+    graded = {r.get("date"): r for r in (_nba_sb_get({"app": f"eq.{_NBA_SIM_APP}",
+                                                       "category": f"eq.{_NBA_SIM_GRADED_CAT}",
+                                                       "select": "date,detail,locked", "limit": "2000"}) or [])}
+    today = _nba_gp_today_et()
+    todo = [s for s in snaps if s.get("date") and s["date"] <= today
+            and not (graded.get(s["date"]) or {}).get("locked")]
+    if todo:
+        async with httpx.AsyncClient(timeout=15) as client:
+            for s in sorted(todo, key=lambda x: x["date"])[-21:]:
+                ds, doc = s["date"], s.get("detail") or {}
+                try:
+                    finals = await _nba_gp_finals(client, ds)
+                except Exception as exc:
+                    print(f"[nba_sim] grading {ds} skipped: {exc}")
+                    continue
+                rows, all_done = [], True
+                for eid, p in doc.items():
+                    f = finals.get(str(eid))
+                    if not f or f["void"]:
+                        if not f or not f["void"]:
+                            all_done = False
+                        continue
+                    if not f["completed"] or f["hs"] is None or f["as"] is None:
+                        all_done = False
+                        continue
+                    rows.append(_nba_sim_grade(p, f["hs"], f["as"]))
+                locked = all_done or (date.fromisoformat(today) - date.fromisoformat(ds)).days >= 3
+                if not rows and not locked:
+                    continue
+                _nba_sb_upsert([{"app": _NBA_SIM_APP, "date": ds, "category": _NBA_SIM_GRADED_CAT, "side": "ALL",
+                                 "wins": sum((r.get("winner") or {}).get("result") == "WIN" for r in rows),
+                                 "losses": sum((r.get("winner") or {}).get("result") == "LOSS" for r in rows),
+                                 "locked": locked, "detail": rows}], "app,date,category,side")
+                graded[ds] = {"date": ds, "detail": rows, "locked": locked}
+    pending = {s["date"]: (s.get("detail") or {}) for s in snaps if s.get("date")}
+    days = []
+    for ds in sorted(set(pending) | set(graded), reverse=True):
+        rows = (graded.get(ds) or {}).get("detail") or []
+        done_ids = {str(r.get("event_id")) for r in rows}
+        waiting = [{"event_id": eid, "home": p.get("home"), "away": p.get("away"), "tip": p.get("tip"),
+                    "picks": (p.get("sim") or {}).get("picks") or {}}
+                   for eid, p in (pending.get(ds) or {}).items() if str(eid) not in done_ids]
+        days.append({"date": ds, "games": rows, "pending": waiting,
+                     "locked": bool((graded.get(ds) or {}).get("locked"))})
+    return {"stake": 100.0, "days": days}
+
+
+async def _nba_sim_gp_source(ds: str) -> dict:
+    """Game Predictor inputs (shared cache/lock), never its snapshot or record."""
+    cache_key = f"gp:{ds}"
+    data = _nba_gp_mem_get(cache_key, 180)
+    if data is not None:
+        return data
+    async with _nba_gp_build_lock():
+        data = _nba_gp_mem_get(cache_key, 180)
+        if data is None:
+            data = await asyncio.wait_for(_nba_gp_build(ds), timeout=100)
+            _nba_gp_mem_set(cache_key, data)
+    return data
+
+
+@app.get("/api/nba/game-sim")
+async def nba_game_sim(request: Request, date_str: str = ""):
+    from fastapi import HTTPException
+    if not _nba_gp_auth(request):
+        raise HTTPException(status_code=401, detail="Subscription required — please log in via moneypicksarena.com")
+    ds = (date_str or _nba_gp_today_et()).strip()
+    try:
+        date.fromisoformat(ds)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid date")
+    if _NBA_RUNS_ACTIVE > 0 and _nba_gp_mem_get(f"gp:{ds}", 180) is None:
+        raise HTTPException(status_code=409, detail="A picks run is in progress. Run the sims after it finishes.")
+    try:
+        gp = await _nba_sim_gp_source(ds)
+    except _NbaGpRunBusy:
+        raise HTTPException(status_code=409, detail="A picks run started, so the simulator stepped aside. Run the sims again after it finishes.")
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=504, detail="Simulator data took too long to load. Try again in a minute.")
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Simulator data unavailable: {exc}")
+    if not gp.get("games"):
+        return {"date": ds, "games": [], "sims": _NBA_SIM_N,
+                "message": gp.get("message") or "No NBA games are scheduled for this date."}
+    data = await asyncio.to_thread(_nba_sim_build, gp)
+    if ds >= _nba_gp_today_et():
+        _nba_th.Thread(target=_nba_sim_save_snapshot, args=(ds, data["games"]), daemon=True).start()
+    try:
+        doc = await asyncio.to_thread(_nba_sim_snapshot_doc, ds)
+    except Exception:
+        doc = {}
+    for g in data["games"]:
+        saved = doc.get(str(g.get("event_id")))
+        if saved and g.get("state") != "pre":
+            g["sim"] = {**(g.get("sim") or {}), **(saved.get("sim") or {})}
+            g["book"] = saved.get("book") or g.get("book")
+            g["savedSim"] = True
+            g["savedAt"] = saved.get("saved_at")
+        if g.get("completed") and g.get("home_score") is not None and g.get("away_score") is not None and g.get("sim"):
+            g["result"] = _nba_sim_grade({**g, "sim": g["sim"]}, g["home_score"], g["away_score"])
+        g["retro"] = (not saved) and ds < _nba_gp_today_et()
+        g["tracked"] = g.get("stype") in (2, 3)
+    return data
+
+
+@app.get("/api/nba/game-sim/record")
+async def nba_game_sim_record(request: Request):
+    from fastapi import HTTPException
+    if not _nba_gp_auth(request):
+        raise HTTPException(status_code=401, detail="Subscription required — please log in via moneypicksarena.com")
+    try:
+        return await asyncio.wait_for(_nba_sim_record(), timeout=60)
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=504, detail="Sim record took too long to load.")
+
+
 @app.get("/api/verify-token")
 async def verify_token_nba(request: Request):
     from fastapi import HTTPException
@@ -9172,10 +9844,11 @@ async def index(request: Request, admin: str = "", token: str = ""):
     coach_html = NBA_COACH_HTML.replace("__TODAY__", today_iso)
     historical_html = NBA_HISTORICAL_HTML.replace("__TODAY__", today_iso)
     gp_html = NBA_GP_HTML.replace("__TODAY__", today_iso)
+    sim_html = NBA_SIM_HTML.replace("__TODAY__", today_iso)
     # Keep the full Coach panel adjacent to the primary board, immediately before
     # ALL PICKS.  Historical Track Record remains a bottom-of-page surface.
     html = (MAIN_HTML.replace("__TODAY__", today_iso).replace("__TOMORROW__", tomorrow_iso)
-            .replace('<div id="allPicksWrap"', gp_html + coach_html + '<div id="allPicksWrap"', 1)
+            .replace('<div id="allPicksWrap"', gp_html + sim_html + coach_html + '<div id="allPicksWrap"', 1)
             .replace("</body>", historical_html + "</body>", 1)
             .replace("</head>", f"<script>window.IS_ADMIN = {js_flag};</script></head>", 1))
     return HTMLResponse(html)
