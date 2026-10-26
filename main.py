@@ -582,7 +582,11 @@ def _nba_trk_bg(date_str: str, result: dict):
         _nba_save_picks_snapshot(date_str, result)
     except Exception as exc:
         print(f"[nba_track] snapshot NOT saved for {date_str}: {exc}")
-    _nba_th.Thread(target=_nba_update_track_ledger, daemon=True).start()
+    try:
+        _nba_save_hc_snapshot(date_str, result)
+    except Exception as exc:
+        print(f"[nba_hc_track] snapshot NOT saved for {date_str}: {exc}")
+    _nba_th.Thread(target=_nba_update_all_ledgers, daemon=True).start()
 
 _NBA_TRK_CACHED_TS: dict = {}
 
@@ -594,7 +598,336 @@ def _nba_trk_bg_throttled(date_str: str, result: dict):
     _NBA_TRK_CACHED_TS[date_str] = now
     _nba_th.Thread(target=_nba_trk_bg, args=(date_str, result), daemon=True).start()
 
-_nba_th.Thread(target=_nba_update_track_ledger, daemon=True).start()
+# ─── NBA Hot / Cold form section (separately tracked spotlight record) ───────
+# Mirrors the NHL Hot/Cold rules. These rows never touch the ordinary picks,
+# boards or the Main/Overflow ledgers: they live in their own snapshot/ledger
+# categories inside the same NBA app namespace.
+_NBA_HC_SNAP_CAT   = "__hc_picks__"
+_NBA_HC_DETAIL_CAT = "__hc_detail__"
+_NBA_HC_LEDGER_CAT = "__hc_ledger__"
+_NBA_HC_FORMS = (("hot", "Hot", "OVER"), ("cold", "Cold", "UNDER"),
+                 ("double_cold", "Double Cold", "UNDER"))
+_NBA_HC_TOP = 10       # Top 10 main per form x market
+_NBA_HC_LIMIT = 20     # ranks 11-20 are the Hot/Cold overflow
+_NBA_HC_KEYS = ("name","team","opp","category","market","stat_key","side","line","odds",
+                "book","rank","is_overflow","form","form_key","edge","capture_scope")
+
+
+def _nba_hot_cold_min_games(target_date):
+    """October uses 2-5 current-season games; November onward requires five."""
+    try:
+        return 2 if date.fromisoformat(str(target_date)[:10]).month == 10 else 5
+    except (TypeError, ValueError):
+        return 5
+
+
+def _nba_et_date(raw) -> str:
+    """ESPN game timestamps are UTC; NBA slate dates are Eastern."""
+    s = str(raw or "")
+    if len(s) <= 10:
+        return s[:10]
+    try:
+        from zoneinfo import ZoneInfo as _ZI
+        dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            return s[:10]
+        return dt.astimezone(_ZI("America/New_York")).date().isoformat()
+    except Exception:
+        return s[:10]
+
+
+def _nba_hc_price(raw):
+    """Genuine side price only: +100 or longer, or -100 down to -1000."""
+    try:
+        v = float(str(raw).replace("+", ""))
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(v) or v < -1000 or -100 < v < 100:
+        return None
+    return int(v) if v == int(v) else v
+
+
+def _nba_hot_cold_rows(today_str, games, rosters, logs_by_player, dk_lookup, props_rows):
+    """Hot (OVER) / Cold (UNDER) / Double Cold form plays for every market with a
+    genuine standard sportsbook line. Independent of the ordinary pick gates."""
+    try:
+        as_of = date.fromisoformat(str(today_str)[:10])
+    except (TypeError, ValueError):
+        return []
+    season_start = date(as_of.year if as_of.month >= 10 else as_of.year - 1, 10, 1).isoformat()
+    minimum = _nba_hot_cold_min_games(today_str)
+    props_by_key = {}
+    for r in props_rows or []:
+        props_by_key.setdefault((str(r.get("player") or ""), r.get("stat")), r)
+    candidates = []
+    for game in games or []:
+        for tid, team, opp, opp_name, venue in (
+                (game.get("home_id"), game.get("home"), game.get("away"), game.get("away_name"), "HOME"),
+                (game.get("away_id"), game.get("away"), game.get("home"), game.get("home_name"), "AWAY")):
+            for player in (rosters or {}).get(tid, []) or []:
+                pid, pname = player.get("id"), player.get("name") or ""
+                if not pname or not any((_nn(pname), s) in dk_lookup for s in STAT_CONFIG):
+                    continue
+                history, seen = [], set()
+                for g in logs_by_player.get(pid, []) or []:
+                    d = _nba_et_date(g.get("date"))
+                    if not d or d >= today_str or d in seen:
+                        continue
+                    seen.add(d)
+                    history.append((d, g))
+                history.sort(key=lambda x: x[0], reverse=True)
+                # True chronological last five, current season only, all venues.
+                recent = [(d, g) for d, g in history if d >= season_start][:5]
+                if len(recent) < minimum:
+                    continue
+                versus = [(d, g) for d, g in history if g.get("opp") == opp][:5]
+                for sk, sc in STAT_CONFIG.items():
+                    quote = dk_lookup.get((_nn(pname), sk)) or {}
+                    try:
+                        line = float(quote.get("line"))
+                    except (TypeError, ValueError):
+                        continue
+                    if not math.isfinite(line):
+                        continue
+                    try:
+                        vals = [float(g[sk]) for _, g in recent]
+                        vs_vals = [float(g[sk]) for _, g in versus]
+                    except (KeyError, TypeError, ValueError):
+                        continue
+                    avg = sum(vals) / len(vals)
+                    for side, form in (("OVER", "HOT"), ("UNDER", "COLD")):
+                        hits = sum(v > line if side == "OVER" else v < line for v in vals)
+                        if hits * 5 < len(vals) * 4 or not (avg > line if side == "OVER" else avg < line):
+                            continue
+                        opp_hits = sum(v > line if side == "OVER" else v < line for v in vs_vals)
+                        opp_rate = opp_hits / len(vs_vals) * 100 if vs_vals else None
+                        supports = bool(len(vs_vals) >= 3 and opp_rate is not None and opp_rate >= 70)
+                        odds = _nba_hc_price(quote.get("over_odds" if side == "OVER" else "under_odds"))
+                        implied = _nba_coach_implied(odds) if odds is not None else None
+                        # Edge reuses the app's own same-line estimate only.
+                        model = None
+                        prop = props_by_key.get((pname, sk)) or {}
+                        try:
+                            if prop and abs(float(prop.get("line")) - line) < 1e-9:
+                                model, _ = _nba_coach_prob(prop, side, line)
+                        except (TypeError, ValueError):
+                            model = None
+                        edge = (round((model - implied) * 100, 2)
+                                if model is not None and implied is not None else None)
+                        candidates.append({
+                            "player": pname, "player_id": pid, "team": team or "",
+                            "opp": opp or "", "opp_name": opp_name or "", "venue": venue,
+                            "matchup": f"{game.get('away_name','')} @ {game.get('home_name','')}",
+                            "tipoff": game.get("tipoff", ""), "stat": sk,
+                            "stat_label": sc["label"], "emoji": sc["emoji"],
+                            "pick": side, "form": form,
+                            "double_cold": form == "COLD" and supports,
+                            "matchup_supports": supports, "line": line, "odds": odds,
+                            "book": ((quote.get("bookmaker_label") or quote.get("bookmaker") or "")
+                                     if odds is not None else ""),
+                            "recent_hits": hits, "recent_total": len(vals),
+                            "recent_avg": round(avg, 2),
+                            "recent_pushes": sum(v == line for v in vals),
+                            "recent_games": [{"d": d, "opp": g.get("opp", ""),
+                                              "loc": g.get("location", ""), "v": v}
+                                             for (d, g), v in zip(recent, vals)],
+                            "opp_hits": opp_hits, "opp_total": len(vs_vals),
+                            "opp_rate": round(opp_rate, 1) if opp_rate is not None else None,
+                            "opp_games": [{"d": d, "loc": g.get("location", ""), "v": v}
+                                          for (d, g), v in zip(versus, vs_vals)],
+                            "app_probability": round(model * 100, 1) if model is not None else None,
+                            "implied_probability": round(implied * 100, 1) if implied is not None else None,
+                            "edge": edge,
+                        })
+
+    def rank_key(r):
+        margin = (r["recent_avg"] - r["line"]) if r["pick"] == "OVER" else (r["line"] - r["recent_avg"])
+        return (-(r["recent_hits"] / r["recent_total"]), -r["recent_hits"],
+                -bool(r["matchup_supports"]), r["odds"] is None,
+                -(margin / max(abs(r["line"]), 0.5)),
+                r["player"].casefold(), str(r["player_id"]))
+
+    out = []
+    for form_key, form_label, side in _NBA_HC_FORMS:
+        for sk, sc in STAT_CONFIG.items():
+            pool = [r for r in candidates if r["stat"] == sk and r["pick"] == side
+                    and (form_key != "double_cold" or r["double_cold"])]
+            pool.sort(key=rank_key)
+            seen_players = set()
+            rank = 0
+            for r in pool:
+                pkey = (r["player"].casefold(), r["team"])
+                if pkey in seen_players:
+                    continue
+                seen_players.add(pkey)
+                rank += 1
+                if rank > _NBA_HC_LIMIT:
+                    break
+                out.append({**r, "form_key": form_key, "form_label": form_label,
+                            "category": f"{form_label} {sc['label']}",
+                            "hc_key": f"{form_key}|{sk}", "rank": rank,
+                            "is_overflow": rank > _NBA_HC_TOP})
+    return out
+
+
+def _nba_hc_snapshot_rows(result: dict) -> list:
+    flat = []
+    for r in result.get("hot_cold") or []:
+        sk = r.get("stat")
+        if sk not in STAT_CONFIG or r.get("line") is None or r.get("pick") not in ("OVER", "UNDER"):
+            continue
+        odds = r.get("odds") if _nba_trk_priced(r.get("odds")) else None
+        flat.append({"name": r.get("player", ""), "team": r.get("team", ""), "opp": r.get("opp", ""),
+                     "category": r.get("category") or "", "market": _NBA_STAT_LABEL.get(sk, sk),
+                     "stat_key": sk, "side": r.get("pick"), "line": r.get("line"),
+                     "odds": odds, "book": (r.get("book") or "") if odds is not None else "",
+                     "rank": r.get("rank"), "is_overflow": bool(r.get("is_overflow")),
+                     "form": r.get("form"), "form_key": r.get("form_key"),
+                     "edge": r.get("edge"), "capture_scope": "hot_cold",
+                     "tipoff": r.get("tipoff")})
+    return flat
+
+
+def _nba_save_hc_snapshot(date_str: str, result: dict):
+    """Per game: unstarted games take the latest run; started games keep their
+    saved pregame Hot/Cold rows. Never rewrites a locked (graded) date."""
+    if not _nba_main_board_ok(date_str, result) or not isinstance(result.get("hot_cold"), list):
+        return
+    from datetime import timezone as _tz
+    now_utc = datetime.now(_tz.utc)
+    with _NBA_TRK_LOCK:
+        existing_rows = _nba_hist_sb_get({"app": f"eq.{_NBA_TRK_APP}",
+                                          "category": f"eq.{_NBA_HC_SNAP_CAT}",
+                                          "side": "eq.ALL", "date": f"eq.{date_str}",
+                                          "select": "detail", "limit": "1"})
+        existing = (existing_rows[0].get("detail") or []) if existing_rows else []
+        locked = _nba_hist_sb_get({"app": f"eq.{_NBA_TRK_APP}",
+                                   "category": f"eq.{_NBA_HC_LEDGER_CAT}", "date": f"eq.{date_str}",
+                                   "locked": "eq.true", "select": "date", "limit": "1"})
+        if locked:
+            return
+        fresh = [r for r in _nba_hc_snapshot_rows(result)
+                 if not _nba_tip_started(r.get("tipoff"), now_utc)]
+        kept = [r for r in existing if _nba_tip_started(r.get("tipoff"), now_utc)]
+        if not fresh:
+            return
+        ok = _nba_sb_upsert(
+            [{"app": _NBA_TRK_APP, "date": date_str, "category": _NBA_HC_SNAP_CAT,
+              "side": "ALL", "wins": 0, "losses": 0, "locked": False, "detail": kept + fresh}],
+            "app,date,category,side")
+    print(f"[nba_hc_track] snapshot {'saved' if ok else 'FAILED'}: {len(fresh)} pregame + "
+          f"{len(kept)} locked started-game Hot/Cold picks -> {date_str}")
+
+
+def _nba_load_hc_snapshot(date_str: str) -> list:
+    rows = _nba_sb_get({"app": f"eq.{_NBA_TRK_APP}", "category": f"eq.{_NBA_HC_SNAP_CAT}",
+                        "side": "eq.ALL", "date": f"eq.{date_str}", "select": "detail", "limit": "1"})
+    d = (rows[0].get("detail") or []) if rows else []
+    return d if isinstance(d, list) else []
+
+
+def _nba_update_hc_ledger():
+    """Grade saved Hot/Cold snapshots with the same box-score grader as Main."""
+    today = _nba_today().isoformat()
+    with _NBA_TRK_LOCK:
+        locked = {r["date"] for r in (_nba_sb_get(
+            {"app": f"eq.{_NBA_TRK_APP}", "category": f"eq.{_NBA_HC_LEDGER_CAT}",
+             "locked": "eq.true", "select": "date", "limit": "500"}) or [])}
+        dates = sorted({r["date"] for r in (_nba_sb_get(
+            {"app": f"eq.{_NBA_TRK_APP}", "category": f"eq.{_NBA_HC_SNAP_CAT}",
+             "side": "eq.ALL", "select": "date", "limit": "365"}) or []) if r.get("date")})
+        upserts = []
+        for d in dates:
+            if d >= today or d in locked:
+                continue
+            snap = _nba_load_hc_snapshot(d)
+            if not snap:
+                continue
+            try:
+                graded = _nba_grade_date(d, [{**r, "is_overflow": False} for r in snap])
+            except Exception as e:
+                print(f"[nba_hc_track] grade failed {d}: {e}")
+                continue
+            if not graded.get("any_game"):
+                continue
+            try:
+                old_enough = (_nba_today() - date.fromisoformat(d)).days >= 2
+            except Exception:
+                old_enough = False
+            if not graded.get("all_final") and not (old_enough and graded.get("fetch_ok")):
+                continue
+            det, agg = [], {}
+            for src, row in zip(snap, graded.get("main", [])):
+                if row.get("result") not in ("WIN", "LOSS", "PUSH"):
+                    continue
+                out = {k: src.get(k) for k in _NBA_HC_KEYS}
+                out.update({"result": row.get("result"), "actual": row.get("actual"),
+                            "profit": row.get("profit")})
+                det.append(out)
+                if out["result"] in ("WIN", "LOSS") and out.get("odds") is not None:
+                    rec = agg.setdefault(out["category"], {}).setdefault(out.get("side", "OVER"), [0, 0])
+                    rec[0 if out["result"] == "WIN" else 1] += 1
+            upserts += [
+                {"app": _NBA_TRK_APP, "date": d, "category": _NBA_HC_LEDGER_CAT, "side": "ALL",
+                 "wins": 0, "losses": 0, "locked": True, "detail": agg},
+                {"app": _NBA_TRK_APP, "date": d, "category": _NBA_HC_DETAIL_CAT, "side": "ALL",
+                 "wins": 0, "losses": 0, "locked": True, "detail": det},
+            ]
+        if upserts:
+            for i in range(0, len(upserts), 10):
+                _nba_sb_upsert(upserts[i:i + 10], "app,date,category,side")
+            print(f"[nba_hc_track] locked {len(upserts)//2} dates")
+
+
+def _nba_hc_record_response() -> dict:
+    """Hot/Cold spotlight record: graded rows plus PENDING saved pregame rows."""
+    det_rows = _nba_hist_sb_get({"app": f"eq.{_NBA_TRK_APP}", "category": f"eq.{_NBA_HC_DETAIL_CAT}",
+                                 "locked": "eq.true", "select": "date,detail", "limit": "365"})
+    detail_by_date = {r["date"]: (r.get("detail") or []) for r in (det_rows or []) if r.get("date")}
+    pending_dates = set()
+    try:
+        cutoff = (_nba_today() - timedelta(days=10)).isoformat()
+        snap_dates = sorted({r["date"] for r in (_nba_hist_sb_get(
+            {"app": f"eq.{_NBA_TRK_APP}", "category": f"eq.{_NBA_HC_SNAP_CAT}",
+             "side": "eq.ALL", "select": "date", "limit": "365"}) or []) if r.get("date")})
+        for d in snap_dates:
+            if d in detail_by_date or d < cutoff:
+                continue
+            snap = _nba_load_hc_snapshot(d)
+            if not snap:
+                continue
+            detail_by_date[d] = [{**{k: p.get(k) for k in _NBA_HC_KEYS},
+                                  "result": "PENDING", "actual": None, "profit": None} for p in snap]
+            pending_dates.add(d)
+    except Exception as exc:
+        print(f"[nba_hc_track] pending snapshot read failed: {exc}")
+    out = []
+    for d in sorted(detail_by_date, reverse=True):
+        det = []
+        for saved in detail_by_date[d]:
+            row = dict(saved)
+            row["is_overflow"] = bool(row.get("is_overflow"))
+            if not _nba_trk_priced(row.get("odds")):
+                row["odds"] = None
+                row["profit"] = None
+            row["stake"] = _NBA_TRK_STAKE if row.get("odds") is not None else None
+            det.append(row)
+        if det:
+            out.append({"date": d, "pending": d in pending_dates, "detail": det})
+    return {"dates": out, "stake": _NBA_TRK_STAKE, "record": "hot_cold"}
+
+
+def _nba_update_all_ledgers():
+    try:
+        _nba_update_track_ledger()
+    except Exception as exc:
+        print(f"[nba_track] ledger update failed: {exc}")
+    try:
+        _nba_update_hc_ledger()
+    except Exception as exc:
+        print(f"[nba_hc_track] ledger update failed: {exc}")
+
+_nba_th.Thread(target=_nba_update_all_ledgers, daemon=True).start()
 
 _NBA_BET_LOG_PATH = str(_CACHE_DIR / "_nba_bet_log.json")
 _NBA_BET_LOCK = _nba_th.Lock()
@@ -2714,7 +3047,17 @@ async def _run_analysis_core(selected_date: str = None, force: bool = False) -> 
                     (props_picks if pick else props_nopick).append(entry)
     props_picks.sort(key=lambda x:abs(x.get('gap') or 0),reverse=True)
     log.append(f"Props: {len(props_picks)} picks")
-    result = {'date':today_str,'picks':top_picks,'all_picks':picks,'games':games,'log':log,'total':len(picks),'odds_loaded':odds_loaded,'historical_replay':historical_replay,'props_picks':props_picks,'props_nopick':props_nopick}
+    # Hot / Cold form section: separate spotlight boards; never alters the picks above.
+    hot_cold = []
+    if not historical_replay:
+        try:
+            hot_cold = _nba_hot_cold_rows(today_str, games, rosters, logs_by_player,
+                                          dk_lookup, props_picks + props_nopick)
+            log.append(f"Hot/Cold: {len(hot_cold)} form plays")
+        except Exception as _hce:
+            print(f"[nba_hc] build failed: {_hce}")
+            log.append("Hot/Cold board unavailable for this run")
+    result = {'date':today_str,'picks':top_picks,'all_picks':picks,'games':games,'log':log,'total':len(picks),'odds_loaded':odds_loaded,'historical_replay':historical_replay,'props_picks':props_picks,'props_nopick':props_nopick,'hot_cold':hot_cold}
     result = _nba_apply_season_scope(result)
     _cache.update(result)
     # Only cache if we actually got prop lines from the Odds API.
@@ -3073,10 +3416,12 @@ footer{text-align:center;padding:32px 24px;color:#4b5563;font-size:.78rem;border
     <div class="nba-menu-head" role="presentation">&#128202; Records</div>
     <button type="button" role="menuitem" class="nba-menu-item" style="--c:#4338ca" onclick="_nbaNavGo(function(){document.getElementById('nba-track-section').scrollIntoView({behavior:'smooth',block:'start'});})">&#128202; Track Record</button>
     <button type="button" role="menuitem" class="nba-menu-item" style="--c:#0e7490" onclick="_nbaNavGo(openNbaOverflowRecord)">&#11088; Overflow Record</button>
-    <button type="button" role="menuitem" class="nba-menu-item" style="--c:#d97706" onclick="_nbaNavGo(openNbaDowReport)">&#128197; Day of Week Report</button>
+    <button type="button" role="menuitem" class="nba-menu-item" style="--c:#ea580c" onclick="_nbaNavGo(openNbaHotColdRecord)">&#128293; Hot / Cold Record</button>
+    <button type="button" role="menuitem" class="nba-menu-item" style="--c:#d97706" onclick="_nbaNavGo(openNbaDowReport)">&#128197; Day of Week Trends</button>
     <button type="button" role="menuitem" class="nba-menu-item" style="--c:#7c3aed" onclick="_nbaNavGo(function(){openNbaCoachTrack();})">&#129504; Coach Track Record</button>
     <button type="button" role="menuitem" class="nba-menu-item" style="--c:#8b5cf6" onclick="_nbaNavGo(function(){openNbaGpRecord();})">&#128302; Game Predictor Record</button>
     <div class="nba-menu-head tools" role="presentation">&#128736;&#65039; Tools</div>
+    <button type="button" role="menuitem" class="nba-menu-item" style="--c:#ea580c" onclick="_nbaNavGo(openNbaHotColdBoard)">&#128293; Hot / Cold Board</button>
     <button type="button" role="menuitem" class="nba-menu-item" style="--c:#8b5cf6" onclick="_nbaNavGo(function(){openNbaGamePredictor();})">&#128302; Game Predictor</button>
     <button type="button" role="menuitem" class="nba-menu-item admin-only" style="--c:#d97706" onclick="_nbaNavGo(function(){var c=document.getElementById('parlayCard');if(c)c.scrollIntoView({behavior:'smooth',block:'center'});})">&#127920; Auto Parlay Builder</button>
     <button type="button" role="menuitem" class="nba-menu-item" style="--c:#a855f7" onclick="_nbaNavGo(function(){showNbaPerfectParlayBuilder();})">&#10024; Perfect Parlay</button>
@@ -3117,6 +3462,12 @@ document.addEventListener('keydown',function(e){if(e.key==='Escape')_nbaNavClose
     </select>
     <button class="btn" onclick="buildParlay()">Build Best Parlay</button>
     <button class="btn" onclick="generateParlay()" style="background:#1f2937;color:#fff">🎲 Generate New</button>
+  </div>
+  <div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap;margin-top:10px;font-size:.74rem;color:#cbd5e1">
+    <span style="color:#94a3b8;font-weight:700">Also include:</span>
+    <label><input type="checkbox" name="parlayHcForm" value="hot"> 🔥 Hot</label>
+    <label><input type="checkbox" name="parlayHcForm" value="cold"> 🧊 Cold</label>
+    <label><input type="checkbox" name="parlayHcForm" value="double_cold"> ❄️ Double Cold</label>
   </div>
   <div id="parlayResult" style="margin-top:16px;text-align:left"></div>
 </div>
@@ -3190,6 +3541,45 @@ document.addEventListener('keydown',function(e){if(e.key==='Escape')_nbaNavClose
   <div id="allPicksSection"></div>
 </div>
 
+<style>
+ .nba-hc-row{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-bottom:8px}
+ .nba-hc-lbl{color:#94a3b8;font-size:.62rem;font-weight:900;letter-spacing:.12em;text-transform:uppercase;min-width:54px}
+ .nba-hc-btn{background:#111827;color:#cbd5e1;border:1px solid #334155;border-radius:999px;padding:6px 12px;font-size:.72rem;font-weight:800;cursor:pointer}
+ .nba-hc-btn.active{background:linear-gradient(135deg,#f97316,#7c3aed);color:#fff;border-color:#f97316}
+ .nba-hc-n{opacity:.75;font-size:.62rem;margin-left:3px}
+ .nba-hc-group{margin-top:16px}
+ .nba-hc-gh{color:#fde68a;font-weight:900;font-size:.85rem;margin-bottom:8px}
+ .nba-hc-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(290px,1fr));gap:10px}
+ .nba-hc-card{background:#111827;border:1px solid #1f2937;border-left:4px solid var(--fc);border-radius:12px;padding:10px 12px;font-size:.74rem;color:#e2e8f0}
+ .nba-hc-top{display:flex;align-items:center;gap:9px;width:100%;background:none;border:0;color:inherit;text-align:left;cursor:pointer;padding:0;font:inherit}
+ .nba-hc-rank{color:#64748b;font-weight:900;font-size:.72rem;min-width:24px}
+ .nba-hc-head{width:42px;height:31px;object-fit:cover;border-radius:6px;background:#0b1121;flex:none}
+ .nba-hc-who{display:flex;flex-direction:column;flex:1;min-width:0}
+ .nba-hc-who b{font-size:.84rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+ .nba-hc-who small{color:#94a3b8;font-size:.64rem}
+ .nba-hc-badge{color:var(--fc);font-size:.6rem;font-weight:900;letter-spacing:.06em;white-space:nowrap}
+ .nba-hc-play{margin:8px 0 4px;font-size:.86rem;font-weight:800}
+ .nba-hc-line{margin-top:4px;line-height:1.45}
+ .nba-hc-muted{color:#64748b}
+ .nba-hc-chips{display:inline-flex;gap:3px;margin-left:4px;vertical-align:middle}
+ .nba-hc-chip{min-width:22px;text-align:center;border-radius:5px;padding:1px 4px;font-size:.64rem;font-weight:900}
+ .nba-hc-chip.hit{background:rgba(74,222,128,.16);color:#4ade80}.nba-hc-chip.miss{background:rgba(248,113,113,.16);color:#f87171}.nba-hc-chip.push{background:rgba(250,204,21,.16);color:#facc15}
+ .nba-hc-more{margin-top:7px;color:#a5b4fc;font-size:.66rem;font-weight:800;cursor:pointer}
+ .nba-hc-drop{margin-top:8px;border-top:1px solid #1f2937;padding-top:6px}
+ .nba-hc-dh{color:#94a3b8;font-size:.6rem;font-weight:900;letter-spacing:.08em;text-transform:uppercase;margin:6px 0 4px}
+ .nba-hc-log{width:100%;border-collapse:collapse;font-size:.68rem}
+ .nba-hc-log th{color:#818cf8;text-align:left;font-size:.58rem;padding:3px 4px}.nba-hc-log td{padding:3px 4px;border-top:1px solid #1f2937}
+ .nba-hc-empty{border:1px dashed #334155;border-radius:10px;padding:14px;color:#94a3b8;font-size:.76rem;margin-top:10px}
+</style>
+<div id="nba-hotcold-section" style="display:none;max-width:1400px;margin:28px auto 0;padding:0 24px 10px">
+  <div style="display:flex;justify-content:space-between;align-items:flex-end;gap:10px;flex-wrap:wrap;margin-bottom:10px">
+    <div><div style="font-size:.78rem;font-weight:700;color:#f97316;text-transform:uppercase;letter-spacing:.15em">&#128293; Hot / &#129482; Cold Players</div>
+    <div style="font-size:.7rem;color:#94a3b8;margin-top:4px;max-width:900px;line-height:1.5">Hot = OVER in 80%+ of the last 5 current-season games (2+ games in October) with the average above the genuine sportsbook line. Cold = the same for UNDER. Double Cold = Cold plus 70%+ Under in 3+ of the last 5 meetings vs today&#39;s opponent. Top 10 per form and market, ranks 11-20 as overflow; every play is saved pre-tip and tracked in the Hot / Cold Record. Edge appears only when the app has a same-line estimate and a genuine price.</div></div>
+    <button type="button" class="nba-hc-btn" onclick="openNbaHotColdRecord()">&#128202; Hot / Cold Record</button>
+  </div>
+  <div id="nbaHcControls"></div>
+  <div id="nbaHcBoard"></div>
+</div>
 <div id="props-section" style="display:none;max-width:1400px;margin:28px auto 0;padding:0 24px 40px">
   <div class="props-historical-label"></div>
   <div style="font-size:.78rem;font-weight:700;color:#f59e0b;text-transform:uppercase;letter-spacing:.15em;margin:0 0 14px;display:flex;align-items:center;gap:10px">&#9889; Player Props vs Opponent History</div>
@@ -3322,6 +3712,25 @@ document.addEventListener('keydown',function(e){if(e.key==='Escape')_nbaNavClose
     <div id="nbaOvfBody"></div>
   </div>
 </div>
+<div id="nba-hotcold-track-section" style="display:none;max-width:1040px;margin:24px auto 0;padding:0 16px 40px">
+  <div class="card nba-trk-shell" style="padding:14px">
+    <div class="nba-record-hero">
+      <div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start;flex-wrap:wrap">
+        <div><div class="nba-record-kicker" style="color:#f97316">NBA Performance Center · Hot / Cold</div><h2 class="nba-record-title">&#128293; Hot / Cold Track Record</h2><div class="nba-record-sub">Saved pre-tip Hot (OVER), Cold (UNDER) and Double Cold (UNDER) plays for every market: Top 10 per form and market, plus ranks 11-20 as Hot / Cold Overflow. Kept separate from the Main, Overflow and Coach totals. Hit rate counts every decided play; P/L counts only plays with a genuine saved price.</div></div>
+        <button class="nba-view-btn" onclick="document.getElementById('nba-hotcold-track-section').style.display='none'">Close</button>
+      </div>
+      <div class="nba-record-tools">
+        <label><span class="nba-record-label">Slate date</span><select id="nbaHcDateSelect" class="nba-record-control" onchange="renderNbaTrackDay('hotcold')"><option value="">No saved dates</option></select></label><label><span class="nba-record-label">Period</span><select id="nbaHcPeriod" class="nba-record-control" onchange="renderNbaTrackDay('hotcold')"><option value="day">Day</option><option value="week">Week · last 7 days</option><option value="month">Month</option><option value="all">All Time</option></select></label>
+        <label><span class="nba-record-label">Board</span><select id="nbaHcBook" class="nba-record-control" onchange="renderNbaTrackDay('hotcold')"><option value="main">Top 10</option><option value="overflow">Overflow · ranks 11-20</option><option value="all">Top 10 + Overflow</option></select></label>
+        <label><span class="nba-record-label">Flat bet amount</span><input type="number" id="nbaHcBetSize" class="nba-record-control" value="100.00" min="1" step="5" style="width:110px" oninput="renderNbaTrackDay('hotcold')"></label>
+        <button onclick="loadNbaTrackRecord('hotcold')" class="nba-view-btn">&#8635; Refresh results</button>
+        <div class="nba-view-tabs"><button id="nbaHcCatBtn" class="nba-view-btn active" onclick="setNbaTrkView('category','hotcold')">By Category</button><button id="nbaHcFullBtn" class="nba-view-btn" onclick="setNbaTrkView('full','hotcold')">Full List</button></div>
+      </div>
+    </div>
+    <div id="nbaHcTopPct" style="display:none"></div><div id="nbaHcTopStats" style="display:none"></div>
+    <div id="nbaHcBody"></div>
+  </div>
+</div>
 <style>
  .nba-dow-wrap{overflow-x:auto;border:1px solid #1e293b;border-radius:12px;margin-top:10px}
  .nba-dow-table{width:100%;border-collapse:collapse;font-size:.72rem;min-width:860px}
@@ -3331,20 +3740,26 @@ document.addEventListener('keydown',function(e){if(e.key==='Escape')_nbaNavClose
  .nba-dow-cell b{display:block;font-size:.8rem}
  .nba-dow-cell small{color:#94a3b8}
  .nba-dow-h3{color:#e2e8f0;font-size:.85rem;font-weight:900;margin:18px 0 4px}
+ .nba-dow-agg{min-width:780px}
+ .nba-dow-agg td{text-align:right}
+ .nba-dow-agg td:first-child{text-align:left;white-space:normal}
+ .nba-dow-pos{color:#4ade80!important;font-weight:900}.nba-dow-neg{color:#f87171!important;font-weight:900}.nba-dow-mut{color:#64748b!important}
+ .nba-dow-note{border:1px solid #26334a;border-radius:10px;padding:10px 12px;background:#0f172a;margin:10px 0;color:#94a3b8;font-size:.72rem;line-height:1.45}
+ .nba-dow-details>summary{cursor:pointer;color:#a5b4fc;font-weight:900;font-size:.8rem;margin:16px 0 4px}
 </style>
 <div id="nba-dow-section" style="display:none;max-width:1040px;margin:24px auto 0;padding:0 16px 40px">
   <div class="card nba-trk-shell" style="padding:14px">
     <div class="nba-record-hero">
       <div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start;flex-wrap:wrap">
-        <div><div class="nba-record-kicker" style="color:#f59e0b">NBA Performance Center · Day of Week</div><h2 class="nba-record-title">&#128197; Day of Week Report</h2><div class="nba-record-sub">Hit rates for every category, Overs and Unders, by day of the week. Built from saved, graded Main, Overflow and Edge Coach Track Record picks only (Edge Coach is kept separate and shows each Coach category). It never changes picks or starts grading. Hit rate counts every decided pick; P/L counts only picks with genuine saved odds.</div></div>
+        <div><div class="nba-record-kicker" style="color:#f59e0b">NBA Performance Center · Day of Week</div><h2 class="nba-record-title">&#128197; Day of Week Trends · By Day / Category</h2><div class="nba-record-sub">Win %, record, money (P/L) and ROI for every category, Overs and Unders, by day of the week — same layout as the NHL By Day / Category report. Built from saved Main, Overflow, Edge Coach and Hot / Cold Track Record picks only (ungraded picks show as pending) (Edge Coach is kept separate and shows each Coach category). It never changes picks or starts grading. Hit rate counts every decided pick; P/L counts only picks with genuine saved odds.</div></div>
         <button class="nba-view-btn" onclick="document.getElementById('nba-dow-section').style.display='none'">Close</button>
       </div>
       <div class="nba-record-tools">
-        <div class="nba-view-tabs" style="margin-left:0"><button id="nbaDowLaneAll" class="nba-view-btn active" onclick="_nbaDowSetLane('all')">Main + Overflow</button><button id="nbaDowLaneMain" class="nba-view-btn" onclick="_nbaDowSetLane('main')">Main</button><button id="nbaDowLaneOvf" class="nba-view-btn" onclick="_nbaDowSetLane('overflow')">Overflow</button><button id="nbaDowLaneCoach" class="nba-view-btn" onclick="_nbaDowSetLane('coach')">Edge Coach</button></div>
-        <label><span class="nba-record-label">Day</span><select id="nbaDowDay" class="nba-record-control" onchange="_nbaDowRender()"><option value="">All days</option><option value="0">Monday</option><option value="1">Tuesday</option><option value="2">Wednesday</option><option value="3">Thursday</option><option value="4">Friday</option><option value="5">Saturday</option><option value="6">Sunday</option></select></label>
+        <div class="nba-view-tabs" style="margin-left:0"><button id="nbaDowLaneAll" class="nba-view-btn active" onclick="_nbaDowSetLane('all')">Main + Overflow</button><button id="nbaDowLaneMain" class="nba-view-btn" onclick="_nbaDowSetLane('main')">Main</button><button id="nbaDowLaneOvf" class="nba-view-btn" onclick="_nbaDowSetLane('overflow')">Overflow</button><button id="nbaDowLaneCoach" class="nba-view-btn" onclick="_nbaDowSetLane('coach')">Edge Coach</button><button id="nbaDowLaneHc" class="nba-view-btn" onclick="_nbaDowSetLane('hotcold')">Hot / Cold</button></div>
+        <label><span class="nba-record-label">Weekday</span><select id="nbaDowDay" class="nba-record-control" onchange="_nbaDowRender()"><option value="">All days</option><option value="0">Monday</option><option value="1">Tuesday</option><option value="2">Wednesday</option><option value="3">Thursday</option><option value="4">Friday</option><option value="5">Saturday</option><option value="6">Sunday</option></select></label>
         <label><span class="nba-record-label">Category</span><select id="nbaDowCat" class="nba-record-control" onchange="_nbaDowRender()"><option value="">All categories</option></select></label>
         <label><span class="nba-record-label">Side</span><select id="nbaDowSide" class="nba-record-control" onchange="_nbaDowRender()"><option value="">Overs + Unders</option><option value="OVER">Overs</option><option value="UNDER">Unders</option></select></label>
-        <label><span class="nba-record-label">Range</span><select id="nbaDowRange" class="nba-record-control" onchange="_nbaDowRender()"><option value="all">All Time</option><option value="week">Last 7 days</option><option value="month">This month</option></select></label>
+        <label><span class="nba-record-label">Range</span><select id="nbaDowRange" class="nba-record-control" onchange="_nbaDowRangeChanged()"><option value="all">All Time</option><option value="week">Last 7 days</option><option value="month">Month</option><option value="custom">Custom</option></select></label><label id="nbaDowMonthWrap" style="display:none"><span class="nba-record-label">Month</span><input type="month" id="nbaDowMonth" class="nba-record-control" onchange="_nbaDowRender()"></label><label id="nbaDowFromWrap" style="display:none"><span class="nba-record-label">From</span><input type="date" id="nbaDowFrom" class="nba-record-control" onchange="_nbaDowRender()"></label><label id="nbaDowToWrap" style="display:none"><span class="nba-record-label">To</span><input type="date" id="nbaDowTo" class="nba-record-control" onchange="_nbaDowRender()"></label>
         <label><span class="nba-record-label">Flat bet amount</span><input type="number" id="nbaDowStake" class="nba-record-control" value="100.00" min="1" step="5" style="width:110px" oninput="_nbaDowRender()"></label>
         <button class="nba-view-btn" onclick="loadNbaDowReport(true)">&#8635; Refresh</button>
         <button class="nba-view-btn" onclick="_nbaDowCsv()">CSV</button>
@@ -3370,24 +3785,50 @@ function rows(){
 }
 function filtered(){
   var cat=$('nbaDowCat').value,side=$('nbaDowSide').value,range=$('nbaDowRange').value,day=$('nbaDowDay').value,t=todayEt(),start='0001-01-01';
-  if(range==='week'){var d=new Date(t+'T12:00:00Z');d.setUTCDate(d.getUTCDate()-6);start=d.toISOString().slice(0,10);}
-  else if(range==='month'){start=t.slice(0,7)+'-01';}
+  var end='9999-12-31',mon='';
+  if(range==='week'){var d=new Date(t+'T12:00:00Z');d.setUTCDate(d.getUTCDate()-6);start=d.toISOString().slice(0,10);end=t;}
+  else if(range==='month'){mon=$('nbaDowMonth').value||t.slice(0,7);}
+  else if(range==='custom'){start=$('nbaDowFrom').value||start;end=$('nbaDowTo').value||end;}
   return rows().filter(function(r){
-    if(r._date<start)return false;
+    if(mon){if(String(r._date).slice(0,7)!==mon)return false;}
+    else if(r._date<start||r._date>end)return false;
     if(day!==''&&wdIdx(r._date)!==Number(day))return false;
     if(cat&&(r.category||'')!==cat)return false;
     if(side&&String(r.side||'OVER').toUpperCase()!==side)return false;
     return true;
   });
 }
+function resOf(r){var x=String(r.result||'PENDING').toUpperCase();if(x==='WON')x='WIN';if(x==='LOST')x='LOSS';return x;}
 function agg(list){
-  var a={w:0,l:0,pend:0,net:0,staked:0},s=stake();
+  var a={n:list.length,w:0,l:0,push:0,v:0,pend:0,priced:0,net:0,staked:0,dates:{},tg:{},tgKnown:true},s=stake();
   list.forEach(function(r){
-    var res=String(r.result||'').toUpperCase();
-    if(res==='WIN')a.w++;else if(res==='LOSS')a.l++;else if(res!=='PUSH')a.pend++;
-    if((res==='WIN'||res==='LOSS')&&_nbaTrkPriced(r.odds)){a.staked+=s;a.net+=nbaProfit(r.odds,s,res);}
+    var res=resOf(r);a.dates[r._date]=1;
+    if(r.team)a.tg[r._date+'|'+r.team]=1;else a.tgKnown=false;
+    if(res==='WIN')a.w++;else if(res==='LOSS')a.l++;else if(res==='PUSH')a.push++;else if(res==='VOID')a.v++;else a.pend++;
+    if((res==='WIN'||res==='LOSS')&&_nbaTrkPriced(r.odds)){a.priced++;a.staked+=s;a.net+=nbaProfit(r.odds,s,res);}
   });
+  a.nd=Object.keys(a.dates).length;a.ntg=a.tgKnown&&list.length?Object.keys(a.tg).length:null;
+  a.rate=a.w+a.l?100*a.w/(a.w+a.l):null;a.roi=a.staked?100*a.net/a.staked:null;
   return a;
+}
+function pct(v){return v==null?'—':v.toFixed(1)+'%';}
+function aggRow(label,a,attrs){
+  var other=[];if(a.push)other.push(a.push+' push');if(a.v)other.push(a.v+' void');if(a.pend)other.push(a.pend+' pending');
+  var cls=a.priced?(a.net>=0?'nba-dow-pos':'nba-dow-neg'):'nba-dow-mut';
+  return '<tr'+(attrs||'')+'><td>'+label+'</td><td>'+a.n+'</td><td>'+a.nd+'</td><td>'+(a.ntg==null?'n/a':a.ntg)+'</td><td>'+a.w+'-'+a.l+'</td>'+
+    '<td style="color:'+(a.rate==null?'#64748b':rateColor(a.rate))+';font-weight:900">'+pct(a.rate)+'</td><td class="nba-dow-mut">'+(other.join(', ')||'—')+'</td>'+
+    '<td>'+a.priced+'</td><td class="'+cls+'">'+(a.priced?money(a.net):'—')+'</td><td class="'+cls+'">'+pct(a.roi)+'</td></tr>';
+}
+function aggTable(first,rowsHtml){
+  return '<div class="nba-dow-wrap"><table class="nba-dow-table nba-dow-agg"><thead><tr><th>'+nbaTrkEsc(first)+'</th><th>Picks</th><th>Dates</th><th>Team-games</th><th>W-L</th><th>Win %</th><th>Not decided</th><th>Priced</th><th>Money (P/L)</th><th>ROI</th></tr></thead><tbody>'+rowsHtml+'</tbody></table></div>';
+}
+function hcCats(){var o=[];['Hot','Cold','Double Cold'].forEach(function(f){CATS.forEach(function(c){o.push(f+' '+c);});});return o;}
+function catOrder(list){
+  var coach=S.lane==='coach',cats=coach?[]:(S.lane==='hotcold'?hcCats():CATS.slice());
+  list.forEach(function(r){var c=r.category||'';if(c&&cats.indexOf(c)<0)cats.push(c);});
+  if(coach)cats.sort();
+  if(S.lane==='hotcold'){var present={};list.forEach(function(r){present[r.category||'']=1;});cats=cats.filter(function(c){return present[c];});}
+  return cats;
 }
 function rateColor(p){return p>=60?'#4ade80':p>=50?'#facc15':'#f87171';}
 function cell(a){
@@ -3399,7 +3840,7 @@ function money(v){return (v>=0?'+':'−')+'$'+Math.abs(v).toFixed(2);}
 function sideCell(list){var a=agg(list),n=a.w+a.l;return n?'<span style="color:'+rateColor(a.w/n*100)+'">'+a.w+'-'+a.l+' · '+(a.w/n*100).toFixed(1)+'%</span>':'—';}
 function fillCats(){
   var sel=$('nbaDowCat'),cur=sel.value,seen={};
-  var list=S.lane==='coach'?[]:CATS.slice();rows().forEach(function(r){var c=r.category||'';if(c&&list.indexOf(c)<0)list.push(c);});
+  var list=S.lane==='coach'?[]:(S.lane==='hotcold'?hcCats():CATS.slice());rows().forEach(function(r){var c=r.category||'';if(c&&list.indexOf(c)<0)list.push(c);});
   if(S.lane==='coach')list.sort();
   sel.innerHTML='<option value="">All categories</option>'+list.map(function(c){return '<option value="'+nbaTrkEsc(c)+'">'+nbaTrkEsc(c)+'</option>';}).join('');
   if(list.indexOf(cur)>=0)sel.value=cur;
@@ -3407,8 +3848,9 @@ function fillCats(){
 window._nbaDowRender=function(){
   var body=$('nbaDowBody');if(!body)return;
   if(!S.data[S.lane]){body.innerHTML='';return;}
+  if($('nbaDowRange').value==='custom'&&$('nbaDowFrom').value&&$('nbaDowTo').value&&$('nbaDowFrom').value>$('nbaDowTo').value){body.innerHTML=_nbaRecordEmpty('Check the dates','From must be on or before To.');return;}
   var list=filtered(),s=stake();
-  if(!list.length){body.innerHTML=_nbaRecordEmpty('No graded picks for these filters','Pick another day, range, lane, category or side.');return;}
+  if(!list.length){body.innerHTML=_nbaRecordEmpty('No saved picks for these filters','Pick another weekday, range, lane, category or side. Nothing is graded from this page.');return;}
   var selDay=$('nbaDowDay').value,days=selDay===''?[0,1,2,3,4,5,6]:[Number(selDay)];
   var tot=agg(list),h='';
   if(selDay!==''){
@@ -3416,41 +3858,62 @@ window._nbaDowRender=function(){
     h+='<div style="color:#94a3b8;font-size:.74rem;margin:0 0 10px">'+WD[Number(selDay)]+' only · slates: '+nbaTrkEsc(Object.keys(sd).sort().reverse().join(', '))+' · <a href="#" onclick="document.getElementById(&quot;nbaDowDay&quot;).value=&quot;&quot;;_nbaDowRender();return false" style="color:#818cf8">show all days</a></div>';
   }
   h+=_nbaRecordSummary(tot.w,tot.l,tot.pend,tot.net,tot.staked,s);
+  h+='<div class="nba-dow-note">Win % counts decided picks only; pending, push and void are listed separately. Money (P/L) and ROI use the flat bet amount above and only genuine saved odds (-1000 or better); unpriced picks count toward W-L but have no payout. Same-day and same-team picks are related, so read Dates and Team-games, not just Picks. This is a results report only and never changes picks.</div>';
+  h+='<div class="nba-dow-h3">Overall</div>'+aggTable('Scope',aggRow('<b>Filtered picks</b>',tot));
   var byDay=WD.map(function(){return [];});list.forEach(function(r){var i=wdIdx(r._date);if(i>=0)byDay[i].push(r);});
   var dh='';
   byDay.forEach(function(L,i){
     if(days.indexOf(i)<0)return;
-    var a=agg(L),n=a.w+a.l,dates={};L.forEach(function(r){dates[r._date]=1;});
-    dh+='<tr style="cursor:pointer" title="Show '+WD[i]+' only" onclick="document.getElementById(&quot;nbaDowDay&quot;).value=&quot;'+i+'&quot;;_nbaDowRender()"><td><b style="color:#a5b4fc;text-decoration:underline">'+WD[i]+'</b></td><td>'+Object.keys(dates).length+'</td><td>'+a.w+'-'+a.l+'</td>'+
-      '<td style="color:'+(n?rateColor(a.w/n*100):'#64748b')+';font-weight:900">'+(n?(a.w/n*100).toFixed(1)+'%':'—')+'</td>'+
-      '<td>'+sideCell(L.filter(function(r){return String(r.side||'OVER').toUpperCase()==='OVER';}))+'</td>'+
-      '<td>'+sideCell(L.filter(function(r){return String(r.side||'OVER').toUpperCase()==='UNDER';}))+'</td>'+
-      '<td style="color:'+(a.net>0?'#4ade80':a.net<0?'#f87171':'#e2e8f0')+';font-weight:900">'+(a.staked?money(a.net):'—')+'</td>'+
-      '<td>'+(a.staked?(a.net/a.staked*100).toFixed(1)+'%':'—')+'</td></tr>';
+    dh+=aggRow('<b style="color:#a5b4fc;text-decoration:underline">'+WD[i]+'</b>',agg(L),' style="cursor:pointer" title="Show '+WD[i]+' only" onclick="document.getElementById(&quot;nbaDowDay&quot;).value=&quot;'+i+'&quot;;_nbaDowRender()"');
   });
-  h+='<div class="nba-dow-h3">By day of week'+(selDay===''?' <span style="color:#64748b;font-weight:600;font-size:.7rem">· tap a day to see only that day</span>':'')+'</div><div class="nba-dow-wrap"><table class="nba-dow-table"><thead><tr><th>Day</th><th>Slates</th><th>Record</th><th>Hit rate</th><th>Overs</th><th>Unders</th><th>Net P/L</th><th>ROI</th></tr></thead><tbody>'+dh+'</tbody></table></div>';
-  var cat=$('nbaDowCat').value,side=$('nbaDowSide').value;
-  var coach=S.lane==='coach';
-  var cats=cat?[cat]:(coach?[]:CATS.slice());list.forEach(function(r){var c=r.category||'';if(c&&cats.indexOf(c)<0)cats.push(c);});
-  if(coach&&!cat)cats.sort();
-  var sides=side?[side]:['OVER','UNDER'],mh='';
+  h+='<div class="nba-dow-h3">By weekday'+(selDay===''?' <span style="color:#64748b;font-weight:600;font-size:.7rem">· tap a day to see only that day</span>':'')+'</div>'+aggTable('Weekday',dh);
+  var cat=$('nbaDowCat').value,side=$('nbaDowSide').value,coach=S.lane==='coach';
+  var cats=cat?[cat]:catOrder(list),sides=side?[side]:['OVER','UNDER'];
+  var sideOf=function(r){return String(r.side||'OVER').toUpperCase();};
+  var ch='',sh='',csh='';
+  cats.forEach(function(c){
+    var L=list.filter(function(r){return (r.category||'')===c;});
+    if(coach&&!L.length)return;
+    ch+=aggRow('<b>'+nbaTrkEsc(c)+'</b>',agg(L));
+  });
+  sides.forEach(function(sd){sh+=aggRow('<span class="nba-acc-side '+(sd==='OVER'?'over':'under')+'">'+sd+'</span>',agg(list.filter(function(r){return sideOf(r)===sd;})));});
   cats.forEach(function(c){sides.forEach(function(sd){
-    var L=list.filter(function(r){return (r.category||'')===c&&String(r.side||'OVER').toUpperCase()===sd;});
+    var L=list.filter(function(r){return (r.category||'')===c&&sideOf(r)===sd;});
+    if(coach&&!L.length)return;
+    csh+=aggRow('<b>'+nbaTrkEsc(c)+'</b> <span class="nba-acc-side '+(sd==='OVER'?'over':'under')+'">'+sd+'</span>',agg(L));
+  });});
+  h+='<details class="nba-dow-details" open><summary>Category and side breakdowns</summary>';
+  h+='<div class="nba-dow-h3">By category</div>'+aggTable('Category',ch);
+  h+='<div class="nba-dow-h3">By side</div>'+aggTable('Side',sh);
+  h+='<div class="nba-dow-h3">Category and side</div>'+aggTable('Category / side',csh)+'</details>';
+  var mh='';
+  cats.forEach(function(c){sides.forEach(function(sd){
+    var L=list.filter(function(r){return (r.category||'')===c&&sideOf(r)===sd;});
     if(coach&&!L.length)return;
     var row='<td><b>'+nbaTrkEsc(c)+'</b> <span class="nba-acc-side '+(sd==='OVER'?'over':'under')+'">'+sd+'</span></td>';
     days.forEach(function(i){row+=cell(agg(L.filter(function(r){return wdIdx(r._date)===i;})));});
     var a=agg(L);if(days.length>1)row+=cell(a);
-    row+='<td style="color:'+(a.net>0?'#4ade80':a.net<0?'#f87171':'#e2e8f0')+';font-weight:900">'+(a.staked?money(a.net):'—')+'</td>';
+    var cls=a.staked?(a.net>=0?'nba-dow-pos':'nba-dow-neg'):'nba-dow-mut';
+    row+='<td class="'+cls+'">'+(a.staked?money(a.net):'—')+'</td><td class="'+cls+'">'+pct(a.roi)+'</td>';
     mh+='<tr>'+row+'</tr>';
   });});
-  h+='<div class="nba-dow-h3">'+(days.length>1?'Every category by day':'Every category on '+WD[days[0]])+' (hit rate · W-L)</div><div class="nba-dow-wrap"><table class="nba-dow-table"'+(days.length>1?'':' style="min-width:0"')+'><thead><tr><th>Category / side</th>'+days.map(function(i){return '<th>'+(days.length>1?WD[i].slice(0,3):WD[i])+'</th>';}).join('')+(days.length>1?'<th>Total</th>':'')+'<th>Net P/L</th></tr></thead><tbody>'+mh+'</tbody></table></div>';
+  h+='<div class="nba-dow-h3">'+(days.length>1?'Every category by day':'Every category on '+WD[days[0]])+' (win % · W-L)</div><div class="nba-dow-wrap"><table class="nba-dow-table"'+(days.length>1?'':' style="min-width:0"')+'><thead><tr><th>Category / side</th>'+days.map(function(i){return '<th>'+(days.length>1?WD[i].slice(0,3):WD[i])+'</th>';}).join('')+(days.length>1?'<th>Total</th>':'')+'<th>Money (P/L)</th><th>ROI</th></tr></thead><tbody>'+mh+'</tbody></table></div>';
   body.innerHTML=h;
 };
+window._nbaDowRangeChanged=function(){
+  var m=$('nbaDowRange').value;
+  $('nbaDowMonthWrap').style.display=m==='month'?'':'none';
+  $('nbaDowFromWrap').style.display=m==='custom'?'':'none';
+  $('nbaDowToWrap').style.display=m==='custom'?'':'none';
+  if(m==='month'&&!$('nbaDowMonth').value)$('nbaDowMonth').value=todayEt().slice(0,7);
+  window._nbaDowRender();
+};
 window._nbaDowSetLane=function(l){
-  S.lane=(l==='overflow'||l==='main'||l==='coach')?l:'all';
+  S.lane=(l==='overflow'||l==='main'||l==='coach'||l==='hotcold')?l:'all';
   $('nbaDowCat').value='';
   $('nbaDowLaneAll').classList.toggle('active',S.lane==='all');
   $('nbaDowLaneCoach').classList.toggle('active',S.lane==='coach');
+  $('nbaDowLaneHc').classList.toggle('active',S.lane==='hotcold');
   $('nbaDowLaneMain').classList.toggle('active',S.lane==='main');
   $('nbaDowLaneOvf').classList.toggle('active',S.lane==='overflow');
   if(S.data[S.lane]){fillCats();window._nbaDowRender();}else window.loadNbaDowReport(true);
@@ -3465,7 +3928,7 @@ window.loadNbaDowReport=function(force){
   }).then(function(d){
     if(id!==S.req)return;
     if(!d||!Array.isArray(d.dates))throw new Error('Unexpected record response');
-    S.data[lane]=d;st.textContent=(lane==='coach'?'Edge Coach':lane==='overflow'?'Overflow':lane==='main'?'Main':'Main + Overflow')+' records loaded: '+d.dates.length+' graded slates.';
+    S.data[lane]=d;st.textContent=(lane==='hotcold'?'Hot / Cold':lane==='coach'?'Edge Coach':lane==='overflow'?'Overflow':lane==='main'?'Main':'Main + Overflow')+' records loaded: '+d.dates.length+' graded slates.';
     fillCats();window._nbaDowRender();
   }).catch(function(e){
     if(id!==S.req)return;
@@ -3482,10 +3945,10 @@ window._nbaDowCsv=function(){
   var list=filtered(),s=stake();if(!list.length)return;
   var lines=[['record','date','weekday','name','team','category','market','side','line','odds','actual','result','priced_profit'].map(csvCell).join(',')];
   list.forEach(function(r){
-    var res=String(r.result||'').toUpperCase(),p='';
+    var res=resOf(r),p='';
     if((res==='WIN'||res==='LOSS')&&_nbaTrkPriced(r.odds))p=nbaProfit(r.odds,s,res).toFixed(2);
     var i=wdIdx(r._date);
-    lines.push([S.lane==='coach'?'coach':(r.is_overflow?'overflow':'main'),r._date,i<0?'':WD[i],r.name||r.player,r.team,r.category,r.market||r.stat_label||r.stat||'',r.side,r.line,r.odds,r.actual,res,p].map(csvCell).join(','));
+    lines.push([S.lane==='coach'?'coach':(S.lane==='hotcold'?(r.is_overflow?'hotcold_overflow':'hotcold'):(r.is_overflow?'overflow':'main')),r._date,i<0?'':WD[i],r.name||r.player,r.team,r.category,r.market||r.stat_label||r.stat||'',r.side,r.line,r.odds,r.actual,res,p].map(csvCell).join(','));
   });
   var blob=new Blob([lines.join(String.fromCharCode(13,10))],{type:'text/csv;charset=utf-8'});
   var a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='nba_day_of_week_'+S.lane+'.csv';
@@ -3510,6 +3973,7 @@ window._nbaDowCsv=function(){
 // server independently re-verifies before honoring any force refresh).
 function _nbaUnlockDates(){try{var dp=document.getElementById('datePicker');if(dp){dp.removeAttribute('min');dp.removeAttribute('max');}}catch(e){}}
 if(window.IS_ADMIN){document.body.classList.add('is-admin');_nbaUnlockDates();}else{var _at=localStorage.getItem('__mpa_token')||'';var _ak=localStorage.getItem('__mpa_admin')||'';if(_at||_ak){fetch('/api/whoami?_tok='+encodeURIComponent(_at)+'&admin='+encodeURIComponent(_ak)).then(r=>r.json()).then(d=>{if(d&&d.is_admin){window.IS_ADMIN=true;document.body.classList.add('is-admin');_nbaUnlockDates();}}).catch(function(){});}}
+let nbaHotColdData=null;
 let top10=[], allPicksData=[], nbaPropsData=[], nbaApprovedPicks=[], activeTopStat='ALL', activeTopSide='ALL', activeAllStat='ALL', sideFilter=null;
 
 function pctClass(p){return p>=90?['pct-green','bar-green']:p>=80?['pct-yellow','bar-yellow']:['pct-orange','bar-orange']}
@@ -3940,6 +4404,22 @@ function _parlayPool(){
       if(!cur || _legScore(c)>_legScore(cur)) byKey[key]=c;
     });
   });
+  // Optional Hot / Cold legs: read the live checkboxes at build time.
+  var hcForms={};Array.prototype.slice.call(document.querySelectorAll('input[name="parlayHcForm"]:checked')).forEach(function(el){hcForms[el.value]=1;});
+  var mpgOf={};(allPicksData||[]).forEach(function(p){if(p.mpg!=null)mpgOf[p.player]=p.mpg;});
+  (Array.isArray(nbaHotColdData)?nbaHotColdData:[]).forEach(function(r){
+    if(!hcForms[r.form_key]) return;
+    var t=r.form_key==='double_cold'?'DCOLD':(r.form==='HOT'?'HOT':'COLD');
+    var c={type:t,dir:r.pick,conf:Math.round((r.recent_hits||0)/Math.max(1,r.recent_total||1)*100),
+      reason:(t==='HOT'?'🔥 HOT ':(t==='DCOLD'?'❄️ DOUBLE COLD ':'🧊 COLD '))+r.recent_hits+'/'+r.recent_total+' last '+r.recent_total+' (avg '+r.recent_avg+')'+(r.opp_total?' · '+r.opp_hits+'/'+r.opp_total+' vs '+r.opp:''),
+      p:r,player:r.player,team:r.team,opp:r.opp,stat:r.stat_label,emoji:r.emoji||'',line:r.line,
+      odds:r.odds==null?'':((r.odds>0?'+':'')+r.odds),mpg:(mpgOf[r.player]!=null?mpgOf[r.player]:null)};
+    c.dec=_amToDec(c.odds);c.hasOdds=!!c.dec;
+    if(c.mpg!=null && c.mpg<_MIN_MPG) return;
+    if(!_floorOk(c.odds)) return;
+    var key=c.player+'|'+c.stat,cur=byKey[key];
+    if(!cur || _legScore(c)>_legScore(cur)) byKey[key]=c;
+  });
   return Object.keys(byKey).map(function(k){return byKey[k];}).sort(function(a,b){return _legScore(b)-_legScore(a);});
 }
 function _shuffle(a){ for(var i=a.length-1;i>0;i--){var j=Math.floor(Math.random()*(i+1));var t=a[i];a[i]=a[j];a[j]=t;} return a; }
@@ -3993,8 +4473,8 @@ function _renderParlay(randomize){
   var am = priced? _decToAm(dec) : null;
   var payout = priced? (100*dec) : null;
   var dirColor=function(d){return d==='OVER'?'#4ade80':d==='UNDER'?'#f87171':'#9ca3af';};
-  var tagBg={PICK:'rgba(253,184,39,.16)',LINE:'rgba(74,222,128,.14)',STREAK:'rgba(249,115,22,.16)',MPA:'rgba(168,85,247,.16)'};
-  var tagFg={PICK:'#FDB827',LINE:'#4ade80',STREAK:'#fb923c',MPA:'#c084fc'};
+  var tagBg={PICK:'rgba(253,184,39,.16)',LINE:'rgba(74,222,128,.14)',STREAK:'rgba(249,115,22,.16)',MPA:'rgba(168,85,247,.16)',HOT:'rgba(249,115,22,.16)',COLD:'rgba(56,189,248,.16)',DCOLD:'rgba(129,140,248,.18)'};
+  var tagFg={PICK:'#FDB827',LINE:'#4ade80',STREAK:'#fb923c',MPA:'#c084fc',HOT:'#fb923c',COLD:'#7dd3fc',DCOLD:'#a5b4fc'};
   var rows=legs.map(function(l,i){var fo=_fmtOdds(l.odds);return '<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:10px 12px;border-bottom:1px solid #1a1a1a">'
     +'<div style="min-width:0">'
     +'<div style="font-weight:800;color:#fff;font-size:.85rem">'+(i+1)+'. '+(l.emoji||'')+' '+l.player+' <span style="color:#777;font-size:.7rem">'+l.team+' vs '+l.opp+'</span> <span style="background:'+(tagBg[l.type]||'#222')+';color:'+(tagFg[l.type]||'#aaa')+';padding:1px 6px;border-radius:4px;font-size:.6rem;font-weight:800">'+l.type+'</span></div>'
@@ -4189,6 +4669,7 @@ async function runPicks(force=false){
     top10=data.picks||[];
     allPicksData=data.all_picks||[];
     nbaPropsData=(data.props_picks||[]).concat(data.props_nopick||[]);
+    nbaHotColdData=Array.isArray(data.hot_cold)?data.hot_cold:null;
     nbaApprovedPicks=(data.historical_replay?data.props_picks:data.picks)||[];
     activeTopStat='ALL';activeTopSide='ALL';activeAllStat='ALL';
     var _topSideChooser=document.getElementById('topSideChooser');if(_topSideChooser)_topSideChooser.style.display='none';
@@ -4254,6 +4735,7 @@ async function getPicks(){
     top10=data.picks||[];
     allPicksData=data.all_picks||[];
     nbaPropsData=(data.props_picks||[]).concat(data.props_nopick||[]);
+    nbaHotColdData=Array.isArray(data.hot_cold)?data.hot_cold:null;
     nbaApprovedPicks=(data.historical_replay?data.props_picks:data.picks)||[];
     activeTopStat='ALL';activeTopSide='ALL';activeAllStat='ALL';
     var _topSideChooser=document.getElementById('topSideChooser');if(_topSideChooser)_topSideChooser.style.display='none';
@@ -4279,7 +4761,83 @@ async function getPicks(){
   }
 }
 
+// ─── Hot / Cold board (NHL layout): separate spotlight boards + record ───
+var _nbaHc={form:'hot',stat:'ALL',edge:'ALL',book:'main'};
+var _NBA_HC_STATS=[['PTS','Points'],['REB','Rebounds'],['AST','Assists'],['FG3M','3-Pointers'],['PRA','Pts+Reb+Ast'],['PTS_REB','Pts+Reb'],['PTS_AST','Pts+Ast'],['REB_AST','Reb+Ast'],['BLK','Blocks'],['STL','Steals']];
+var _NBA_HC_FORMS=[['hot','&#128293; Hot'],['cold','&#129482; Cold'],['double_cold','&#10052;&#65039; Double Cold']];
+function _nbaHcEsc(v){return String(v==null?'':v).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+function _nbaHcSet(key,val){_nbaHc[key]=val;renderNbaHotColdSection();}
+function _nbaHcToggle(el){var d=el&&el.parentElement&&el.parentElement.querySelector('.nba-hc-drop');if(!d)return;var open=d.style.display!=='none';d.style.display=open?'none':'block';el.setAttribute('aria-expanded',open?'false':'true');}
+function _nbaHcBtns(key,opts,counts){
+  return opts.map(function(o){
+    var n=counts&&counts[o[0]]!=null?' <span class="nba-hc-n">'+counts[o[0]]+'</span>':'';
+    return '<button type="button" class="nba-hc-btn'+(_nbaHc[key]===o[0]?' active':'')+'" onclick="_nbaHcSet(&#39;'+key+'&#39;,&#39;'+o[0]+'&#39;)">'+o[1]+n+'</button>';
+  }).join('');
+}
+function _nbaHcCard(r){
+  var over=r.pick==='OVER',sideCol=over?'#4ade80':'#f87171',formCol=r.form==='HOT'?'#f97316':'#38bdf8';
+  var tip='';try{if(r.tipoff)tip=new Date(r.tipoff).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'});}catch(e){}
+  var head=r.player_id?'<img class="nba-hc-head" loading="lazy" alt="" src="https://a.espncdn.com/i/headshots/nba/players/full/'+encodeURIComponent(r.player_id)+'.png" onerror="this.style.visibility=&#39;hidden&#39;">':'<div class="nba-hc-head"></div>';
+  var chips=(r.recent_games||[]).map(function(g){var v=Number(g.v),hit=over?v>r.line:v<r.line,push=v===Number(r.line);return '<span class="nba-hc-chip '+(push?'push':(hit?'hit':'miss'))+'" title="'+_nbaHcEsc(g.d+' '+(g.loc==='away'?'@ ':'vs ')+g.opp)+'">'+_nbaHcEsc(g.v)+'</span>';}).join('');
+  var odds=r.odds!=null?'<b>'+(r.odds>0?'+':'')+_nbaHcEsc(r.odds)+'</b> <span class="nba-hc-muted">'+_nbaHcEsc(r.book||'Book unavailable')+'</span>':'<span class="nba-hc-muted">No genuine price · tracked W/L only</span>';
+  var edge=r.edge==null?'<span class="nba-hc-muted">Edge —</span>':'<span style="color:'+(r.edge>0?'#4ade80':'#f87171')+';font-weight:800">Edge '+(r.edge>0?'+':'')+Number(r.edge).toFixed(1)+' pts</span>';
+  var prob=r.app_probability==null?'':' <span class="nba-hc-muted">· App '+Number(r.app_probability).toFixed(1)+'% vs Book '+(r.implied_probability==null?'—':Number(r.implied_probability).toFixed(1)+'%')+'</span>';
+  var vs=r.opp_total?('<b>'+r.opp_hits+'/'+r.opp_total+'</b> '+(over?'Over':'Under')+' vs '+_nbaHcEsc(r.opp)+' ('+r.opp_rate+'%)'+(r.matchup_supports?' <span style="color:#a5b4fc;font-weight:800">· matchup supports</span>':'')):'<span class="nba-hc-muted">No recent meetings vs '+_nbaHcEsc(r.opp)+'</span>';
+  var logRows=(r.recent_games||[]).map(function(g){var v=Number(g.v),push=v===Number(r.line),hit=over?v>r.line:v<r.line;return '<tr><td>'+_nbaHcEsc(g.d)+'</td><td>'+(g.loc==='away'?'@ ':'vs ')+_nbaHcEsc(g.opp)+'</td><td><b>'+_nbaHcEsc(g.v)+'</b></td><td style="color:'+(push?'#facc15':(hit?'#4ade80':'#f87171'))+';font-weight:800">'+(push?'PUSH':(hit?'HIT':'MISS'))+'</td></tr>';}).join('');
+  var vsRows=(r.opp_games||[]).map(function(g){var v=Number(g.v),push=v===Number(r.line),hit=over?v>r.line:v<r.line;return '<tr><td>'+_nbaHcEsc(g.d)+'</td><td>'+(g.loc==='away'?'Away':'Home')+'</td><td><b>'+_nbaHcEsc(g.v)+'</b></td><td style="color:'+(push?'#facc15':(hit?'#4ade80':'#f87171'))+';font-weight:800">'+(push?'PUSH':(hit?'HIT':'MISS'))+'</td></tr>';}).join('');
+  var drop='<div class="nba-hc-drop" style="display:none">'+
+    '<div class="nba-hc-dh">Last '+r.recent_total+' games · current season · all venues</div>'+
+    '<table class="nba-hc-log"><thead><tr><th>Date</th><th>Opp</th><th>'+_nbaHcEsc(r.stat_label)+'</th><th>vs '+_nbaHcEsc(r.line)+'</th></tr></thead><tbody>'+logRows+'</tbody></table>'+
+    '<div class="nba-hc-dh">Last '+(r.opp_total||0)+' meetings vs '+_nbaHcEsc(r.opp)+' · any venue / season</div>'+
+    (vsRows?'<table class="nba-hc-log"><thead><tr><th>Date</th><th>Venue</th><th>'+_nbaHcEsc(r.stat_label)+'</th><th>vs '+_nbaHcEsc(r.line)+'</th></tr></thead><tbody>'+vsRows+'</tbody></table>':'<div class="nba-hc-muted" style="font-size:.7rem">No meetings on file.</div>')+
+  '</div>';
+  return '<div class="nba-hc-card" style="--fc:'+formCol+'">'+
+    '<button type="button" class="nba-hc-top" aria-expanded="false" onclick="_nbaHcToggle(this)">'+
+      '<span class="nba-hc-rank">#'+r.rank+'</span>'+head+
+      '<span class="nba-hc-who"><b>'+_nbaHcEsc(r.player)+'</b><small>'+_nbaHcEsc(r.team)+' '+(r.venue==='AWAY'?'@':'vs')+' '+_nbaHcEsc(r.opp)+(tip?' · '+_nbaHcEsc(tip):'')+'</small></span>'+
+      '<span class="nba-hc-badge">'+(r.form_key==='double_cold'?'&#10052;&#65039; DOUBLE COLD':(r.form==='HOT'?'&#128293; HOT':'&#129482; COLD'))+'</span>'+
+    '</button>'+
+    '<div class="nba-hc-play"><span style="color:'+sideCol+';font-weight:900">'+r.pick+' '+_nbaHcEsc(r.line)+'</span> '+_nbaHcEsc(r.emoji||'')+' '+_nbaHcEsc(r.stat_label)+'</div>'+
+    '<div class="nba-hc-line">'+odds+'</div>'+
+    '<div class="nba-hc-line"><b>'+r.recent_hits+'/'+r.recent_total+'</b> last '+r.recent_total+' · avg <b>'+_nbaHcEsc(r.recent_avg)+'</b> <span class="nba-hc-chips">'+chips+'</span></div>'+
+    '<div class="nba-hc-line">'+vs+'</div>'+
+    '<div class="nba-hc-line">'+edge+prob+'</div>'+
+    '<div class="nba-hc-more" onclick="_nbaHcToggle(this.parentElement.querySelector(&#39;.nba-hc-top&#39;))">&#9662; Game log &amp; matchup history</div>'+
+    drop+
+  '</div>';
+}
+function renderNbaHotColdSection(){
+  var sec=document.getElementById('nba-hotcold-section');if(!sec)return;
+  if(window.__NBA_HISTORICAL_REPLAY__){sec.style.display='none';return;}
+  var data=nbaHotColdData,body=document.getElementById('nbaHcBoard'),ctl=document.getElementById('nbaHcControls');
+  var loaded=(allPicksData&&allPicksData.length)||(nbaPropsData&&nbaPropsData.length);
+  if(!Array.isArray(data)&&!loaded){sec.style.display='none';return;}
+  sec.style.display='block';
+  if(!Array.isArray(data)){ctl.innerHTML='';body.innerHTML='<div class="nba-hc-empty">This saved run was built before the Hot / Cold section existed. The next live run builds it automatically.</div>';return;}
+  var formCounts={};_NBA_HC_FORMS.forEach(function(f){formCounts[f[0]]=data.filter(function(r){return r.form_key===f[0]&&!r.is_overflow;}).length;});
+  var statCounts={ALL:data.filter(function(r){return r.form_key===_nbaHc.form&&!r.is_overflow;}).length};
+  _NBA_HC_STATS.forEach(function(s){statCounts[s[0]]=data.filter(function(r){return r.form_key===_nbaHc.form&&r.stat===s[0]&&!r.is_overflow;}).length;});
+  ctl.innerHTML='<div class="nba-hc-row"><span class="nba-hc-lbl">Form</span>'+_nbaHcBtns('form',_NBA_HC_FORMS,formCounts)+'</div>'+
+    '<div class="nba-hc-row"><span class="nba-hc-lbl">Market</span>'+_nbaHcBtns('stat',[['ALL','All markets']].concat(_NBA_HC_STATS),statCounts)+'</div>'+
+    '<div class="nba-hc-row"><span class="nba-hc-lbl">Edge</span>'+_nbaHcBtns('edge',[['ALL','All plays'],['POS','Positive edge only']])+
+    '<span class="nba-hc-lbl" style="margin-left:12px">Board</span>'+_nbaHcBtns('book',[['main','Top 10'],['overflow','Overflow 11-20']])+'</div>';
+  var rows=data.filter(function(r){
+    if(r.form_key!==_nbaHc.form)return false;
+    if(_nbaHc.stat!=='ALL'&&r.stat!==_nbaHc.stat)return false;
+    if(_nbaHc.edge==='POS'&&!(r.edge!=null&&r.edge>0))return false;
+    return _nbaHc.book==='overflow'?!!r.is_overflow:!r.is_overflow;
+  });
+  if(!rows.length){body.innerHTML='<div class="nba-hc-empty">No player qualifies for this form / market / filter on the loaded slate.</div>';return;}
+  var html='';
+  _NBA_HC_STATS.forEach(function(s){
+    var list=rows.filter(function(r){return r.stat===s[0];}).sort(function(a,b){return a.rank-b.rank;});
+    if(!list.length)return;
+    html+='<div class="nba-hc-group"><div class="nba-hc-gh">'+_nbaHcEsc(list[0].category)+' <span class="nba-hc-muted">· '+(_nbaHc.book==='overflow'?'ranks 11-20':'Top 10')+' · '+list.length+' play'+(list.length===1?'':'s')+'</span></div><div class="nba-hc-grid">'+list.map(_nbaHcCard).join('')+'</div></div>';
+  });
+  body.innerHTML=html;
+}
 function renderPropsSection(picks, nopick) {
+  try{renderNbaHotColdSection();}catch(e){console.error('Hot/Cold render failed',e);}
   var sec = document.getElementById('props-section');
   if (!sec) return;
   var all = (picks||[]).concat(nopick||[]);
@@ -4448,6 +5006,7 @@ document.addEventListener('DOMContentLoaded', function(){
     top10        = data.picks || [];
     allPicksData = data.all_picks || [];
     nbaPropsData = (data.props_picks || []).concat(data.props_nopick || []);
+    nbaHotColdData = Array.isArray(data.hot_cold) ? data.hot_cold : null;
     nbaApprovedPicks = (data.historical_replay ? data.props_picks : data.picks) || [];
     activeTopStat = 'ALL'; activeTopSide = 'ALL'; activeAllStat = 'ALL';
     var _topSideChooser=document.getElementById('topSideChooser');if(_topSideChooser)_topSideChooser.style.display='none';
@@ -4670,6 +5229,20 @@ var _nbaTrkData=null;
 var _nbaTrkView='category';
 var _nbaOvfData=null;
 var _nbaOvfView='category';
+var _nbaHcData=null;
+var _nbaHcView='category';
+function _nbaRecPrefix(record){return record==='overflow'?'nbaOvf':(record==='hotcold'?'nbaHc':'nbaTrk');}
+function openNbaHotColdRecord(){
+  var section=document.getElementById('nba-hotcold-track-section');
+  section.style.display='block';
+  section.scrollIntoView({behavior:'smooth',block:'start'});
+  if(_nbaHcData===null)loadNbaTrackRecord('hotcold');
+}
+function openNbaHotColdBoard(){
+  var section=document.getElementById('nba-hotcold-section');
+  if(section&&section.style.display!=='none'){section.scrollIntoView({behavior:'smooth',block:'start'});return;}
+  alert('Load or run picks first - the Hot / Cold board is built with each live run.');
+}
 function openNbaOverflowRecord(){
   var section=document.getElementById('nba-overflow-track-section');
   section.style.display='block';
@@ -4677,9 +5250,9 @@ function openNbaOverflowRecord(){
   if(_nbaOvfData===null)loadNbaTrackRecord('overflow');
 }
 function setNbaTrkView(view,record){
-  var ovf=record==='overflow',prefix=ovf?'nbaOvf':'nbaTrk';
+  var prefix=_nbaRecPrefix(record);
   view=view==='full'?'full':'category';
-  if(ovf)_nbaOvfView=view;else _nbaTrkView=view;
+  if(record==='overflow')_nbaOvfView=view;else if(record==='hotcold')_nbaHcView=view;else _nbaTrkView=view;
   var c=document.getElementById(prefix+'CatBtn'),f=document.getElementById(prefix+'FullBtn');
   if(c)c.classList.toggle('active',view==='category');
   if(f)f.classList.toggle('active',view==='full');
@@ -4714,7 +5287,7 @@ function _nbaRecordFullList(rows,stake,historical){
   return '<div class="nba-full-wrap"><table class="nba-full-table"><thead><tr><th>#</th><th>Player</th><th>Market</th><th>Pick</th><th>Odds / Book</th><th>Stake</th><th>Actual</th><th>Result</th><th>P/L</th>'+(historical?'<th>Evidence</th>':'')+'</tr></thead><tbody>'+body+'</tbody></table></div>';
 }
 function _nbaTrkDayName(record){
-  var prefix=record==='overflow'?'nbaOvf':'nbaTrk';
+  var prefix=_nbaRecPrefix(record);
   var dp=document.getElementById(prefix+'DateSelect'),dn=document.getElementById(prefix+'DayName');
   if(!dp||!dn) return;
   try{var days=['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
@@ -4736,15 +5309,15 @@ function _nbaTrkPriced(odds){
   return Number.isFinite(o)&&(o>0||(o>=-1000&&o<=-100));
 }
 async function loadNbaTrackRecord(record){
-  var ovf=record==='overflow',prefix=ovf?'nbaOvf':'nbaTrk';
+  var ovf=record==='overflow',hc=record==='hotcold',prefix=_nbaRecPrefix(record);
   var body=document.getElementById(prefix+'Body');
     if(body) body.innerHTML=_nbaRecordEmpty('Loading official results','Fetching the latest graded pre-game snapshots.');
   try{
-    var r=await fetch(ovf?'/api/overflow-track-record':'/api/track-record');
+    var r=await fetch(hc?'/api/hot-cold-track-record':(ovf?'/api/overflow-track-record':'/api/track-record'));
     if(!r.ok) throw new Error(await r.text());
     var d=await r.json();
     var data=d.dates||[];
-    if(ovf)_nbaOvfData=data;else _nbaTrkData=data;
+    if(ovf)_nbaOvfData=data;else if(hc)_nbaHcData=data;else _nbaTrkData=data;
     
     var ds = document.getElementById(prefix+'DateSelect');
     if(ds){
@@ -4781,14 +5354,23 @@ function _nbaPeriodLabel(period,bounds,picked){
 function toggleTrkAcc(el) { el.parentElement.classList.toggle('open'); }
 function nbaTrkCatClass(cat) { return 'cat-' + String(cat||'').replace(/[^a-zA-Z0-9]/g, ''); }
 function renderNbaTrackDay(record){
-  var ovf=record==='overflow',prefix=ovf?'nbaOvf':'nbaTrk';
-  var data=ovf?_nbaOvfData:_nbaTrkData,view=ovf?_nbaOvfView:_nbaTrkView;
+  var ovf=record==='overflow',hc=record==='hotcold',prefix=_nbaRecPrefix(record);
+  var data=ovf?_nbaOvfData:(hc?_nbaHcData:_nbaTrkData),view=ovf?_nbaOvfView:(hc?_nbaHcView:_nbaTrkView);
   var sel = document.getElementById(prefix+'DateSelect').value;
   var out = document.getElementById(prefix+'Body');
   var topPct = document.getElementById(prefix+'TopPct');
   var topStats = document.getElementById(prefix+'TopStats');
   var stake = Math.max(1,parseFloat(document.getElementById(prefix+'BetSize').value) || 100);
   
+  if(hc&&data&&data.length){
+    var hcBookEl=document.getElementById('nbaHcBook'),hcBook=hcBookEl?hcBookEl.value:'main';
+    data=data.map(function(d){return Object.assign({},d,{detail:(d.detail||[]).filter(function(x){return hcBook==='all'||(hcBook==='overflow'?!!x.is_overflow:!x.is_overflow);})});});
+  }
+  if(hc&&(!data||!data.length)){
+    if(out) out.innerHTML=_nbaRecordEmpty('No saved Hot / Cold results yet','Each live pre-tip run saves the Hot, Cold and Double Cold Top 10 (and ranks 11-20) per market. Results appear here once games finish.');
+    if(topPct) topPct.innerHTML=''; if(topStats) topStats.innerHTML='';
+    return;
+  }
   if(!data||!data.length){
     if(out) out.innerHTML=_nbaRecordEmpty(ovf?'No saved overflow results yet':'No official results yet',ovf?'This record only contains saved overflow selections. New eligible pre-tip runs capture every qualifying play after each market/side Top 10; older dates are not backfilled.':'Pre-game snapshots will appear here after their games finish and the picks are graded.');
     if(topPct) topPct.innerHTML=''; if(topStats) topStats.innerHTML='';
@@ -4803,6 +5385,7 @@ function renderNbaTrackDay(record){
   picked.forEach(function(d){(d.detail||[]).forEach(function(x){day.detail.push(Object.assign({},x,{_pdate:period==='day'?'':d.date}));});});
   
   var cats = ["Points","Rebounds","Assists","3-Pointers","Pts+Reb+Ast","Pts+Reb","Pts+Ast","Reb+Ast","Blocks","Steals"];
+  if(hc){var hcCats=[];['Hot','Cold','Double Cold'].forEach(function(f){cats.forEach(function(c){hcCats.push(f+' '+c);});});cats=hcCats;}
   var groups = {};
   var dw=0, dl=0, dp=0, dpend=0, dnet=0, dstaked=0;
   
@@ -5008,6 +5591,7 @@ NBA_COACH_HTML = r"""
   <div class="ncx-tabs" role="tablist">
     <button type="button" class="ncx-tab active" data-ncx-tab="top" onclick="_ncxTab('top')">&#11088; Top Picks <span>4</span></button>
     <button type="button" class="ncx-tab" data-ncx-tab="props" onclick="_ncxTab('props')">&#127936; Player Props <span>10</span></button>
+    <button type="button" class="ncx-tab" data-ncx-tab="form" onclick="_ncxTab('form')">&#128293; Hot / Cold <span>3</span></button>
   </div>
   <div class="ncx-panels">
     <div class="ncx-grid" data-ncx-panel="top">
@@ -5015,6 +5599,11 @@ NBA_COACH_HTML = r"""
       <button type="button" class="nba-coach-preset ncx-preset" style="--c:#a78bfa" onclick="nbaCoachPreset('positive edge')"><b class="ncx-t">Coach Edge</b><small>Biggest app-vs-book probability gap</small></button>
       <button type="button" class="nba-coach-preset ncx-preset" style="--c:#f59e0b" onclick="nbaCoachPreset('alternate_minus')"><b class="ncx-t">Best &#8722; Alternate Plays · Top 10</b><small>Safer alternate lines, minus odds</small></button>
       <button type="button" class="nba-coach-preset ncx-preset" style="--c:#4ade80" onclick="nbaCoachPreset('alternate_plus')"><b class="ncx-t">Best + Alternate Plays · Top 10</b><small>Plus-money alternate lines with edge</small></button>
+    </div>
+    <div class="ncx-grid" data-ncx-panel="form" hidden>
+      <button type="button" class="nba-coach-preset ncx-preset" style="--c:#f97316" onclick="nbaCoachPreset('hot')"><b class="ncx-t">&#128293; Hot · Top 10</b><small>OVER in 80%+ of last 5 · avg over the line</small></button>
+      <button type="button" class="nba-coach-preset ncx-preset" style="--c:#38bdf8" onclick="nbaCoachPreset('cold')"><b class="ncx-t">&#129482; Cold · Top 10</b><small>UNDER in 80%+ of last 5 · avg under the line</small></button>
+      <button type="button" class="nba-coach-preset ncx-preset" style="--c:#818cf8" onclick="nbaCoachPreset('double_cold')"><b class="ncx-t">&#10052;&#65039; Double Cold · Top 10</b><small>Cold + 70%+ Under in 3+ meetings vs opponent</small></button>
     </div>
     <div class="ncx-grid ncx-mk-grid" data-ncx-panel="props" hidden>
         <div class="ncx-mk"><div class="ncx-mk-t">Points</div><div class="ncx-mk-b"><button type="button" class="nba-coach-preset ncx-ov" onclick="nbaCoachPreset('points over')">Over · Top 10</button><button type="button" class="nba-coach-preset ncx-un" onclick="nbaCoachPreset('points under')">Under · Top 10</button></div></div>
@@ -5065,6 +5654,29 @@ NBA_COACH_HTML = r"""
   {key:'PTS_REB',label:'Pts + Reb'},{key:'PTS_AST',label:'Pts + Ast'},
   {key:'REB_AST',label:'Reb + Ast'},{key:'BLK',label:'Blocks'},{key:'STL',label:'Steals'}
  ];
+ var __nbaPerfectParlayFormCats=[
+  {key:'HC_HOT',form:'hot',label:'&#128293; Hot'},{key:'HC_COLD',form:'cold',label:'&#129482; Cold'},
+  {key:'HC_DOUBLE_COLD',form:'double_cold',label:'&#10052;&#65039; Double Cold'}
+ ];
+function _nbaHcParlayRows(selected,side){
+ var forms={};(__nbaPerfectParlayFormCats||[]).forEach(function(c){if((selected||[]).indexOf(c.key)>=0)forms[c.form]=c;});
+ var src=(typeof nbaHotColdData!=='undefined'&&nbaHotColdData)||[],out=[];
+ src.forEach(function(r){
+  if(!r||!forms[r.form_key])return;
+  if(side&&side!=='ALL'&&r.pick!==side)return;
+  if(r.odds==null||r.app_probability==null)return;
+  var american=Number(r.odds),implied=_nbaPerfectParlayImplied(american),model=Number(r.app_probability)/100;
+  if(!isFinite(american)||implied==null||!isFinite(model)||model<=0||model-implied<=0)return;
+  var mpg=null;(allPicksData||[]).some(function(p){if(String(p.player)===String(r.player)&&p.mpg!=null){mpg=p.mpg;return true;}return false;});
+  out.push({player:r.player,team:r.team,stat:r.stat,category:r.category,side:r.pick,line:Number(r.line),odds:american,
+   model_probability:model,implied_probability:implied,edge:model-implied,coach_edge:(model-implied)*100,
+   source:r.book,book:r.book,_board_mpg:mpg,_board_pct:Number(r.app_probability),recent_average:r.recent_avg,
+   game_log:(r.recent_games||[]).map(function(g){return g.v;}),
+   opponent_history:(r.opp_games||[]).map(function(g){return {d:g.d,v:g.v};}),
+   selection_reason:String(r.form||'')+' form ('+r.recent_hits+'/'+r.recent_total+' L5) plus positive Coach Edge at the exact standard line.'});
+ });
+ return out;
+}
 function _ncxTab(key){
   document.querySelectorAll('#nba-coach .ncx-tab').forEach(function(t){t.classList.toggle('active',t.getAttribute('data-ncx-tab')===key);});
   document.querySelectorAll('#nba-coach .ncx-grid').forEach(function(g){g.hidden=g.getAttribute('data-ncx-panel')!==key;});
@@ -5081,6 +5693,9 @@ function nbaCoachPreset(q){
   'positive edge':'What are the best NBA Coach Edge plays?',
   alternate_minus:'What are the Best - Alternate NBA Plays? — Top 10',
   alternate_plus:'What are the Best + Alternate NBA Plays? — Top 10',
+  hot:'What are the Hot NBA plays? — Top 10',
+  cold:'What are the Cold NBA plays? — Top 10',
+  double_cold:'What are the Double Cold NBA plays? — Top 10',
    'points over':'What are the Top 10 Points OVER plays?',
    'points under':'What are the Top 10 Points UNDER plays?',
    'rebounds over':'What are the Top 10 Rebounds OVER plays?',
@@ -5104,7 +5719,8 @@ function nbaCoachPreset(q){
  };
  var input=document.getElementById('nbaCoachQuery');
  if(input)input.value=labels[q]||q;
- nbaCoachSearch(q==='alternate_minus'?'alternate_minus':(q==='alternate_plus'?'alternate_plus':(q==='safest'?'safest':'all')),labels[q]||q);
+ var formModes={hot:1,cold:1,double_cold:1};
+ nbaCoachSearch(formModes[q]?q:(q==='alternate_minus'?'alternate_minus':(q==='alternate_plus'?'alternate_plus':(q==='safest'?'safest':'all'))),labels[q]||q);
 }
 function _nbaPerfectParlayCommit(html){
  var msg=document.getElementById('nbaCoachMsg'),box=document.getElementById('nbaCoachResults');
@@ -5185,7 +5801,8 @@ function showNbaPerfectParlayBuilder(){
   var available={};
   _nbaPerfectParlayBoardRows(saved.side||'ALL').forEach(function(p){var stat=String((p&&p.stat)||'').toUpperCase();if(stat)available[stat]=(available[stat]||0)+1;});
   var selected=(saved.categories&&saved.categories.length)?saved.categories.slice():__nbaPerfectParlayCategories.map(function(x){return x.key;});
-  var categoryOptions=__nbaPerfectParlayCategories.map(function(cat){
+  __nbaPerfectParlayFormCats.forEach(function(cat){available[cat.key]=_nbaHcParlayRows([cat.key],saved.side||'ALL').length;});
+  var categoryOptions=__nbaPerfectParlayCategories.concat(__nbaPerfectParlayFormCats).map(function(cat){
    var count=available[cat.key]||0,checked=selected.indexOf(cat.key)>=0,disabled=!count;
    return '<label style="display:flex;align-items:center;gap:6px;padding:7px 9px;background:'+(checked&&!disabled?'rgba(59,130,246,.14)':'#020617')+';border:1px solid '+(checked&&!disabled?'#3b82f6':'#334155')+';border-radius:7px;color:'+(disabled?'#475569':'#e2e8f0')+';font-size:.68rem;font-weight:800;cursor:'+(disabled?'not-allowed':'pointer')+'">'+
     '<input type="checkbox" name="nbaPerfectParlayCat" value="'+cat.key+'"'+(checked&&!disabled?' checked':'')+(disabled?' disabled':'')+' style="accent-color:#3b82f6">'+
@@ -5346,12 +5963,13 @@ function buildNbaPerfectParlay(){
   if(!old||Number(p.pct||0)>Number(old.pct||0))boardByKey[key]=p;
  });
  var boardKeys=Object.keys(boardByKey);
- if(!boardKeys.length){
+ var hcRows=_nbaHcParlayRows(selectedCategories,selectedSide);
+ if(!boardKeys.length&&!hcRows.length){
   _nbaPerfectParlayCommit('<div><div class="nba-coach-question">&#10024; Perfect Parlay · '+requested+' Legs</div><div style="margin-top:11px;color:#fbbf24;font-size:.78rem;line-height:1.5">This date has no displayed app-board picks available for Perfect Parlay.</div></div>');
   return;
  }
  try{
-  var raw=_nbaPerfectParlayLocalRows(boardByKey);
+  var raw=_nbaPerfectParlayLocalRows(boardByKey).concat(hcRows);
   var byPlayer={};
   raw.forEach(function(x){
    var key=String(x.player||'').toLowerCase().replace(/[^a-z0-9]/g,'');
@@ -5411,14 +6029,15 @@ async function nbaCoachSearch(forceMode,presetQuery){
     }
     var isSafe=mode==='safest';
     var rows=__nbaCoachRows.map(function(x,i){
-      var e=Number(x.edge*100),moved=x.base_line!=null&&Number(x.base_line)!==Number(x.line);
+      var noEdge=x.edge==null,e=Number(x.edge*100),moved=x.base_line!=null&&Number(x.base_line)!==Number(x.line);
+      var formTxt=x.form_category?'<br><span style="color:'+(x.form==='HOT'?'#fb923c':'#7dd3fc')+';font-size:.6rem;font-weight:900">'+_nbaEsc(x.form_category)+(x.double_cold?' · DOUBLE COLD':'')+' · '+_nbaEsc(String(x.recent_hits))+'/'+_nbaEsc(String(x.recent_total))+' L5</span>':'';
       var fromTxt=x.base_line!=null?'<br><span style="color:#64748b;font-size:.62rem">'+(moved?'from book '+_nbaEsc(String(x.base_line))+' · ':'book line · ')+_nbaEsc(String(x.base_hits))+'/'+_nbaEsc(String(x.games))+'</span>':'';
       return '<tr tabindex="0" onclick="nbaCoachDetail('+i+')" onkeydown="if(event.key===\'Enter\'||event.key===\' \'){event.preventDefault();nbaCoachDetail('+i+')}">'+
        '<td>'+(i+1)+'</td><td><b style="color:#fff;text-decoration:underline;text-decoration-style:dotted;text-underline-offset:2px">'+_nbaEsc(x.player)+'</b><br><span style="color:#64748b">'+_nbaEsc(x.team||'NBA')+(x.alternate?' · ALTERNATE':'')+'</span></td>'+
-       '<td>'+_nbaEsc(x.category)+'<br><b style="color:'+(x.side==='OVER'?'#4ade80':'#f87171')+'">'+_nbaEsc(x.side)+' '+_nbaEsc(String(x.line))+'</b>'+fromTxt+'</td>'+
+       '<td>'+_nbaEsc(x.category)+'<br><b style="color:'+(x.side==='OVER'?'#4ade80':'#f87171')+'">'+_nbaEsc(x.side)+' '+_nbaEsc(String(x.line))+'</b>'+fromTxt+formTxt+'</td>'+
        '<td>'+_nbaEsc((Number(x.odds)>0?'+':'')+String(x.odds))+'<br><span style="color:#64748b;font-size:.6rem">'+_nbaEsc(x.source||'Sportsbook')+'</span></td>'+
-       '<td'+(isSafe&&Number(x.model_probability)>=.9995?' style="color:#fbbf24!important;font-weight:900"':'')+'>'+Number(x.model_probability*100).toFixed(1)+'%'+(isSafe&&x.games?'<br><span style="color:#64748b;font-size:.6rem">'+_nbaEsc(String(x.hits))+'/'+_nbaEsc(String(x.games))+'</span>':'')+'</td><td>'+Number(x.implied_probability*100).toFixed(1)+'%</td>'+
-       '<td style="color:'+(e>=0?'#4ade80':'#f87171')+'!important;font-weight:700">'+(e>=0?'+':'')+e.toFixed(2)+' pts</td></tr>';
+       '<td'+(isSafe&&Number(x.model_probability)>=.9995?' style="color:#fbbf24!important;font-weight:900"':'')+'>'+(x.model_probability==null?'—':Number(x.model_probability*100).toFixed(1)+'%')+(isSafe&&x.games?'<br><span style="color:#64748b;font-size:.6rem">'+_nbaEsc(String(x.hits))+'/'+_nbaEsc(String(x.games))+'</span>':'')+'</td><td>'+Number(x.implied_probability*100).toFixed(1)+'%</td>'+
+       '<td style="color:'+(noEdge?'#64748b':(e>=0?'#4ade80':'#f87171'))+'!important;font-weight:700">'+(noEdge?'—':(e>=0?'+':'')+e.toFixed(2)+' pts')+'</td></tr>';
     }).join('');
     var summary='<div style="margin-top:11px;color:#e5e7eb;font-size:.76rem;line-height:1.5">'+_nbaEsc(d.message||(isSafe
       ?('I found '+__nbaCoachRows.length+' players who hit the book line 80%+ against today’s opponent at this venue, then moved each to the safer line with the best hit rate. Ranked by app hit rate.')
@@ -5498,12 +6117,12 @@ function nbaCoachDetail(i){
   '<div><div style="color:#64748b;font-size:.6rem;font-weight:900;letter-spacing:.1em">THE PLAY</div>'+
   '<div style="color:'+sideColor+';font-size:1.45rem;font-weight:900;line-height:1.15">'+_nbaEsc(x.side)+' '+_nbaEsc(String(x.line))+'</div>'+
   '<div style="color:#94a3b8;font-size:.74rem;margin-top:2px"><b style="color:#fbbf24;font-family:monospace;font-size:.92rem">'+_nbaEsc(oddsTxt)+'</b> · '+_nbaEsc(x.source||'Sportsbook line')+'</div></div>'+
-  '<div style="text-align:center;background:'+(x.edge>=0?'rgba(74,222,128,.1)':'rgba(248,113,113,.1)')+';border:1px solid '+(x.edge>=0?'rgba(74,222,128,.35)':'rgba(248,113,113,.35)')+';border-radius:12px;padding:8px 12px"><div style="color:'+(x.edge>=0?'#4ade80':'#f87171')+';font-size:1.35rem;font-weight:900;line-height:1">'+(x.edge>=0?'+':'')+(x.edge*100).toFixed(1)+'%</div><div style="color:#94a3b8;font-size:.58rem;font-weight:900;letter-spacing:.1em;margin-top:3px">'+(x.safest?'EDGE':'COACH EDGE')+'</div></div></div>'+
+  '<div style="text-align:center;background:'+(x.edge>=0?'rgba(74,222,128,.1)':'rgba(248,113,113,.1)')+';border:1px solid '+(x.edge>=0?'rgba(74,222,128,.35)':'rgba(248,113,113,.35)')+';border-radius:12px;padding:8px 12px"><div style="color:'+(x.edge>=0?'#4ade80':'#f87171')+';font-size:1.35rem;font-weight:900;line-height:1">'+(x.edge==null?'—':(x.edge>=0?'+':'')+(x.edge*100).toFixed(1)+'%')+'</div><div style="color:#94a3b8;font-size:.58rem;font-weight:900;letter-spacing:.1em;margin-top:3px">'+(x.safest?'EDGE':'COACH EDGE')+'</div></div></div>'+
  (x.base_line!=null?'<div style="display:flex;align-items:center;gap:10px;margin-top:12px;background:#0b1220;border:1px solid #1e293b;border-radius:12px;padding:11px 14px">'+
   '<div style="flex:1;text-align:center"><div style="color:#64748b;font-size:.6rem;font-weight:900;letter-spacing:.08em">BOOK LINE</div><div style="color:#cbd5e1;font-weight:900;font-size:1.05rem;margin-top:2px">'+_nbaEsc(x.side)+' '+_nbaEsc(String(x.base_line))+'</div><div style="color:#94a3b8;font-size:.72rem">'+_nbaEsc(String(x.base_hits))+'/'+_nbaEsc(String(x.games))+' · '+Math.round(Number(x.base_hit_rate)*100)+'%</div></div>'+
   '<div style="color:'+sideColor+';font-size:1.3rem;font-weight:900">&#8594;</div>'+
   '<div style="flex:1;text-align:center"><div style="color:#64748b;font-size:.6rem;font-weight:900;letter-spacing:.08em">SAFER LINE</div><div style="color:'+sideColor+';font-weight:900;font-size:1.05rem;margin-top:2px">'+_nbaEsc(x.side)+' '+_nbaEsc(String(x.line))+'</div><div style="color:'+(Number(x.model_probability)>=.9995?'#fbbf24':'#94a3b8')+';font-size:.72rem;font-weight:800">'+_nbaEsc(String(x.hits))+'/'+_nbaEsc(String(x.games))+' · '+Math.round(Number(x.model_probability)*100)+'%</div></div></div>':'')+
- '<div style="'+secCss+'"><div style="display:flex;justify-content:space-between;font-size:.7rem;font-weight:800;margin-bottom:7px"><span style="color:#a5b4fc">'+(x.safest?'APP HIT RATE ':'MODEL ')+(model*100).toFixed(1)+'%</span><span style="color:#94a3b8">BOOK IMPLIED '+(implied*100).toFixed(1)+'%</span></div>'+
+ '<div style="'+secCss+'"><div style="display:flex;justify-content:space-between;font-size:.7rem;font-weight:800;margin-bottom:7px"><span style="color:#a5b4fc">'+(x.safest?'APP HIT RATE ':'MODEL ')+(x.model_probability==null?'— (no same-line app estimate)':(model*100).toFixed(1)+'%')+'</span><span style="color:#94a3b8">BOOK IMPLIED '+(implied*100).toFixed(1)+'%</span></div>'+
   '<div style="position:relative;height:12px;background:#1e293b;border-radius:999px;overflow:visible">'+
    '<div style="position:absolute;left:0;top:0;bottom:0;width:'+(model*100).toFixed(1)+'%;background:linear-gradient(90deg,#4338ca,#818cf8);border-radius:999px"></div>'+
    '<div title="Book implied" style="position:absolute;top:-4px;bottom:-4px;left:calc('+(implied*100).toFixed(1)+'% - 1px);width:3px;background:#f8fafc;border-radius:2px;box-shadow:0 0 6px rgba(255,255,255,.6)"></div>'+
@@ -6490,6 +7109,71 @@ def _nba_coach_rows(standard, alternate, query="", mode="all", count=100):
         unique_rows.append(row)
     return unique_rows[:max(1, min(int(count or 10), 10))]
 
+_NBA_COACH_FORM_PRESETS = (
+    ("Hot Top 10", "hot"),
+    ("Cold Top 10", "cold"),
+    ("Double Cold Top 10", "double_cold"),
+)
+
+def _nba_coach_form_rows(hot_cold, form_key, query="", count=10):
+    """Hot / Cold / Double Cold Coach presets: the section's own Top 10 rows,
+    genuine side prices only, no edge gate, ranked by form strength, one play
+    per player (strongest qualifying market)."""
+    q = (query or "").lower()
+    cat_terms = {k.lower(): k for k in STAT_CONFIG}
+    cat_terms.update({v["label"].lower(): k for k, v in STAT_CONFIG.items()})
+    wanted_cat = next((v for k, v in sorted(cat_terms.items(), key=lambda kv: -len(kv[0]))
+                       if k in q), None)
+    pool = []
+    for r in hot_cold or []:
+        if r.get("form_key") != form_key or r.get("is_overflow"):
+            continue
+        if wanted_cat and r.get("stat") != wanted_cat:
+            continue
+        odds = _nba_hc_price(r.get("odds"))
+        implied = _nba_coach_implied(odds) if odds is not None else None
+        if implied is None:
+            continue
+        model = r.get("app_probability")
+        model = model / 100.0 if isinstance(model, (int, float)) else None
+        edge = (model - implied) if model is not None else None
+        pool.append({
+            "player": r.get("player", ""), "team": r.get("team", ""), "stat": r.get("stat"),
+            "category": r.get("stat_label") or _NBA_STAT_LABEL.get(r.get("stat"), r.get("stat")),
+            "form_category": r.get("category"), "form": r.get("form"),
+            "double_cold": bool(r.get("double_cold")),
+            "side": r.get("pick"), "line": r.get("line"), "odds": odds,
+            "model_probability": round(model, 5) if model is not None else None,
+            "implied_probability": implied,
+            "edge": round(edge, 5) if edge is not None else None,
+            "coach_edge": round(edge * 100, 2) if edge is not None else None,
+            "book": r.get("book") or "", "source": r.get("book") or "",
+            "recent_hits": r.get("recent_hits"), "recent_total": r.get("recent_total"),
+            "recent_average": r.get("recent_avg"),
+            "game_log": [g.get("v") for g in (r.get("recent_games") or [])],
+            "opponent_history": ",".join(str(g.get("v")) for g in (r.get("opp_games") or [])) or "—",
+            "alternate": False, "_rank": r.get("rank") or 999,
+            "_rate": (r.get("recent_hits") or 0) / max(1, r.get("recent_total") or 1),
+            "_supports": bool(r.get("matchup_supports")),
+            "selection_reason": (f"{r.get('form','')} form: {r.get('pick','')} in "
+                                 f"{r.get('recent_hits')}/{r.get('recent_total')} of the last "
+                                 f"current-season games (avg {r.get('recent_avg')})"
+                                 + (f"; {r.get('opp_hits')}/{r.get('opp_total')} vs {r.get('opp','')}"
+                                    if r.get("opp_total") else "") + "."),
+        })
+    pool.sort(key=lambda x: (-x["_rate"], -(x.get("recent_hits") or 0), -x["_supports"],
+                             x["_rank"], str(x["player"]).casefold()))
+    out, seen = [], set()
+    for row in pool:
+        key = re.sub(r"[^a-z0-9]+", "", str(row.get("player") or "").lower())
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        for k in ("_rank", "_rate", "_supports"):
+            row.pop(k, None)
+        out.append(row)
+    return out[:max(1, min(int(count or 10), 10))]
+
 @app.post("/api/nba/coach-edge")
 async def nba_coach_edge(request: Request):
     if not get_user(request):
@@ -6498,6 +7182,24 @@ async def nba_coach_edge(request: Request):
     body = await request.json()
     ds = str(body.get("date") or _nba_today().isoformat())
     mode = str(body.get("mode") or "all").lower()
+    if mode in ("hot", "cold", "double_cold"):
+        board = _cache_get("nba", ds)
+        if not board:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=404, detail="Standard NBA result data is unavailable; run or load NBA picks first.")
+        if not isinstance(board.get("hot_cold"), list):
+            return {"date": ds, "results": [],
+                    "message": "This saved run predates the Hot / Cold section. Run picks again to build it."}
+        rows = _nba_coach_form_rows(board.get("hot_cold"), mode, str(body.get("query", "")),
+                                    min(10, int(body.get("count", 10) or 10)))
+        label = {"hot": "Hot", "cold": "Cold", "double_cold": "Double Cold"}[mode]
+        if not rows:
+            return {"date": ds, "results": [],
+                    "message": f"No {label} play has a genuine sportsbook price on this board."}
+        return {"date": ds, "results": rows, "form_preset": mode,
+                "message": (f"{label} Top 10: strongest current-season form plays with a genuine "
+                            f"sportsbook price, one play per player. No edge gate; App Prob/Edge "
+                            f"show only when the app has a same-line estimate.")}
     if mode not in ("all", "standard", "alternate", "alternate_minus", "alternate_plus", "safest"): mode = "all"
     query_text = str(body.get("query", ""))
     if mode == "all" and re.search(r"(?:best\s*[-–]\s*alternate|minus|favorite|negative\s+odds)", query_text, re.I):
@@ -6697,6 +7399,11 @@ def _nba_coach_capture_pregame(date_str: str, result: dict):
                 continue
             clean.append({**p, "preset": label, "captured_date": date_str})
         presets[label] = clean
+    for label, form_key in _NBA_COACH_FORM_PRESETS:
+        if not isinstance(result.get("hot_cold"), list):
+            break
+        presets[label] = [{**p, "preset": label, "captured_date": date_str}
+                          for p in _nba_coach_form_rows(result.get("hot_cold"), form_key, "", 10)]
     detail = []
     seen = set()
     for label, items in presets.items():
@@ -8672,6 +9379,21 @@ async def nba_track_record():
         return _JR({"detail":"Saved NBA Main record is unavailable. Please retry."}, status_code=503)
 
 
+@app.get("/api/hot-cold-track-record")
+async def nba_hot_cold_track_record():
+    """Hot / Cold spotlight record (Top 10 + ranks 11-20 per form x market).
+    Kept out of the Main and Overflow totals."""
+    from fastapi.responses import JSONResponse as _JR
+    try:
+        await asyncio.wait_for(asyncio.to_thread(_nba_update_hc_ledger), timeout=40)
+    except Exception as exc:
+        print(f"[nba_hc_track] grading still running/failed on open: {exc!r}")
+    try:
+        return _JR(await asyncio.to_thread(_nba_hc_record_response))
+    except RuntimeError:
+        return _JR({"detail":"Saved Hot / Cold record is unavailable. Please retry."}, status_code=503)
+
+
 @app.get("/api/overflow-track-record")
 async def nba_overflow_track_record():
     """Read saved overflow grades with original markets; no grading on open."""
@@ -8687,7 +9409,17 @@ async def nba_day_of_week_record(request: Request, lane: str = "all"):
     rows, or the separate Edge Coach record. Never starts grading and never
     feeds picks."""
     from fastapi.responses import JSONResponse as _JR
-    lane = lane if lane in ("main", "overflow", "coach") else "all"
+    lane = lane if lane in ("main", "overflow", "coach", "hotcold") else "all"
+    if lane == "hotcold":
+        try:
+            data = await asyncio.to_thread(_nba_hc_record_response)
+        except RuntimeError:
+            return _JR({"detail": "Saved Hot / Cold record is unavailable. Please retry."},
+                       status_code=503)
+        dates = [{"date": d["date"],
+                  "detail": [r for r in d.get("detail") or [] if r.get("result") != "PENDING"]}
+                 for d in data.get("dates") or []]
+        return _JR({"dates": [d for d in dates if d["detail"]], "lane": "hotcold"})
     if lane == "coach":
         if not get_user(request):
             return _JR({"detail": "Subscription required — please log in via moneypicksarena.com"},
