@@ -3498,8 +3498,8 @@ footer{text-align:center;padding:32px 24px;color:#4b5563;font-size:.78rem;border
     <button type="button" role="menuitem" class="nba-menu-item" style="--c:#8b5cf6" onclick="_nbaNavGo(function(){openNbaGamePredictor();})">&#128302; Game Predictor</button>
     <button type="button" role="menuitem" class="nba-menu-item" style="--c:#14b8a6" onclick="_nbaNavGo(function(){openNbaGameSim();})">&#127922; 10K Game Simulator</button>
     <button type="button" role="menuitem" class="nba-menu-item admin-only" style="--c:#d97706" onclick="_nbaNavGo(function(){_nbaOvOpen('parlayCard');})">&#127920; Auto Parlay Builder</button>
-    <button type="button" role="menuitem" class="nba-menu-item" style="--c:#a855f7" onclick="_nbaNavGo(function(){showNbaPerfectParlayBuilder();})">&#10024; Perfect Parlay</button>
-    <button type="button" role="menuitem" class="nba-menu-item admin-only" style="--c:#0e7490" onclick="_nbaNavGo(function(){openNbaMyBets();})">&#128176; My Bets</button>
+    <button type="button" role="menuitem" class="nba-menu-item" style="--c:#a855f7" onclick="_nbaNavGo(function(){showNbaPerfectParlayBuilder();var c=document.getElementById('nba-coach');if(c)c.scrollIntoView({behavior:'smooth',block:'start'});})">&#10024; Perfect Parlay</button>
+    <button type="button" role="menuitem" class="nba-menu-item admin-only" style="--c:#0e7490" onclick="_nbaNavGo(function(){if(_nbaOvOpen('nba-mybets-card'))openNbaMyBets(false);})">&#128176; My Bets</button>
   </div>
 </div>
 <script>
@@ -3514,8 +3514,8 @@ document.addEventListener('click',function(e){var w=e.target.closest?e.target.cl
 document.addEventListener('keydown',function(e){if(e.key==='Escape'){_nbaNavClose();_nbaOvClose();}});
 // Records, Game Predictor, 10K Sim and Auto Parlay open in one closable overlay
 // from Records &amp; Tools; none of them sit on the page until chosen.
-var _NBA_OV_TITLES={'nba-track-section':'&#128202; Track Record','nba-overflow-track-section':'&#11088; Overflow Record','nba-hotcold-track-section':'&#128293; Hot / Cold Record','nba-dow-section':'&#128197; Day of Week Trends','nbaCoachTrackPanel':'&#129504; Coach Track Record','nbaGpRecordPanel':'&#128302; Game Predictor Record','nbaSimRecordPanel':'&#127922; Sim Record','nba-historical-track':'&#128218; Historical Track Record','nbaGpSection':'&#128302; Game Predictor','nbaSimSection':'&#127922; 10K Game Simulator','parlayCard':'&#127920; Auto Parlay Builder'};
-var _nbaRecHome={};
+var _NBA_OV_TITLES={'nba-hotcold-section':'&#128293; Hot / Cold Board','nba-mybets-card':'&#128176; My Bets','nba-track-section':'&#128202; Track Record','nba-overflow-track-section':'&#11088; Overflow Record','nba-hotcold-track-section':'&#128293; Hot / Cold Record','nba-dow-section':'&#128197; Day of Week Trends','nbaCoachTrackPanel':'&#129504; Coach Track Record','nbaGpRecordPanel':'&#128302; Game Predictor Record','nbaSimRecordPanel':'&#127922; Sim Record','nba-historical-track':'&#128218; Historical Track Record','nbaGpSection':'&#128302; Game Predictor','nbaSimSection':'&#127922; 10K Game Simulator','parlayCard':'&#127920; Auto Parlay Builder'};
+var _nbaRecHome={},_nbaRecPrev={};
 function _nbaRecHost(){
   var ov=document.getElementById('nbaRecOv');
   if(!ov){
@@ -3532,7 +3532,7 @@ function _nbaRecReturn(){
   Array.prototype.slice.call(slot.children).forEach(function(el){
     var mark=_nbaRecHome[el.id];
     if(mark&&mark.parentNode)mark.parentNode.insertBefore(el,mark.nextSibling);
-    el.style.display='none';
+    el.style.display=_nbaRecPrev[el.id]==='keep'?'block':'none';
   });
 }
 function _nbaOvOpen(id){
@@ -3544,6 +3544,7 @@ function _nbaOvOpen(id){
       var mark=document.createComment('nba-overlay-home');
       el.parentNode.insertBefore(mark,el);_nbaRecHome[id]=mark;
     }
+    _nbaRecPrev[id]=(id==='nba-hotcold-section'&&el.style.display!=='none')?'keep':'';
     slot.appendChild(el);
   }
   el.style.display='block';
@@ -3728,7 +3729,7 @@ function _nbaOvClose(){
       <div style="font-weight:800;color:#a5b4fc;font-size:1rem">&#128176; MY BETS &mdash; RECORD &amp; ROI</div>
       <div style="display:flex;gap:8px;align-items:center">
         <button onclick="getNbaBetsResults()" style="background:#1d4ed8;color:#fff;border:none;border-radius:8px;padding:8px 13px;font-size:.78rem;font-weight:700;cursor:pointer">&#128200; Settle Results</button>
-        <button onclick="document.getElementById(&#39;nba-mybets-card&#39;).style.display=&#39;none&#39;" style="background:#1e293b;border:none;color:#94a3b8;border-radius:8px;padding:8px 11px;font-size:.9rem;cursor:pointer">&#215;</button>
+        <button onclick="_nbaOvClose();document.getElementById(&#39;nba-mybets-card&#39;).style.display=&#39;none&#39;" style="background:#1e293b;border:none;color:#94a3b8;border-radius:8px;padding:8px 11px;font-size:.9rem;cursor:pointer">&#215;</button>
       </div>
     </div>
     <div id="nba-mybets-body"><p style="color:#94a3b8;font-size:.85rem">Loading&#8230;</p></div>
@@ -5356,7 +5357,7 @@ function openNbaHotColdRecord(){
 }
 function openNbaHotColdBoard(){
   var section=document.getElementById('nba-hotcold-section');
-  if(section&&section.style.display!=='none'){section.scrollIntoView({behavior:'smooth',block:'start'});return;}
+  if(section&&(section.style.display!=='none'||section.parentNode===document.getElementById('nbaRecSlot'))){_nbaOvOpen('nba-hotcold-section');return;}
   alert('Load or run picks first - the Hot / Cold board is built with each live run.');
 }
 function openNbaOverflowRecord(){
@@ -5688,7 +5689,7 @@ NBA_COACH_HTML = r"""
 @media(max-width:620px){.ncx-head{grid-template-columns:auto minmax(0,1fr)}.ncx-side{grid-column:1/-1;min-width:0}.ncx-noinv{align-self:flex-start}.nba-coach-row.ncx-ask{flex-direction:row;flex-wrap:wrap}.ncx-ask .nba-coach-send{width:100%}.ncx-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.ncx-mk-grid{grid-template-columns:1fr}}
 @media(max-width:420px){.ncx-grid{grid-template-columns:1fr}}
 </style>
-<section id="nba-coach" class="card nba-coach-shell ncx" style="max-width:960px;margin:28px auto 20px;padding:20px 22px">
+<section id="nba-coach" class="card nba-coach-shell ncx" style="max-width:960px;margin:0 auto 20px;padding:20px 22px">
   <div class="ncx-head">
     <div class="ncx-badge">&#127936;</div>
     <div class="ncx-titles">
@@ -5924,7 +5925,7 @@ function showNbaPerfectParlayBuilder(){
   }).join('');
   var fieldStyle='margin-top:5px;min-width:145px;background:#020617;color:#fff;border:1px solid #475569;border-radius:7px;padding:9px 10px;font-weight:800';
  _nbaPerfectParlayCommit(
-  '<div><div class="nba-coach-question">&#10024; Perfect Parlay</div>'+
+  '<div><div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><div class="nba-coach-question">&#10024; Perfect Parlay</div><button type="button" onclick="var b=document.getElementById(&#39;nbaCoachResults&#39;);if(b){b.innerHTML=&#39;&#39;;b.style.display=&#39;none&#39;;}" aria-label="Close Perfect Parlay" style="background:#7f1d1d;border:1px solid #f87171;color:#fff;border-radius:8px;padding:6px 12px;font-weight:900;font-size:.74rem;cursor:pointer">&#10005; Close</button></div>'+
    '<div style="margin-top:11px;color:#cbd5e1;font-size:.78rem;line-height:1.55">Choose your markets, direction, rotation preference, and number of legs. Every result still comes only from this date’s displayed app boards with a genuine standard line and positive Coach Edge.</div>'+
    '<div style="margin-top:14px;padding:12px;background:#0f172a;border:1px solid #334155;border-radius:10px">'+
     '<div style="display:flex;justify-content:space-between;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:7px"><div style="color:#94a3b8;font-size:.68rem;font-weight:900">CATEGORIES — SELECT ONE OR MORE</div><div style="display:flex;gap:5px"><button onclick="setNbaPerfectParlayCategories(true)" style="background:#1e293b;color:#bfdbfe;border:1px solid #334155;border-radius:6px;padding:5px 8px;font-size:.62rem;font-weight:800;cursor:pointer">Select all</button><button onclick="setNbaPerfectParlayCategories(false)" style="background:#1e293b;color:#94a3b8;border:1px solid #334155;border-radius:6px;padding:5px 8px;font-size:.62rem;font-weight:800;cursor:pointer">Clear</button></div></div>'+
@@ -9953,10 +9954,11 @@ async def index(request: Request, admin: str = "", token: str = ""):
     historical_html = NBA_HISTORICAL_HTML.replace("__TODAY__", today_iso)
     gp_html = NBA_GP_HTML.replace("__TODAY__", today_iso)
     sim_html = NBA_SIM_HTML.replace("__TODAY__", today_iso)
-    # Keep the full Coach panel adjacent to the primary board, immediately before
-    # ALL PICKS.  Historical Track Record remains a bottom-of-page surface.
+    # Edge Coach sits directly under the run box (same layout as NHL).
+    # Historical Track Record remains a bottom-of-page surface.
     html = (MAIN_HTML.replace("__TODAY__", today_iso).replace("__TOMORROW__", tomorrow_iso)
-            .replace('<div id="allPicksWrap"', gp_html + sim_html + coach_html + '<div id="allPicksWrap"', 1)
+            .replace('<div class="card" id="parlayCard"', coach_html + '<div class="card" id="parlayCard"', 1)
+            .replace('<div id="allPicksWrap"', gp_html + sim_html + '<div id="allPicksWrap"', 1)
             .replace("</body>", historical_html + "</body>", 1)
             .replace("</head>", f"<script>window.IS_ADMIN = {js_flag};</script></head>", 1))
     return HTMLResponse(html)
