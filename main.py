@@ -3312,6 +3312,11 @@ body.is-admin .admin-only{display:inline-block !important}
 .nba-nav-btn:hover{filter:brightness(1.12)}
 .nba-menu-list{display:none;position:absolute;right:0;top:calc(100% + 8px);z-index:120;min-width:240px;max-height:75vh;overflow:auto;background:#0b1220;border:1px solid #334155;border-radius:12px;padding:6px;box-shadow:0 18px 40px rgba(0,0,0,.55)}
 .nba-menu-list.open{display:block}
+#nba-hotcold-section{display:none!important}
+#signalDropdowns{margin-bottom:0!important}
+#nbaRecSlot #nba-hotcold-section{display:block!important;margin-top:0}
+#nbaRecSlot #signalDropdowns,#nbaRecSlot #nbaStreaksPanel,#nbaRecSlot #nbaMpaPanel{margin:0}
+#nbaRecSlot #streakList,#nbaRecSlot #mpaList{max-height:none!important}
 .nba-menu-item{display:flex;align-items:center;gap:10px;width:100%;background:transparent;border:0;border-left:4px solid var(--c);border-radius:6px;color:#f1f5f9;font-size:.86rem;font-weight:800;text-align:left;padding:10px 12px;margin:2px 0;cursor:pointer}
 .nba-menu-item:hover,.nba-menu-item:focus{background:#1e293b;outline:none}
 body.is-admin .nba-menu-item.admin-only{display:flex !important}
@@ -3484,6 +3489,11 @@ footer{text-align:center;padding:32px 24px;color:#4b5563;font-size:.78rem;border
 <div class="nba-menu">
   <button type="button" class="nba-nav-btn" id="nbaNavMenuBtn" aria-haspopup="true" aria-expanded="false" onclick="_nbaNavToggle(event)">&#9776; Records &amp; Tools &#9662;</button>
   <div class="nba-menu-list" id="nbaNavMenu" role="menu">
+    <div class="nba-menu-head" role="presentation">&#127936; Boards</div>
+    <button type="button" role="menuitem" class="nba-menu-item" style="--c:#f97316" onclick="_nbaNavGo(function(){_nbaBoardOpen('nbaStreaksPanel');})">&#128293; All Streaks</button>
+    <button type="button" role="menuitem" class="nba-menu-item" style="--c:#a855f7" onclick="_nbaNavGo(function(){_nbaBoardOpen('nbaMpaPanel');})">&#11088; All MPA Specials</button>
+    <button type="button" role="menuitem" class="nba-menu-item" style="--c:#22c55e" onclick="_nbaNavGo(function(){_nbaBoardOpen('nbaAllPicksPanel');})">&#127919; All Picks by Game</button>
+    <button type="button" role="menuitem" class="nba-menu-item" style="--c:#ea580c" onclick="_nbaNavGo(openNbaHotColdBoard)">&#128293; Hot / Cold Players</button>
     <div class="nba-menu-head" role="presentation">&#128202; Records</div>
     <button type="button" role="menuitem" class="nba-menu-item" style="--c:#4338ca" onclick="_nbaNavGo(function(){_nbaOvOpen('nba-track-section');})">&#128202; Track Record</button>
     <button type="button" role="menuitem" class="nba-menu-item" style="--c:#0e7490" onclick="_nbaNavGo(openNbaOverflowRecord)">&#11088; Overflow Record</button>
@@ -3494,7 +3504,6 @@ footer{text-align:center;padding:32px 24px;color:#4b5563;font-size:.78rem;border
     <button type="button" role="menuitem" class="nba-menu-item" style="--c:#14b8a6" onclick="_nbaNavGo(function(){openNbaSimRecord();})">&#127922; Sim Record</button>
     <button type="button" role="menuitem" class="nba-menu-item" style="--c:#2563eb" onclick="_nbaNavGo(function(){_nbaOvOpen('nba-historical-track');})">&#128218; Historical Track Record</button>
     <div class="nba-menu-head tools" role="presentation">&#128736;&#65039; Tools</div>
-    <button type="button" role="menuitem" class="nba-menu-item" style="--c:#ea580c" onclick="_nbaNavGo(openNbaHotColdBoard)">&#128293; Hot / Cold Board</button>
     <button type="button" role="menuitem" class="nba-menu-item" style="--c:#8b5cf6" onclick="_nbaNavGo(function(){openNbaGamePredictor();})">&#128302; Game Predictor</button>
     <button type="button" role="menuitem" class="nba-menu-item" style="--c:#14b8a6" onclick="_nbaNavGo(function(){openNbaGameSim();})">&#127922; 10K Game Simulator</button>
     <button type="button" role="menuitem" class="nba-menu-item admin-only" style="--c:#d97706" onclick="_nbaNavGo(function(){_nbaOvOpen('parlayCard');})">&#127920; Auto Parlay Builder</button>
@@ -3514,7 +3523,7 @@ document.addEventListener('click',function(e){var w=e.target.closest?e.target.cl
 document.addEventListener('keydown',function(e){if(e.key==='Escape'){_nbaNavClose();_nbaOvClose();}});
 // Records, Game Predictor, 10K Sim and Auto Parlay open in one closable overlay
 // from Records &amp; Tools; none of them sit on the page until chosen.
-var _NBA_OV_TITLES={'nba-hotcold-section':'&#128293; Hot / Cold Board','nba-mybets-card':'&#128176; My Bets','nba-track-section':'&#128202; Track Record','nba-overflow-track-section':'&#11088; Overflow Record','nba-hotcold-track-section':'&#128293; Hot / Cold Record','nba-dow-section':'&#128197; Day of Week Trends','nbaCoachTrackPanel':'&#129504; Coach Track Record','nbaGpRecordPanel':'&#128302; Game Predictor Record','nbaSimRecordPanel':'&#127922; Sim Record','nba-historical-track':'&#128218; Historical Track Record','nbaGpSection':'&#128302; Game Predictor','nbaSimSection':'&#127922; 10K Game Simulator','parlayCard':'&#127920; Auto Parlay Builder'};
+var _NBA_OV_TITLES={'nbaStreaksPanel':'&#128293; All Streaks','nbaMpaPanel':'&#11088; All MPA Specials','nbaAllPicksPanel':'&#127919; All Picks by Game','nba-hotcold-section':'&#128293; Hot / Cold Players','nba-mybets-card':'&#128176; My Bets','nba-track-section':'&#128202; Track Record','nba-overflow-track-section':'&#11088; Overflow Record','nba-hotcold-track-section':'&#128293; Hot / Cold Record','nba-dow-section':'&#128197; Day of Week Trends','nbaCoachTrackPanel':'&#129504; Coach Track Record','nbaGpRecordPanel':'&#128302; Game Predictor Record','nbaSimRecordPanel':'&#127922; Sim Record','nba-historical-track':'&#128218; Historical Track Record','nbaGpSection':'&#128302; Game Predictor','nbaSimSection':'&#127922; 10K Game Simulator','parlayCard':'&#127920; Auto Parlay Builder'};
 var _nbaRecHome={},_nbaRecPrev={};
 function _nbaRecHost(){
   var ov=document.getElementById('nbaRecOv');
@@ -3552,6 +3561,13 @@ function _nbaOvOpen(id){
   ov.classList.add('open');ov.scrollTop=0;
   document.body.classList.add('nba-rec-open');
   return el;
+}
+function _nbaBoardOpen(id){
+  var loaded=(typeof allPicksData!=='undefined'&&allPicksData&&allPicksData.length);
+  if(!loaded){alert('Load or run picks first - this board is built from the loaded picks.');return;}
+  if(!_nbaOvOpen(id))return;
+  var list={nbaStreaksPanel:['streakList','nbaStreaksHdr'],nbaMpaPanel:['mpaList','nbaMpaHdr']}[id];
+  if(list){var el=document.getElementById(list[0]),hd=document.getElementById(list[1]);if(el&&hd&&el.style.display==='none')toggleSig(list[0],hd);}
 }
 function _nbaOvClose(){
   _nbaRecReturn();
@@ -3614,21 +3630,22 @@ function _nbaOvClose(){
 <div id="content"></div>
 <div id="allPicksWrap" style="display:none">
   <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:18px" id="signalDropdowns">
-    <div style="background:#0e0e0e;border:1px solid #262626;border-radius:12px;overflow:hidden">
-      <div onclick="toggleSig('streakList',this)" style="display:flex;align-items:center;justify-content:space-between;padding:12px 16px;cursor:pointer;background:linear-gradient(135deg,rgba(249,115,22,.12),rgba(249,115,22,.02));border-bottom:1px solid #262626">
+    <div id="nbaStreaksPanel" style="display:none;background:#0e0e0e;border:1px solid #262626;border-radius:12px;overflow:hidden">
+      <div id="nbaStreaksHdr" onclick="toggleSig('streakList',this)" style="display:flex;align-items:center;justify-content:space-between;padding:12px 16px;cursor:pointer;background:linear-gradient(135deg,rgba(249,115,22,.12),rgba(249,115,22,.02));border-bottom:1px solid #262626">
         <div style="display:flex;align-items:center;gap:10px"><span style="font-size:1.1rem">🔥</span><span style="font-weight:900;color:#fb923c;letter-spacing:.05em">ALL STREAKS</span><span class="count-pill" id="streakCount">0</span></div>
         <span class="sig-chev" style="color:#666;transition:transform .2s">▼</span>
       </div>
       <div id="streakList" style="display:none;max-height:360px;overflow-y:auto"></div>
     </div>
-    <div style="background:#0e0e0e;border:1px solid #262626;border-radius:12px;overflow:hidden">
-      <div onclick="toggleSig('mpaList',this)" style="display:flex;align-items:center;justify-content:space-between;padding:12px 16px;cursor:pointer;background:linear-gradient(135deg,rgba(168,85,247,.12),rgba(168,85,247,.02));border-bottom:1px solid #262626">
+    <div id="nbaMpaPanel" style="display:none;background:#0e0e0e;border:1px solid #262626;border-radius:12px;overflow:hidden">
+      <div id="nbaMpaHdr" onclick="toggleSig('mpaList',this)" style="display:flex;align-items:center;justify-content:space-between;padding:12px 16px;cursor:pointer;background:linear-gradient(135deg,rgba(168,85,247,.12),rgba(168,85,247,.02));border-bottom:1px solid #262626">
         <div style="display:flex;align-items:center;gap:10px"><span style="font-size:1.1rem">⭐</span><span style="font-weight:900;color:#c084fc;letter-spacing:.05em">ALL MPA SPECIALS</span><span class="count-pill" id="mpaCount">0</span></div>
         <span class="sig-chev" style="color:#666;transition:transform .2s">▼</span>
       </div>
       <div id="mpaList" style="display:none;max-height:360px;overflow-y:auto"></div>
     </div>
   </div>
+  <div id="nbaAllPicksPanel" style="display:none">
   <div class="total-banner">
     <div class="tb-left">
       <div class="tb-ico">📋</div>
@@ -3659,6 +3676,7 @@ function _nbaOvClose(){
     </div>
   </div>
   <div id="allPicksSection"></div>
+  </div>
 </div>
 
 <style>
