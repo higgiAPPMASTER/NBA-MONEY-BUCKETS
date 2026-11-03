@@ -2533,10 +2533,71 @@ async def run_analysis(selected_date: str = None, force: bool = False) -> Dict:
     """Player-prop run. Counts active runs so the Game Predictor can stand aside."""
     global _NBA_RUNS_ACTIVE
     _NBA_RUNS_ACTIVE += 1
+    ok = False
     try:
-        return await _run_analysis_core(selected_date, force)
+        result = await _run_analysis_core(selected_date, force)
+        ok = isinstance(result, dict) and not result.get("error")
+        return result
     finally:
         _NBA_RUNS_ACTIVE -= 1
+        if ok:
+            try:
+                _schedule_nba_auto_games(selected_date or _nba_today().isoformat())
+            except Exception as _ae:
+                print(f"[nba_auto_games] schedule failed: {_ae}")
+
+
+# Game Predictor + 10K Sim run automatically ONCE per slate date after a
+# successful picks run, and save their pregame snapshots (records) even if
+# nobody opens them. They start only after the player-prop run has finished
+# and step aside again if another run begins, so they never compete with it.
+_NBA_AUTO_GAMES_DONE: set = set()
+_NBA_AUTO_GAMES_TASKS: Dict[str, Any] = {}
+
+
+def _schedule_nba_auto_games(ds: str) -> None:
+    if ds < _nba_today().isoformat() or ds in _NBA_AUTO_GAMES_DONE:
+        return
+    task = _NBA_AUTO_GAMES_TASKS.get(ds)
+    if task is not None and not task.done():
+        return
+    _NBA_AUTO_GAMES_TASKS[ds] = asyncio.get_event_loop().create_task(_nba_auto_games(ds))
+
+
+async def _nba_auto_games(ds: str) -> None:
+    for attempt in range(6):
+        waited = 0
+        while _NBA_RUNS_ACTIVE > 0 and waited < 1200:
+            await asyncio.sleep(10)
+            waited += 10
+        if _NBA_RUNS_ACTIVE > 0:
+            print(f"[nba_auto_games] {ds}: picks run still active, skipped")
+            return
+        await asyncio.sleep(5 if attempt == 0 else 60)
+        if _NBA_RUNS_ACTIVE > 0:
+            continue
+        try:
+            gp = await _nba_sim_gp_source(ds)
+        except _NbaGpRunBusy:
+            continue
+        except Exception as exc:
+            print(f"[nba_auto_games] {ds}: Game Predictor attempt {attempt + 1} failed: {exc}")
+            continue
+        games = (gp or {}).get("games") or []
+        if games:
+            try:
+                await asyncio.to_thread(_nba_gp_save_snapshot, ds, games)
+            except Exception as exc:
+                print(f"[nba_auto_games] {ds}: Game Predictor save failed: {exc}")
+            try:
+                sim = await asyncio.to_thread(_nba_sim_build, gp)
+                await asyncio.to_thread(_nba_sim_save_snapshot, ds, (sim or {}).get("games") or [])
+            except Exception as exc:
+                print(f"[nba_auto_games] {ds}: Sim failed: {exc}")
+        _NBA_AUTO_GAMES_DONE.add(ds)
+        print(f"[nba_auto_games] {ds}: Game Predictor + Sim done ({len(games)} games)")
+        return
+    print(f"[nba_auto_games] {ds}: gave up after 6 attempts")
 
 
 async def _run_analysis_core(selected_date: str = None, force: bool = False) -> Dict:
@@ -3257,7 +3318,17 @@ body.is-admin .nba-menu-item.admin-only{display:flex !important}
 .nba-menu-head{color:#fbbf24;font-size:.66rem;font-weight:900;letter-spacing:.14em;text-transform:uppercase;padding:8px 12px 5px;margin-top:2px;border-bottom:1px solid #263244}
 .nba-menu-head.tools{color:#7dd3fc;margin-top:8px;padding-top:10px;border-top:1px solid #263244}
 #parlayCard{display:none}
-body.is-admin #parlayCard{display:block}
+#nba-track-section,#nbaGpSection,#nbaSimSection,#nba-historical-track{display:none}
+#nbaRecOv{display:none;position:fixed;top:80px;left:0;right:0;bottom:0;z-index:99;overflow-y:auto;background:rgba(2,6,23,.97);padding:12px 12px 40px;box-sizing:border-box}
+#nbaRecOv.open{display:block}
+#nbaRecPanel{max-width:1100px;margin:0 auto;position:relative}
+#nbaRecSlot>*{margin-top:0 !important;margin-left:auto !important;margin-right:auto !important}
+#nbaRecSlot>#nbaCoachTrackPanel,#nbaRecSlot>.ngp-recpanel{border-top:0 !important;padding-top:0 !important}
+.nba-rec-bar{position:sticky;top:0;z-index:5;display:flex;justify-content:space-between;align-items:center;gap:10px;padding:4px 0 10px;background:rgba(2,6,23,.97)}
+.nba-rec-title{color:#f8fafc;font-weight:900;font-size:.95rem;letter-spacing:.02em}
+.nba-rec-close{background:#b91c1c;color:#fff;border:1px solid #ef4444;border-radius:9px;padding:8px 14px;font-size:.84rem;font-weight:900;cursor:pointer;box-shadow:0 4px 14px rgba(0,0,0,.45)}
+.nba-rec-close:hover,.nba-rec-close:focus{background:#dc2626;outline:none}
+body.nba-rec-open{overflow:hidden}
 #parlayLegs{background:#1a1a1a;color:#fff;border:1px solid #333;border-radius:8px;padding:8px 12px;font-size:.9rem;font-weight:700}
 .btn-force{background:#dc2626;color:#fff}
 .btn-force:hover{background:#ef4444;transform:translateY(-1px);box-shadow:0 4px 20px rgba(220,38,38,.35)}
@@ -3414,18 +3485,19 @@ footer{text-align:center;padding:32px 24px;color:#4b5563;font-size:.78rem;border
   <button type="button" class="nba-nav-btn" id="nbaNavMenuBtn" aria-haspopup="true" aria-expanded="false" onclick="_nbaNavToggle(event)">&#9776; Records &amp; Tools &#9662;</button>
   <div class="nba-menu-list" id="nbaNavMenu" role="menu">
     <div class="nba-menu-head" role="presentation">&#128202; Records</div>
-    <button type="button" role="menuitem" class="nba-menu-item" style="--c:#4338ca" onclick="_nbaNavGo(function(){document.getElementById('nba-track-section').scrollIntoView({behavior:'smooth',block:'start'});})">&#128202; Track Record</button>
+    <button type="button" role="menuitem" class="nba-menu-item" style="--c:#4338ca" onclick="_nbaNavGo(function(){_nbaOvOpen('nba-track-section');})">&#128202; Track Record</button>
     <button type="button" role="menuitem" class="nba-menu-item" style="--c:#0e7490" onclick="_nbaNavGo(openNbaOverflowRecord)">&#11088; Overflow Record</button>
     <button type="button" role="menuitem" class="nba-menu-item" style="--c:#ea580c" onclick="_nbaNavGo(openNbaHotColdRecord)">&#128293; Hot / Cold Record</button>
     <button type="button" role="menuitem" class="nba-menu-item" style="--c:#d97706" onclick="_nbaNavGo(openNbaDowReport)">&#128197; Day of Week Trends</button>
     <button type="button" role="menuitem" class="nba-menu-item" style="--c:#7c3aed" onclick="_nbaNavGo(function(){openNbaCoachTrack();})">&#129504; Coach Track Record</button>
     <button type="button" role="menuitem" class="nba-menu-item" style="--c:#8b5cf6" onclick="_nbaNavGo(function(){openNbaGpRecord();})">&#128302; Game Predictor Record</button>
     <button type="button" role="menuitem" class="nba-menu-item" style="--c:#14b8a6" onclick="_nbaNavGo(function(){openNbaSimRecord();})">&#127922; Sim Record</button>
+    <button type="button" role="menuitem" class="nba-menu-item" style="--c:#2563eb" onclick="_nbaNavGo(function(){_nbaOvOpen('nba-historical-track');})">&#128218; Historical Track Record</button>
     <div class="nba-menu-head tools" role="presentation">&#128736;&#65039; Tools</div>
     <button type="button" role="menuitem" class="nba-menu-item" style="--c:#ea580c" onclick="_nbaNavGo(openNbaHotColdBoard)">&#128293; Hot / Cold Board</button>
     <button type="button" role="menuitem" class="nba-menu-item" style="--c:#8b5cf6" onclick="_nbaNavGo(function(){openNbaGamePredictor();})">&#128302; Game Predictor</button>
     <button type="button" role="menuitem" class="nba-menu-item" style="--c:#14b8a6" onclick="_nbaNavGo(function(){openNbaGameSim();})">&#127922; 10K Game Simulator</button>
-    <button type="button" role="menuitem" class="nba-menu-item admin-only" style="--c:#d97706" onclick="_nbaNavGo(function(){var c=document.getElementById('parlayCard');if(c)c.scrollIntoView({behavior:'smooth',block:'center'});})">&#127920; Auto Parlay Builder</button>
+    <button type="button" role="menuitem" class="nba-menu-item admin-only" style="--c:#d97706" onclick="_nbaNavGo(function(){_nbaOvOpen('parlayCard');})">&#127920; Auto Parlay Builder</button>
     <button type="button" role="menuitem" class="nba-menu-item" style="--c:#a855f7" onclick="_nbaNavGo(function(){showNbaPerfectParlayBuilder();})">&#10024; Perfect Parlay</button>
     <button type="button" role="menuitem" class="nba-menu-item admin-only" style="--c:#0e7490" onclick="_nbaNavGo(function(){openNbaMyBets();})">&#128176; My Bets</button>
   </div>
@@ -3439,7 +3511,52 @@ function _nbaNavToggle(e){
 function _nbaNavClose(){var m=document.getElementById('nbaNavMenu'),b=document.getElementById('nbaNavMenuBtn');if(m)m.classList.remove('open');if(b)b.setAttribute('aria-expanded','false');}
 function _nbaNavGo(fn){_nbaNavClose();try{fn();}catch(err){console.error(err);}}
 document.addEventListener('click',function(e){var w=e.target.closest?e.target.closest('.nba-menu'):null;if(!w)_nbaNavClose();});
-document.addEventListener('keydown',function(e){if(e.key==='Escape')_nbaNavClose();});
+document.addEventListener('keydown',function(e){if(e.key==='Escape'){_nbaNavClose();_nbaOvClose();}});
+// Records, Game Predictor, 10K Sim and Auto Parlay open in one closable overlay
+// from Records &amp; Tools; none of them sit on the page until chosen.
+var _NBA_OV_TITLES={'nba-track-section':'&#128202; Track Record','nba-overflow-track-section':'&#11088; Overflow Record','nba-hotcold-track-section':'&#128293; Hot / Cold Record','nba-dow-section':'&#128197; Day of Week Trends','nbaCoachTrackPanel':'&#129504; Coach Track Record','nbaGpRecordPanel':'&#128302; Game Predictor Record','nbaSimRecordPanel':'&#127922; Sim Record','nba-historical-track':'&#128218; Historical Track Record','nbaGpSection':'&#128302; Game Predictor','nbaSimSection':'&#127922; 10K Game Simulator','parlayCard':'&#127920; Auto Parlay Builder'};
+var _nbaRecHome={};
+function _nbaRecHost(){
+  var ov=document.getElementById('nbaRecOv');
+  if(!ov){
+    ov=document.createElement('div');ov.id='nbaRecOv';
+    ov.setAttribute('role','dialog');ov.setAttribute('aria-modal','true');
+    ov.innerHTML='<div id="nbaRecPanel"><div class="nba-rec-bar"><span class="nba-rec-title" id="nbaRecTitle"></span><button type="button" class="nba-rec-close" onclick="_nbaOvClose()" aria-label="Close">&#10005; Close</button></div><div id="nbaRecSlot"></div></div>';
+    ov.addEventListener('click',function(e){if(e.target===ov)_nbaOvClose();});
+    document.body.appendChild(ov);
+  }
+  return ov;
+}
+function _nbaRecReturn(){
+  var slot=document.getElementById('nbaRecSlot');if(!slot)return;
+  Array.prototype.slice.call(slot.children).forEach(function(el){
+    var mark=_nbaRecHome[el.id];
+    if(mark&&mark.parentNode)mark.parentNode.insertBefore(el,mark.nextSibling);
+    el.style.display='none';
+  });
+}
+function _nbaOvOpen(id){
+  var el=document.getElementById(id);if(!el)return null;
+  var ov=_nbaRecHost(),slot=document.getElementById('nbaRecSlot');
+  if(el.parentNode!==slot){
+    _nbaRecReturn();
+    if(!_nbaRecHome[id]&&el.parentNode){
+      var mark=document.createComment('nba-overlay-home');
+      el.parentNode.insertBefore(mark,el);_nbaRecHome[id]=mark;
+    }
+    slot.appendChild(el);
+  }
+  el.style.display='block';
+  var t=document.getElementById('nbaRecTitle');if(t)t.innerHTML=_NBA_OV_TITLES[id]||'';
+  ov.classList.add('open');ov.scrollTop=0;
+  document.body.classList.add('nba-rec-open');
+  return el;
+}
+function _nbaOvClose(){
+  _nbaRecReturn();
+  var ov=document.getElementById('nbaRecOv');if(ov)ov.classList.remove('open');
+  document.body.classList.remove('nba-rec-open');
+}
 </script></nav>
 <div class="page">
 <div class="app-hdr">
@@ -3701,7 +3818,7 @@ document.addEventListener('keydown',function(e){if(e.key==='Escape')_nbaNavClose
     <div class="nba-record-hero">
       <div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start;flex-wrap:wrap">
         <div><div class="nba-record-kicker" style="color:#22d3ee">NBA Performance Center · Overflow</div><h2 class="nba-record-title">Overflow Track Record</h2><div class="nba-record-sub">Future captures: every qualifying standard-line play ranked 11+ within its market and OVER/UNDER side. Earlier dates show only their originally saved overflow rows. Main, Coach and preseason results stay separate.</div></div>
-        <button class="nba-view-btn" onclick="document.getElementById('nba-overflow-track-section').style.display='none'">Close</button>
+        <button class="nba-view-btn" onclick="_nbaOvClose()">Close</button>
       </div>
       <div class="nba-record-tools">
         <label><span class="nba-record-label">Slate date</span><select id="nbaOvfDateSelect" class="nba-record-control" onchange="renderNbaTrackDay('overflow')"><option value="">No saved dates</option></select></label><label><span class="nba-record-label">Period</span><select id="nbaOvfPeriod" class="nba-record-control" onchange="renderNbaTrackDay('overflow')"><option value="day">Day</option><option value="week">Week · last 7 days</option><option value="month">Month</option><option value="all">All Time</option></select></label>
@@ -3719,7 +3836,7 @@ document.addEventListener('keydown',function(e){if(e.key==='Escape')_nbaNavClose
     <div class="nba-record-hero">
       <div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start;flex-wrap:wrap">
         <div><div class="nba-record-kicker" style="color:#f97316">NBA Performance Center · Hot / Cold</div><h2 class="nba-record-title">&#128293; Hot / Cold Track Record</h2><div class="nba-record-sub">Saved pre-tip Hot (OVER), Cold (UNDER) and Double Cold (UNDER) plays for every market: Top 10 per form and market, plus ranks 11-20 as Hot / Cold Overflow. Kept separate from the Main, Overflow and Coach totals. Hit rate counts every decided play; P/L counts only plays with a genuine saved price.</div></div>
-        <button class="nba-view-btn" onclick="document.getElementById('nba-hotcold-track-section').style.display='none'">Close</button>
+        <button class="nba-view-btn" onclick="_nbaOvClose()">Close</button>
       </div>
       <div class="nba-record-tools">
         <label><span class="nba-record-label">Slate date</span><select id="nbaHcDateSelect" class="nba-record-control" onchange="renderNbaTrackDay('hotcold')"><option value="">No saved dates</option></select></label><label><span class="nba-record-label">Period</span><select id="nbaHcPeriod" class="nba-record-control" onchange="renderNbaTrackDay('hotcold')"><option value="day">Day</option><option value="week">Week · last 7 days</option><option value="month">Month</option><option value="all">All Time</option></select></label>
@@ -3754,7 +3871,7 @@ document.addEventListener('keydown',function(e){if(e.key==='Escape')_nbaNavClose
     <div class="nba-record-hero">
       <div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start;flex-wrap:wrap">
         <div><div class="nba-record-kicker" style="color:#f59e0b">NBA Performance Center · Day of Week</div><h2 class="nba-record-title">&#128197; Day of Week Trends · By Day / Category</h2><div class="nba-record-sub">Win %, record, money (P/L) and ROI for every category, Overs and Unders, by day of the week — same layout as the NHL By Day / Category report. Built from saved Main, Overflow, Edge Coach and Hot / Cold Track Record picks only (ungraded picks show as pending) (Edge Coach is kept separate and shows each Coach category). It never changes picks or starts grading. Hit rate counts every decided pick; P/L counts only picks with genuine saved odds.</div></div>
-        <button class="nba-view-btn" onclick="document.getElementById('nba-dow-section').style.display='none'">Close</button>
+        <button class="nba-view-btn" onclick="_nbaOvClose()">Close</button>
       </div>
       <div class="nba-record-tools">
         <div class="nba-view-tabs" style="margin-left:0"><button id="nbaDowLaneAll" class="nba-view-btn active" onclick="_nbaDowSetLane('all')">Main + Overflow</button><button id="nbaDowLaneMain" class="nba-view-btn" onclick="_nbaDowSetLane('main')">Main</button><button id="nbaDowLaneOvf" class="nba-view-btn" onclick="_nbaDowSetLane('overflow')">Overflow</button><button id="nbaDowLaneCoach" class="nba-view-btn" onclick="_nbaDowSetLane('coach')">Edge Coach</button><button id="nbaDowLaneHc" class="nba-view-btn" onclick="_nbaDowSetLane('hotcold')">Hot / Cold</button></div>
@@ -3938,8 +4055,7 @@ window.loadNbaDowReport=function(force){
   });
 };
 window.openNbaDowReport=function(){
-  var s=$('nba-dow-section');if(!s)return;s.style.display='block';
-  s.scrollIntoView({behavior:'smooth',block:'start'});
+  var s=_nbaOvOpen('nba-dow-section');if(!s)return;
   window.loadNbaDowReport(true);
 };
 function csvCell(v){var t=String(v==null?'':v);if(/^[=+@-]/.test(t)&&isNaN(Number(t)))t="'"+t;return '"'+t.split('"').join('""')+'"';}
@@ -5235,9 +5351,7 @@ var _nbaHcData=null;
 var _nbaHcView='category';
 function _nbaRecPrefix(record){return record==='overflow'?'nbaOvf':(record==='hotcold'?'nbaHc':'nbaTrk');}
 function openNbaHotColdRecord(){
-  var section=document.getElementById('nba-hotcold-track-section');
-  section.style.display='block';
-  section.scrollIntoView({behavior:'smooth',block:'start'});
+  var section=_nbaOvOpen('nba-hotcold-track-section');if(!section)return;
   if(_nbaHcData===null)loadNbaTrackRecord('hotcold');
 }
 function openNbaHotColdBoard(){
@@ -5246,9 +5360,7 @@ function openNbaHotColdBoard(){
   alert('Load or run picks first - the Hot / Cold board is built with each live run.');
 }
 function openNbaOverflowRecord(){
-  var section=document.getElementById('nba-overflow-track-section');
-  section.style.display='block';
-  section.scrollIntoView({behavior:'smooth',block:'start'});
+  var section=_nbaOvOpen('nba-overflow-track-section');if(!section)return;
   if(_nbaOvfData===null)loadNbaTrackRecord('overflow');
 }
 function setNbaTrkView(view,record){
@@ -5632,7 +5744,7 @@ NBA_COACH_HTML = r"""
     <div class="nba-record-hero" style="background:radial-gradient(circle at 92% 10%,rgba(124,58,237,.2),transparent 38%),linear-gradient(145deg,#111827,#080d19)">
       <div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start;flex-wrap:wrap">
         <div><div class="nba-record-kicker" style="color:#c4b5fd">Edge Coach Analytics</div><h3 class="nba-record-title">&#129504; Coach Track Record</h3><div class="nba-record-sub">Official pre-tip Coach snapshots and isolated historical Coach replay results.</div></div>
-        <button class="nba-view-btn" onclick="document.getElementById('nbaCoachTrackPanel').style.display='none'">Close</button>
+        <button class="nba-view-btn" onclick="_nbaOvClose()">Close</button>
       </div>
       <div class="nba-record-tools">
         <label><span class="nba-record-label">Record source</span><select id="nbaCoachTrkSource" class="nba-record-control"><option value="official">Official Coach</option><option value="historical">Historical Edge Coach</option></select></label>
@@ -6056,9 +6168,7 @@ async function nbaCoachSearch(forceMode,presetQuery){
    }finally{if(timer)clearTimeout(timer);}
 }
 function openNbaCoachTrack(){
- var panel=document.getElementById('nbaCoachTrackPanel');if(!panel)return;
- panel.style.display='block';
- panel.scrollIntoView({behavior:'smooth',block:'start'});
+ var panel=_nbaOvOpen('nbaCoachTrackPanel');if(!panel)return;
  loadNbaCoachTrackRecord();
 }
 function nbaCoachDetail(i){
@@ -6723,7 +6833,7 @@ function _ngpRenderRecord(){
   var p=document.getElementById('nbaGpRecordPanel'),d=__nbaGp.record;if(!p)return;
   if(!d){p.innerHTML='<div class="ngp-note">Loading record…</div>';return;}
   var days=(d.days||[]);
-  var html='<div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><div style="color:#fff;font-weight:900;font-size:1rem">&#128200; Game Predictor Record</div><button type="button" class="ngp-btn" onclick="document.getElementById(&#39;nbaGpRecordPanel&#39;).style.display=&#39;none&#39;">Close</button></div>'
+  var html='<div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><div style="color:#fff;font-weight:900;font-size:1rem">&#128200; Game Predictor Record</div><button type="button" class="ngp-btn" onclick="_nbaOvClose()">Close</button></div>'
     +'<div class="ngp-note">Saved pregame forecasts only, graded after the final. Winner P/L uses the saved moneyline; ATS and O/U use the saved price (or -110 when no price was posted). $'+d.stake+' per pick.</div>';
   if(!days.length)html+='<div class="ngp-note" style="font-size:.74rem">No saved forecasts yet. The first forecasts are saved the first time the predictor loads before tip-off.</div>';
   html+=days.map(function(day){
@@ -6740,17 +6850,16 @@ function _ngpRenderRecord(){
   p.innerHTML=html;
 }
 function openNbaGpRecord(){
-  var s=document.getElementById('nbaGpSection'),p=document.getElementById('nbaGpRecordPanel');
-  if(!p)return;p.style.display='block';_ngpRenderRecord();if(!__nbaGp.record)nbaGpLoadRecordStrip();
-  p.scrollIntoView({behavior:'smooth',block:'start'});
+  var p=_nbaOvOpen('nbaGpRecordPanel');
+  if(!p)return;_ngpRenderRecord();if(!__nbaGp.record)nbaGpLoadRecordStrip();
 }
-function openNbaGamePredictor(){var s=document.getElementById('nbaGpSection');if(s)s.scrollIntoView({behavior:'smooth',block:'start'});nbaGpLoad(false);}
+function openNbaGamePredictor(){if(!_nbaOvOpen('nbaGpSection'))return;nbaGpLoad(false);}
 function _ngpIdle(){
   var msg=document.getElementById('nbaGpMsg'),grid=document.getElementById('nbaGpGrid'),lb=document.getElementById('nbaGpLoadBtn');
   __nbaGp.data=null;__nbaGp.date='';
   if(grid)grid.innerHTML='';
   if(lb)lb.innerHTML='&#128302; Load predictions';
-  if(msg)msg.innerHTML='<span style="color:#94a3b8">Predictions load only when you ask, so they never slow down a player-prop run. Click <b style="color:#c4b5fd">Load predictions</b> for '+_ngpEsc(_ngpDate())+'.</span>';
+  if(msg)msg.innerHTML='<span style="color:#94a3b8">Predictions run automatically once after the daily picks run finishes and are saved to the Predictor Record. Click <b style="color:#c4b5fd">Load predictions</b> to view '+_ngpEsc(_ngpDate())+'.</span>';
 }
 (function(){
   function init(){var dp=document.getElementById('datePicker');if(dp)dp.addEventListener('change',function(){if(!__nbaGp.loading)_ngpIdle();});_ngpIdle();}
@@ -6924,7 +7033,7 @@ function _nsmRenderRecord(){
   var days=(d.days||[]).filter(function(x){return _nsmInPeriod(x.date);});
   var agg=_nsmTotals(days),t=agg.tot;
   var per=['day','week','month','all'].map(function(k){return '<button type="button" class="'+(__nbaSim.period===k?'on':'')+'" onclick="nbaSimSetPeriod(&#39;'+k+'&#39;)">'+({day:'Today',week:'Week',month:'Month',all:'All time'})[k]+'</button>';}).join('');
-  var html='<div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><div style="color:#fff;font-weight:900;font-size:1rem">&#128200; Sim Record</div><button type="button" class="ngp-btn" onclick="document.getElementById(&#39;nbaSimRecordPanel&#39;).style.display=&#39;none&#39;">Close</button></div>'
+  var html='<div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><div style="color:#fff;font-weight:900;font-size:1rem">&#128200; Sim Record</div><button type="button" class="ngp-btn" onclick="_nbaOvClose()">Close</button></div>'
     +'<div class="nsm-filters">'+per+'<span style="color:#94a3b8;font-size:.64rem;margin-left:6px">Stake $</span><input type="number" min="1" value="'+__nbaSim.stake+'" onchange="nbaSimSetStake(this.value)"></div>';
   var sum='<table class="ngp-tbl"><thead><tr><th>Market</th><th>W-L-P</th><th>Win %</th><th>P/L</th><th>ROI</th><th>Pending</th></tr></thead><tbody>';
   [['winner','Winner'],['ats','Spread'],['ou','Total']].forEach(function(m){var b=t[m[0]],l=_nsmLine(b);sum+='<tr><td><b>'+m[1]+'</b></td><td>'+l.rec+'</td><td>'+l.pct+'</td><td>'+l.pl+'</td><td>'+l.roi+'</td><td>'+b.pending+'</td></tr>';});
@@ -6954,15 +7063,14 @@ function _nsmRenderRecord(){
   p.innerHTML=html;
 }
 function openNbaSimRecord(){
-  var p=document.getElementById('nbaSimRecordPanel');if(!p)return;
-  p.style.display='block';_nsmRenderRecord();if(!__nbaSim.record)nbaSimLoadRecord();
-  p.scrollIntoView({behavior:'smooth',block:'start'});
+  var p=_nbaOvOpen('nbaSimRecordPanel');if(!p)return;
+  _nsmRenderRecord();if(!__nbaSim.record)nbaSimLoadRecord();
 }
-function openNbaGameSim(){var s=document.getElementById('nbaSimSection');if(s)s.scrollIntoView({behavior:'smooth',block:'start'});}
+function openNbaGameSim(){if(!_nbaOvOpen('nbaSimSection'))return;if(!__nbaSim.data&&!__nbaSim.loading)nbaSimRun();}
 function _nsmIdle(){
   var msg=document.getElementById('nbaSimMsg'),grid=document.getElementById('nbaSimGrid');
   __nbaSim.data=null;if(grid)grid.innerHTML='';
-  if(msg)msg.innerHTML='<span style="color:#94a3b8">Sims run only when you ask, so they never slow down a player-prop run. Click <b style="color:#5eead4">Run Sims</b> for '+_ngpEsc(_ngpDate())+'.</span>';
+  if(msg)msg.innerHTML='<span style="color:#94a3b8">Sims run automatically once after the daily picks run finishes and are saved to the Sim Record. Click <b style="color:#5eead4">Run Sims</b> to view '+_ngpEsc(_ngpDate())+'.</span>';
 }
 (function(){
   function init(){var dp=document.getElementById('datePicker');if(dp)dp.addEventListener('change',function(){if(!__nbaSim.loading)_nsmIdle();});_nsmIdle();}
