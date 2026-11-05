@@ -5724,7 +5724,7 @@ NBA_COACH_HTML = r"""
   <div class="ncx-tabs" role="tablist">
     <button type="button" class="ncx-tab active" data-ncx-tab="top" onclick="_ncxTab('top')">&#11088; Top Picks <span>4</span></button>
     <button type="button" class="ncx-tab" data-ncx-tab="props" onclick="_ncxTab('props')">&#127936; Player Props <span>10</span></button>
-    <button type="button" class="ncx-tab" data-ncx-tab="form" onclick="_ncxTab('form')">&#128293; Hot / Cold <span>3</span></button>
+    <button type="button" class="ncx-tab" data-ncx-tab="form" onclick="_ncxTab('form')">&#128293; Hot / Cold <span>33</span></button>
   </div>
   <div class="ncx-panels">
     <div class="ncx-grid" data-ncx-panel="top">
@@ -5737,6 +5737,18 @@ NBA_COACH_HTML = r"""
       <button type="button" class="nba-coach-preset ncx-preset" style="--c:#f97316" onclick="nbaCoachPreset('hot')"><b class="ncx-t">&#128293; Hot · Top 10</b><small>OVER in 80%+ of last 5 · avg over the line</small></button>
       <button type="button" class="nba-coach-preset ncx-preset" style="--c:#38bdf8" onclick="nbaCoachPreset('cold')"><b class="ncx-t">&#129482; Cold · Top 10</b><small>UNDER in 80%+ of last 5 · avg under the line</small></button>
       <button type="button" class="nba-coach-preset ncx-preset" style="--c:#818cf8" onclick="nbaCoachPreset('double_cold')"><b class="ncx-t">&#10052;&#65039; Double Cold · Top 10</b><small>Cold + 70%+ Under in 3+ meetings vs opponent</small></button>
+    </div>
+    <div class="ncx-grid ncx-mk-grid" data-ncx-panel="form" hidden>
+        <div class="ncx-mk"><div class="ncx-mk-t">Points</div><div class="ncx-mk-b"><button type="button" class="nba-coach-preset ncx-ov" onclick="nbaCoachPreset('hot|PTS')">&#128293; Hot</button><button type="button" class="nba-coach-preset ncx-un" onclick="nbaCoachPreset('cold|PTS')">&#129482; Cold</button><button type="button" class="nba-coach-preset ncx-un" onclick="nbaCoachPreset('double_cold|PTS')">&#10052;&#65039; Double Cold</button></div></div>
+        <div class="ncx-mk"><div class="ncx-mk-t">Rebounds</div><div class="ncx-mk-b"><button type="button" class="nba-coach-preset ncx-ov" onclick="nbaCoachPreset('hot|REB')">&#128293; Hot</button><button type="button" class="nba-coach-preset ncx-un" onclick="nbaCoachPreset('cold|REB')">&#129482; Cold</button><button type="button" class="nba-coach-preset ncx-un" onclick="nbaCoachPreset('double_cold|REB')">&#10052;&#65039; Double Cold</button></div></div>
+        <div class="ncx-mk"><div class="ncx-mk-t">Assists</div><div class="ncx-mk-b"><button type="button" class="nba-coach-preset ncx-ov" onclick="nbaCoachPreset('hot|AST')">&#128293; Hot</button><button type="button" class="nba-coach-preset ncx-un" onclick="nbaCoachPreset('cold|AST')">&#129482; Cold</button><button type="button" class="nba-coach-preset ncx-un" onclick="nbaCoachPreset('double_cold|AST')">&#10052;&#65039; Double Cold</button></div></div>
+        <div class="ncx-mk"><div class="ncx-mk-t">3-Pointers</div><div class="ncx-mk-b"><button type="button" class="nba-coach-preset ncx-ov" onclick="nbaCoachPreset('hot|FG3M')">&#128293; Hot</button><button type="button" class="nba-coach-preset ncx-un" onclick="nbaCoachPreset('cold|FG3M')">&#129482; Cold</button><button type="button" class="nba-coach-preset ncx-un" onclick="nbaCoachPreset('double_cold|FG3M')">&#10052;&#65039; Double Cold</button></div></div>
+        <div class="ncx-mk"><div class="ncx-mk-t">PRA</div><div class="ncx-mk-b"><button type="button" class="nba-coach-preset ncx-ov" onclick="nbaCoachPreset('hot|PRA')">&#128293; Hot</button><button type="button" class="nba-coach-preset ncx-un" onclick="nbaCoachPreset('cold|PRA')">&#129482; Cold</button><button type="button" class="nba-coach-preset ncx-un" onclick="nbaCoachPreset('double_cold|PRA')">&#10052;&#65039; Double Cold</button></div></div>
+        <div class="ncx-mk"><div class="ncx-mk-t">Pts+Reb</div><div class="ncx-mk-b"><button type="button" class="nba-coach-preset ncx-ov" onclick="nbaCoachPreset('hot|PTS_REB')">&#128293; Hot</button><button type="button" class="nba-coach-preset ncx-un" onclick="nbaCoachPreset('cold|PTS_REB')">&#129482; Cold</button><button type="button" class="nba-coach-preset ncx-un" onclick="nbaCoachPreset('double_cold|PTS_REB')">&#10052;&#65039; Double Cold</button></div></div>
+        <div class="ncx-mk"><div class="ncx-mk-t">Pts+Ast</div><div class="ncx-mk-b"><button type="button" class="nba-coach-preset ncx-ov" onclick="nbaCoachPreset('hot|PTS_AST')">&#128293; Hot</button><button type="button" class="nba-coach-preset ncx-un" onclick="nbaCoachPreset('cold|PTS_AST')">&#129482; Cold</button><button type="button" class="nba-coach-preset ncx-un" onclick="nbaCoachPreset('double_cold|PTS_AST')">&#10052;&#65039; Double Cold</button></div></div>
+        <div class="ncx-mk"><div class="ncx-mk-t">Reb+Ast</div><div class="ncx-mk-b"><button type="button" class="nba-coach-preset ncx-ov" onclick="nbaCoachPreset('hot|REB_AST')">&#128293; Hot</button><button type="button" class="nba-coach-preset ncx-un" onclick="nbaCoachPreset('cold|REB_AST')">&#129482; Cold</button><button type="button" class="nba-coach-preset ncx-un" onclick="nbaCoachPreset('double_cold|REB_AST')">&#10052;&#65039; Double Cold</button></div></div>
+        <div class="ncx-mk"><div class="ncx-mk-t">Blocks</div><div class="ncx-mk-b"><button type="button" class="nba-coach-preset ncx-ov" onclick="nbaCoachPreset('hot|BLK')">&#128293; Hot</button><button type="button" class="nba-coach-preset ncx-un" onclick="nbaCoachPreset('cold|BLK')">&#129482; Cold</button><button type="button" class="nba-coach-preset ncx-un" onclick="nbaCoachPreset('double_cold|BLK')">&#10052;&#65039; Double Cold</button></div></div>
+        <div class="ncx-mk"><div class="ncx-mk-t">Steals</div><div class="ncx-mk-b"><button type="button" class="nba-coach-preset ncx-ov" onclick="nbaCoachPreset('hot|STL')">&#128293; Hot</button><button type="button" class="nba-coach-preset ncx-un" onclick="nbaCoachPreset('cold|STL')">&#129482; Cold</button><button type="button" class="nba-coach-preset ncx-un" onclick="nbaCoachPreset('double_cold|STL')">&#10052;&#65039; Double Cold</button></div></div>
     </div>
     <div class="ncx-grid ncx-mk-grid" data-ncx-panel="props" hidden>
         <div class="ncx-mk"><div class="ncx-mk-t">Points</div><div class="ncx-mk-b"><button type="button" class="nba-coach-preset ncx-ov" onclick="nbaCoachPreset('points over')">Over · Top 10</button><button type="button" class="nba-coach-preset ncx-un" onclick="nbaCoachPreset('points under')">Under · Top 10</button></div></div>
@@ -5767,7 +5779,8 @@ NBA_COACH_HTML = r"""
       </div>
       <div class="nba-record-tools">
         <label><span class="nba-record-label">Record source</span><select id="nbaCoachTrkSource" class="nba-record-control"><option value="official">Official Coach</option><option value="historical">Historical Edge Coach</option></select></label>
-        <label><span class="nba-record-label">Record date</span><input type="date" id="nbaCoachTrkDate" class="nba-record-control" value="__TODAY__"></label>
+        <label><span class="nba-record-label">Record date (blank = all dates)</span><input type="date" id="nbaCoachTrkDate" class="nba-record-control" value="" onchange="renderNbaCoachTrackRecord()"></label>
+        <button class="nba-view-btn" onclick="var d=document.getElementById('nbaCoachTrkDate');if(d)d.value='';renderNbaCoachTrackRecord()">All dates</button>
         <label><span class="nba-record-label">Flat bet amount</span><input type="number" id="nbaCoachTrkStake" class="nba-record-control" value="100.00" min="1" step="5" style="width:110px" oninput="renderNbaCoachTrackRecord()"></label>
         <button class="nba-view-btn active" onclick="loadNbaCoachTrackRecord()">Get Results</button>
         <div class="nba-view-tabs"><button id="nbaCoachCatBtn" class="nba-view-btn active" onclick="setNbaCoachTrackView('category')">By Category</button><button id="nbaCoachFullBtn" class="nba-view-btn" onclick="setNbaCoachTrackView('full')">Full List</button></div>
@@ -5850,9 +5863,18 @@ function nbaCoachPreset(q){
    'steals over':'What are the Top 10 Steals OVER plays?',
    'steals under':'What are the Top 10 Steals UNDER plays?'
  };
+ var formModes={hot:1,cold:1,double_cold:1};
+ window.__nbaCoachStat='';
+ var fm=String(q).split('|');
+ if(fm.length===2&&formModes[fm[0]]){
+  var mkLbl={PTS:'Points',REB:'Rebounds',AST:'Assists',FG3M:'3-Pointers',PRA:'Pts+Reb+Ast',PTS_REB:'Pts+Reb',PTS_AST:'Pts+Ast',REB_AST:'Reb+Ast',BLK:'Blocks',STL:'Steals'}[fm[1]]||fm[1];
+  var fLbl={hot:'Hot',cold:'Cold',double_cold:'Double Cold'}[fm[0]];
+  window.__nbaCoachStat=fm[1];
+  labels[q]='What are the '+fLbl+' '+mkLbl+' NBA plays? — Top 10';
+  q=fm[0];labels[q]=labels[fm.join('|')];
+ }
  var input=document.getElementById('nbaCoachQuery');
  if(input)input.value=labels[q]||q;
- var formModes={hot:1,cold:1,double_cold:1};
  nbaCoachSearch(formModes[q]?q:(q==='alternate_minus'?'alternate_minus':(q==='alternate_plus'?'alternate_plus':(q==='safest'?'safest':'all'))),labels[q]||q);
 }
 function _nbaPerfectParlayCommit(html){
@@ -6152,7 +6174,7 @@ async function nbaCoachSearch(forceMode,presetQuery){
    var controller=window.AbortController?new AbortController():null;
    var timer=controller?setTimeout(function(){controller.abort();},40000):null;
    try{
-     var r=await fetch('/api/nba/coach-edge?_tok='+encodeURIComponent(tok),{method:'POST',headers:{'Content-Type':'application/json'},signal:controller?controller.signal:undefined,body:JSON.stringify({date:ds,query:q,mode:mode,count:10})});
+     var r=await fetch('/api/nba/coach-edge?_tok='+encodeURIComponent(tok),{method:'POST',headers:{'Content-Type':'application/json'},signal:controller?controller.signal:undefined,body:JSON.stringify({date:ds,query:q,mode:mode,count:10,stat:(forceMode&&/^(hot|cold|double_cold)$/.test(forceMode))?(window.__nbaCoachStat||''):''})});
     var d=await r.json(); if(!r.ok) throw new Error(d.detail||'Coach Edge unavailable');
     __nbaCoachRows=(d.results||[]).slice(0,10); msg.textContent='';
     var questionHtml='<div class="nba-coach-question">'+_nbaEsc(question)+'</div>';
@@ -6299,7 +6321,10 @@ async function loadNbaCoachTrackRecord(){
   try{
     var tok=localStorage.getItem('__mpa_token')||'';
     var source=(document.getElementById('nbaCoachTrkSource')||{}).value||'official';
-    var ds=(document.getElementById('nbaCoachTrkDate')||{}).value||'';
+    var dEl=document.getElementById('nbaCoachTrkDate');
+    if(source==='historical'&&dEl&&!dEl.value)dEl.value='__TODAY__';
+    var ds=(dEl||{}).value||'';
+    if(msg&&source!=='historical')msg.textContent='Loading Coach Track Record (filling any missing saved dates and grading)…';
     var r=await fetch('/api/nba/coach-track-record?_tok='+encodeURIComponent(tok)+'&source='+encodeURIComponent(source)+'&date_str='+encodeURIComponent(ds));
     var d=await r.json(); if(!r.ok) throw new Error(d.detail||'Track Record unavailable');
     _nbaCoachTrackData=d;
@@ -7454,8 +7479,14 @@ _NBA_COACH_FORM_PRESETS = (
     ("Cold Top 10", "cold"),
     ("Double Cold Top 10", "double_cold"),
 )
+# Same form x market boards as the Hot / Cold section (e.g. "Hot Points").
+_NBA_COACH_FORM_MARKET_PRESETS = tuple(
+    (f"{form_label} {cfg['label']}", form_key, stat_key)
+    for form_key, form_label, _side in (("hot", "Hot", "OVER"), ("cold", "Cold", "UNDER"),
+                                        ("double_cold", "Double Cold", "UNDER"))
+    for stat_key, cfg in STAT_CONFIG.items())
 
-def _nba_coach_form_rows(hot_cold, form_key, query="", count=10):
+def _nba_coach_form_rows(hot_cold, form_key, query="", count=10, stat=None):
     """Hot / Cold / Double Cold Coach presets: the section's own Top 10 rows,
     genuine side prices only, no edge gate, ranked by form strength, one play
     per player (strongest qualifying market)."""
@@ -7464,6 +7495,8 @@ def _nba_coach_form_rows(hot_cold, form_key, query="", count=10):
     cat_terms.update({v["label"].lower(): k for k, v in STAT_CONFIG.items()})
     wanted_cat = next((v for k, v in sorted(cat_terms.items(), key=lambda kv: -len(kv[0]))
                        if k in q), None)
+    if stat in STAT_CONFIG:
+        wanted_cat = stat
     pool = []
     for r in hot_cold or []:
         if r.get("form_key") != form_key or r.get("is_overflow"):
@@ -7492,6 +7525,7 @@ def _nba_coach_form_rows(hot_cold, form_key, query="", count=10):
             "recent_average": r.get("recent_avg"),
             "game_log": [g.get("v") for g in (r.get("recent_games") or [])],
             "opponent_history": ",".join(str(g.get("v")) for g in (r.get("opp_games") or [])) or "—",
+            "tipoff": r.get("tipoff") or "", "opp": r.get("opp") or "",
             "alternate": False, "_rank": r.get("rank") or 999,
             "_rate": (r.get("recent_hits") or 0) / max(1, r.get("recent_total") or 1),
             "_supports": bool(r.get("matchup_supports")),
@@ -7530,9 +7564,12 @@ async def nba_coach_edge(request: Request):
         if not isinstance(board.get("hot_cold"), list):
             return {"date": ds, "results": [],
                     "message": "This saved run predates the Hot / Cold section. Run picks again to build it."}
+        stat = str(body.get("stat") or "").upper() or None
         rows = _nba_coach_form_rows(board.get("hot_cold"), mode, str(body.get("query", "")),
-                                    min(10, int(body.get("count", 10) or 10)))
+                                    min(10, int(body.get("count", 10) or 10)), stat)
         label = {"hot": "Hot", "cold": "Cold", "double_cold": "Double Cold"}[mode]
+        if stat in STAT_CONFIG:
+            label += " " + STAT_CONFIG[stat]["label"]
         if not rows:
             return {"date": ds, "results": [],
                     "message": f"No {label} play has a genuine sportsbook price on this board."}
@@ -7675,6 +7712,8 @@ _NBA_COACH_PRESETS = (
     ("Best + Alternate Plays", "best plus alternate plays", "alternate_plus"),
 )
 _NBA_COACH_STAKE = 20.0
+_NBA_COACH_CAPTURE_LOCK = _nba_th.Lock()
+_NBA_COACH_GRADE_LOCK = _nba_th.Lock()
 
 def _nba_coach_snapshot_row(date_str):
     rows = _nba_sb_get({"app":f"eq.{_NBA_COACH_APP}",
@@ -7696,35 +7735,26 @@ def _nba_coach_tipoff_freeze(result):
     return min(tips) if tips else None
 
 def _nba_coach_complete_pregame(date_str, result):
-    """Reject partial/error boards and any run after the slate has started."""
+    """Complete official live board; the tipoff check is applied per game."""
     if not isinstance(result, dict) or result.get("date") != date_str:
         return False
-    if not _nba_official_board(result):
+    if not _nba_official_board(result) or result.get("historical_replay"):
         return False
     if not result.get("games") or not result.get("odds_loaded"):
         return False
     if result.get("log") and any(str(x).lower().startswith("error") for x in result["log"]):
         return False
-    freeze = _nba_coach_tipoff_freeze(result)
-    if freeze is None:
-        return False
-    now = datetime.now(freeze.tzinfo) if freeze.tzinfo else datetime.utcnow()
-    return now < freeze
+    return True
 
-def _nba_coach_capture_pregame(date_str: str, result: dict):
-    """Last eligible pregame run wins; the earliest tipoff freezes the record."""
-    if not _nba_coach_complete_pregame(date_str, result):
-        return False
-    old = _nba_coach_snapshot_row(date_str)
-    if isinstance(old, dict) and old.get("frozen"):
-        return False
+def _nba_coach_build_presets(date_str, result, alternate):
+    """Every predefined Coach preset (incl. Hot/Cold per market) from one board."""
     standard = (result.get("props_picks") or []) + (result.get("props_nopick") or [])
-    alt_doc = _cache_get("nba_alternates", date_str) or {}
-    alternate = alt_doc.get("props") if isinstance(alt_doc, dict) else []
     presets = {}
     for label, query, mode in _NBA_COACH_PRESETS:
         source_mode = (mode if mode in ("alternate", "alternate_minus", "alternate_plus", "safest")
                        else ("standard" if mode == "standard" else "all"))
+        if source_mode.startswith("alternate") and not alternate:
+            continue
         got = _nba_coach_rows(standard, alternate, query, source_mode, 200)
         # Preserve exact server-owned side/line/price, and never record invalid
         # prices. Alternate rows must be genuine cached rows, not inferred lines.
@@ -7739,27 +7769,144 @@ def _nba_coach_capture_pregame(date_str: str, result: dict):
                 continue
             clean.append({**p, "preset": label, "captured_date": date_str})
         presets[label] = clean
-    for label, form_key in _NBA_COACH_FORM_PRESETS:
-        if not isinstance(result.get("hot_cold"), list):
-            break
-        presets[label] = [{**p, "preset": label, "captured_date": date_str}
-                          for p in _nba_coach_form_rows(result.get("hot_cold"), form_key, "", 10)]
-    detail = []
-    seen = set()
+    if isinstance(result.get("hot_cold"), list):
+        for label, form_key in _NBA_COACH_FORM_PRESETS:
+            presets[label] = [{**p, "preset": label, "captured_date": date_str}
+                              for p in _nba_coach_form_rows(result.get("hot_cold"), form_key, "", 10)]
+        for label, form_key, stat_key in _NBA_COACH_FORM_MARKET_PRESETS:
+            presets[label] = [{**p, "preset": label, "captured_date": date_str}
+                              for p in _nba_coach_form_rows(result.get("hot_cold"), form_key, "", 10, stat_key)]
+    # Every row needs its game's tipoff so started games can be locked per game.
+    tip_by_team, tip_by_player = {}, {}
+    for g in result.get("games") or []:
+        for k in ("home", "away"):
+            if g.get(k) and g.get("tipoff"):
+                tip_by_team[str(g[k]).upper()] = g["tipoff"]
+    for r in (result.get("all_picks") or []) + standard + (result.get("hot_cold") or []):
+        name = _nba_name_key(r.get("player") or r.get("name"))
+        if name and r.get("tipoff") and name not in tip_by_player:
+            tip_by_player[name] = r["tipoff"]
+    for items in presets.values():
+        for p in items:
+            if not p.get("tipoff"):
+                p["tipoff"] = (tip_by_team.get(str(p.get("team") or "").upper())
+                               or tip_by_player.get(_nba_name_key(p.get("player"))) or "")
+    return presets
+
+def _nba_coach_flatten(presets):
+    detail, seen = [], set()
     for label, items in presets.items():
         for p in items:
             key = (label, p.get("player","").lower(), p.get("stat"), p.get("side"), str(p.get("line")), str(p.get("odds")))
             if key not in seen:
                 seen.add(key); detail.append(p)
-    if not detail:
+    return detail
+
+def _nba_coach_capture_pregame(date_str: str, result: dict):
+    """Per game, like the Main record: games not yet tipped take the latest
+    run's Coach rows; games already started keep their saved pregame rows."""
+    if not _nba_coach_complete_pregame(date_str, result):
         return False
-    freeze = _nba_coach_tipoff_freeze(result)
-    doc = {"date":date_str, "captured_at":datetime.utcnow().isoformat()+"Z",
-           "freeze_at":freeze.isoformat(), "frozen":False,
-           "presets":presets, "detail":detail}
-    return _nba_sb_upsert([{"app":_NBA_COACH_APP,"date":date_str,
-        "category":_NBA_COACH_SNAP_CAT,"side":"ALL","wins":0,"losses":0,
-        "locked":False,"detail":doc}], "app,date,category,side")
+    from datetime import timezone as _tz
+    now_utc = datetime.now(_tz.utc)
+    with _NBA_COACH_CAPTURE_LOCK:
+        old = _nba_coach_snapshot_row(date_str)
+        if isinstance(old, dict) and old.get("frozen"):
+            return False
+        alt_doc = _cache_get("nba_alternates", date_str) or {}
+        alternate = alt_doc.get("props") if isinstance(alt_doc, dict) else []
+        fresh = _nba_coach_build_presets(date_str, result, alternate or [])
+        old_presets = (old.get("presets") or {}) if isinstance(old, dict) else {}
+        presets = {}
+        for label in list(old_presets.keys()) + [k for k in fresh if k not in old_presets]:
+            kept = [p for p in (old_presets.get(label) or [])
+                    if _nba_tip_started(p.get("tipoff"), now_utc)]
+            new = [p for p in (fresh.get(label) or [])
+                   if not _nba_tip_started(p.get("tipoff"), now_utc)]
+            merged, seen = [], set()
+            for p in kept + new:
+                pk = _nba_name_key(p.get("player"))
+                if not pk or pk in seen:
+                    continue
+                seen.add(pk); merged.append(p)
+            if merged:
+                presets[label] = merged
+        detail = _nba_coach_flatten(presets)
+        if not detail:
+            return False
+        if isinstance(old, dict) and old.get("detail") == detail:
+            return True
+        freeze = _nba_coach_tipoff_freeze(result)
+        doc = {"date":date_str, "captured_at":datetime.utcnow().isoformat()+"Z",
+               "freeze_at":freeze.isoformat() if freeze else None, "frozen":False,
+               "capture_scope":"per_game", "presets":presets, "detail":detail}
+        ok = _nba_sb_upsert([{"app":_NBA_COACH_APP,"date":date_str,
+            "category":_NBA_COACH_SNAP_CAT,"side":"ALL","wins":0,"losses":0,
+            "locked":False,"detail":doc}], "app,date,category,side")
+    print(f"[nba_coach_track] snapshot {'saved' if ok else 'FAILED'}: {len(detail)} rows -> {date_str}")
+    return ok
+
+_NBA_COACH_BACKFILL_DONE = False
+_NBA_COACH_BACKFILL_LOCK = _nba_th.Lock()
+
+async def _nba_coach_backfill():
+    """Repopulate Coach snapshots for every past date that has a saved live
+    NBA board but no Coach snapshot. Never overwrites an existing snapshot.
+    Alternate presets are skipped (their lines were not saved with the board)."""
+    global _NBA_COACH_BACKFILL_DONE
+    if _NBA_COACH_BACKFILL_DONE or not _NBA_COACH_BACKFILL_LOCK.acquire(blocking=False):
+        return
+    try:
+        boards = await asyncio.to_thread(_nba_sb_get, {
+            "app": f"eq.{_NBA_LIVE_BOARD_APP}", "category": "eq.__board__",
+            "side": "eq.ALL", "select": "date", "limit": "1000"}) or []
+        snaps = await asyncio.to_thread(_nba_sb_get, {
+            "app": f"eq.{_NBA_COACH_APP}", "category": f"eq.{_NBA_COACH_SNAP_CAT}",
+            "side": "eq.ALL", "select": "date", "limit": "1000"}) or []
+        have = {r.get("date") for r in snaps}
+        today = _nba_today().isoformat()
+        missing = sorted({r.get("date") for r in boards
+                          if r.get("date") and r.get("date") < today and r.get("date") not in have})
+        failed = 0
+        for ds in missing:
+            try:
+                board = await asyncio.to_thread(_nba_read_live_board, ds)
+                if not board:
+                    continue
+                board = await _nba_refresh_season_scope(ds, board)
+                if not _nba_coach_complete_pregame(ds, board):
+                    continue
+                presets = _nba_coach_build_presets(ds, board, [])
+                presets = {k: v for k, v in presets.items() if v}
+                detail = _nba_coach_flatten(presets)
+                if not detail:
+                    continue
+                doc = {"date": ds, "captured_at": datetime.utcnow().isoformat() + "Z",
+                       "frozen": True, "backfilled": True,
+                       "source": "saved live NBA board", "presets": presets, "detail": detail}
+                ok = await asyncio.to_thread(_nba_sb_upsert, [{
+                    "app": _NBA_COACH_APP, "date": ds, "category": _NBA_COACH_SNAP_CAT,
+                    "side": "ALL", "wins": 0, "losses": 0, "locked": False, "detail": doc}],
+                    "app,date,category,side")
+                failed += not ok
+                print(f"[nba_coach_track] backfill {'saved' if ok else 'FAILED'}: {len(detail)} rows -> {ds}")
+            except Exception as exc:
+                failed += 1
+                print(f"[nba_coach_track] backfill failed for {ds}: {exc}")
+        _NBA_COACH_BACKFILL_DONE = failed == 0
+    finally:
+        _NBA_COACH_BACKFILL_LOCK.release()
+
+def _nba_coach_is_push(date_str, p):
+    box = _nba_box_lookup(date_str) or {}
+    pd = box.get((p.get("player") or "").lower().strip()) or {}
+    if not pd:
+        norm = _nba_name_key(p.get("player"))
+        pd = next((v for k, v in box.items() if _nba_name_key(k) == norm), {})
+    try:
+        return bool(pd.get("final")) and pd.get(p.get("stat")) == float(p.get("line"))
+    except (TypeError, ValueError):
+        return False
 
 def _nba_coach_profit(odds, result):
     return _nba_american_profit_trk(odds, _NBA_COACH_STAKE, result)
@@ -7769,10 +7916,15 @@ def _nba_coach_grade_date(date_str, doc):
            if stats.get("season_type") in (2, 3)}
     if not box:
         return None
+    box_norm = {}
+    for _n, _st in box.items():
+        box_norm.setdefault(_nba_name_key(_n), _st)
     detail = []
     for p in (doc.get("detail") or []):
-        actual = (box.get((p.get("player") or "").lower().strip()) or {}).get(p.get("stat"))
-        final = (box.get((p.get("player") or "").lower().strip()) or {}).get("final")
+        pd = (box.get((p.get("player") or "").lower().strip())
+              or box_norm.get(_nba_name_key(p.get("player"))) or {})
+        actual = pd.get(p.get("stat"))
+        final = pd.get("final")
         result = None
         try:
             if final and actual is not None:
@@ -7787,12 +7939,29 @@ def _nba_coach_grade_date(date_str, doc):
     return detail
 
 def _nba_coach_update_track_ledger():
+    if not _NBA_COACH_GRADE_LOCK.acquire(blocking=False):
+        return
+    try:
+        _nba_coach_update_track_ledger_locked()
+    finally:
+        _NBA_COACH_GRADE_LOCK.release()
+
+def _nba_coach_update_track_ledger_locked():
     today = _nba_today().isoformat()
-    snaps = _nba_sb_get({"app":f"eq.{_NBA_COACH_APP}","category":f"eq.{_NBA_COACH_SNAP_CAT}",
-                         "side":"eq.ALL","select":"date,detail","limit":"365"}) or []
-    for row in snaps:
-        ds, doc = row.get("date"), row.get("detail") or {}
-        if not ds or ds >= today or not isinstance(doc, dict):
+    snap_dates = _nba_sb_get({"app":f"eq.{_NBA_COACH_APP}","category":f"eq.{_NBA_COACH_SNAP_CAT}",
+                              "side":"eq.ALL","select":"date","limit":"1000"}) or []
+    done = {r.get("date"): r.get("detail") for r in (_nba_sb_get({
+        "app":f"eq.{_NBA_COACH_APP}","category":f"eq.{_NBA_COACH_LEDGER_CAT}",
+        "side":"eq.ALL","select":"date,detail","limit":"1000"}) or [])}
+    for snap in snap_dates:
+        ds = snap.get("date")
+        if not ds or ds >= today:
+            continue
+        # Fully graded dates are skipped (ledger marks them complete).
+        if isinstance(done.get(ds), dict) and done[ds].get("__complete__"):
+            continue
+        doc = _nba_coach_snapshot_row(ds) or {}
+        if not isinstance(doc, dict):
             continue
         graded = _nba_coach_grade_date(ds, doc)
         if graded is None:
@@ -7801,9 +7970,18 @@ def _nba_coach_update_track_ledger():
         for p in graded:
             c = agg.setdefault(p.get("preset") or p.get("category","?"), {"wins":0,"losses":0})
             c["wins"] += p["result"]=="WIN"; c["losses"] += p["result"]=="LOSS"
+        # Complete once every saved row is decided (WIN/LOSS here; pushes count
+        # as decided) or the date is 3+ days old (DNP/void rows never grade).
+        decided = len(graded) + sum(1 for p in (doc.get("detail") or [])
+                                    if _nba_coach_is_push(ds, p))
+        old_enough = ds <= (_nba_today() - timedelta(days=3)).isoformat()
+        tot_w = sum(x["wins"] for x in agg.values())
+        tot_l = sum(x["losses"] for x in agg.values())
+        if decided >= len(doc.get("detail") or []) or old_enough:
+            agg["__complete__"] = True
         _nba_sb_upsert([
             {"app":_NBA_COACH_APP,"date":ds,"category":_NBA_COACH_LEDGER_CAT,"side":"ALL",
-             "wins":sum(x["wins"] for x in agg.values()),"losses":sum(x["losses"] for x in agg.values()),
+             "wins":tot_w,"losses":tot_l,
              "locked":True,"detail":agg},
             {"app":_NBA_COACH_APP,"date":ds,"category":_NBA_COACH_DETAIL_CAT,"side":"ALL",
              "wins":0,"losses":0,"locked":True,"detail":graded}], "app,date,category,side")
@@ -7962,7 +8140,17 @@ async def nba_coach_track_record(request: Request, date_str: str = "",
         raise HTTPException(status_code=401, detail="Subscription required — please log in via moneypicksarena.com")
     historical = source == "historical"
     if not historical:
-        _nba_th.Thread(target=_nba_coach_update_track_ledger, daemon=True).start()
+        # Repopulate missing dates from saved boards, then grade, before reading
+        # (bounded; any unfinished work keeps running and shows on next open).
+        async def _prep():
+            await _nba_coach_backfill()
+            await asyncio.to_thread(_nba_coach_update_track_ledger)
+        try:
+            await asyncio.wait_for(asyncio.shield(asyncio.ensure_future(_prep())), timeout=40)
+        except asyncio.TimeoutError:
+            pass
+        except Exception as exc:
+            print(f"[nba_coach_track] prep failed: {exc}")
     if historical and date_str:
         alternate_track, alternate_error = (
             await _nba_historical_alt_track_rows(date_str))
@@ -7972,6 +8160,19 @@ async def nba_coach_track_record(request: Request, date_str: str = "",
     else:
         rows = _nba_sb_get({"app":f"eq.{_NBA_COACH_APP}","category":f"eq.{_NBA_COACH_DETAIL_CAT}",
                             "locked":"eq.true","select":"date,detail","limit":"1000"}) or []
+        # Saved Coach snapshots not graded yet (today / recent) show as PENDING.
+        graded_dates = {r.get("date") for r in rows}
+        recent = (_nba_today() - timedelta(days=10)).isoformat()
+        pend = _nba_sb_get({"app":f"eq.{_NBA_COACH_APP}","category":f"eq.{_NBA_COACH_SNAP_CAT}",
+                            "side":"eq.ALL","date":f"gte.{recent}",
+                            "select":"date,detail","limit":"20"}) or []
+        for snap in pend:
+            ds_p, doc = snap.get("date"), snap.get("detail") or {}
+            if ds_p in graded_dates or not isinstance(doc, dict):
+                continue
+            rows.append({"date": ds_p, "detail": [
+                {**p, "name": p.get("player", ""), "result": "PENDING", "profit": None}
+                for p in (doc.get("detail") or [])]})
     dates, all_rows = [], []
     for r in rows:
         det = r.get("detail") or []
