@@ -586,6 +586,10 @@ def _nba_trk_bg(date_str: str, result: dict):
         _nba_save_hc_snapshot(date_str, result)
     except Exception as exc:
         print(f"[nba_hc_track] snapshot NOT saved for {date_str}: {exc}")
+    try:
+        _nba_save_fn_snapshot(date_str, result)
+    except Exception as exc:
+        print(f"[nba_fn_track] snapshot NOT saved for {date_str}: {exc}")
     _nba_th.Thread(target=_nba_update_all_ledgers, daemon=True).start()
 
 _NBA_TRK_CACHED_TS: dict = {}
@@ -917,6 +921,535 @@ def _nba_hc_record_response() -> dict:
     return {"dates": out, "stake": _NBA_TRK_STAKE, "record": "hot_cold"}
 
 
+# ─── NBA Funnel Plays (defense vs position / vs team; own record) ────────────
+# Separate spotlight boards. Each team's points/rebounds/assists/threes allowed
+# per game are ranked league-wide, overall and by position group (G/F/C), from
+# this regular season's ESPN box scores. Rank 1 = allows the fewest (toughest),
+# rank 30 = allows the most (softest). Bottom 10 (softest) = OVER funnels, Top 10
+# (toughest) = UNDER funnels. Never changes ordinary picks or any other record.
+_NBA_FN_SNAP_CAT   = "__fn_picks__"
+_NBA_FN_DETAIL_CAT = "__fn_detail__"
+_NBA_FN_LEDGER_CAT = "__fn_ledger__"
+_NBA_FN_DVP_CAT    = "__fn_dvp__"
+_NBA_FN_STATS = ("PTS", "REB", "AST", "FG3M")
+_NBA_FN_POS = ("G", "F", "C")
+_NBA_FN_POS_LABEL = {"G": "Guards", "F": "Forwards", "C": "Centers"}
+_NBA_FN_BOARDS = (("position", "Position Funnel"), ("team", "Team Funnel"))
+_NBA_FN_TIER = 10      # top 10 / bottom 10 defenses
+_NBA_FN_TOP = 10       # Top 10 per board x market x side
+_NBA_FN_LIMIT = 20     # ranks 11-20 = Funnel overflow
+_NBA_FN_MIN_DEF_GAMES = 2
+_NBA_FN_KEYS = _NBA_HC_KEYS + ("funnel", "position", "def_rank", "def_teams", "allowed")
+_NBA_FN_DAY_MEM: dict = {}
+_NBA_FN_LOCK = _nba_th.Lock()
+_NBA_FN_ROSTER_POS: dict = {}
+
+
+def _nba_fn_pos(raw) -> str:
+    """ESPN position -> G / F / C (PG/SG/G = G, SF/PF/F = F, C = C)."""
+    p = str(raw or "").upper().strip()
+    if not p:
+        return ""
+    if p in ("C", "FC", "C-F"):
+        return "C"
+    if p[0] == "G" or p in ("PG", "SG"):
+        return "G"
+    if p[0] == "F" or p in ("SF", "PF"):
+        return "F"
+    return ""
+
+
+def _nba_fn_roster_positions(team_id) -> dict:
+    """Fallback only (box score without a position): player id -> G/F/C."""
+    key = str(team_id or "")
+    if not key:
+        return {}
+    if key in _NBA_FN_ROSTER_POS:
+        return _NBA_FN_ROSTER_POS[key]
+    out = {}
+    try:
+        r = httpx.get(f"https://site.api.espn.com/apis/site/v2/sports/basketball/nba/teams/{key}/roster",
+                      timeout=15)
+        if r.status_code == 200:
+            for a in (r.json() or {}).get("athletes") or []:
+                g = _nba_fn_pos((a.get("position") or {}).get("abbreviation"))
+                if a.get("id") and g:
+                    out[str(a["id"])] = g
+    except Exception as exc:
+        print(f"[nba_fn] roster positions {key} failed: {exc}")
+        return {}
+    _NBA_FN_ROSTER_POS[key] = out
+    return out
+
+
+def _nba_fn_day_raw(date_str: str):
+    """One slate's regular-season box scores as compact rows:
+    [player_id, team, opp, pos, starter(0/1), event_id, PTS, REB, AST, FG3M].
+    Returns (doc, complete). Incomplete/failed reads are never cached."""
+    d = date_str.replace("-", "")
+    try:
+        sb = httpx.get(f"https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?dates={d}",
+                       timeout=15)
+        sb.raise_for_status()
+        scoreboard = sb.json()
+        events = scoreboard.get("events")
+        if not isinstance(events, list):
+            return None, False
+    except Exception as exc:
+        print(f"[nba_fn] scoreboard {date_str} failed: {exc}")
+        return None, False
+    rows = []
+    for ev in events:
+        if _nba_season_type(ev, scoreboard) != 2:
+            continue      # regular season only (preseason / playoffs excluded)
+        stype = ev.get("status", {}).get("type", {}) or {}
+        sname = str(stype.get("name") or "").upper()
+        if any(x in sname for x in ("POSTPONED", "CANCELED", "CANCELLED")):
+            continue      # never played: does not block the slate
+        if not stype.get("completed", False):
+            return None, False
+        ev_id = ev.get("id")
+        box = None
+        for _try in range(3):
+            try:
+                bs = httpx.get(f"https://site.api.espn.com/apis/site/v2/sports/basketball/nba/summary?event={ev_id}",
+                               timeout=15)
+                if bs.status_code == 200:
+                    box = bs.json().get("boxscore", {})
+                    break
+            except Exception:
+                pass
+            time.sleep(0.7 * (_try + 1))
+        if not box or len(box.get("players") or []) != 2:
+            return None, False
+        teams = [_norm_abbr(((t.get("team") or {}).get("abbreviation")) or "") for t in box["players"]]
+        for ti, team in enumerate(box["players"]):
+            abbr, opp = teams[ti], teams[1 - ti]
+            team_id = (team.get("team") or {}).get("id")
+            for grp in team.get("statistics", []) or []:
+                labels = grp.get("labels") or grp.get("names") or []
+                for ath in grp.get("athletes", []) or []:
+                    a = ath.get("athlete") or {}
+                    stats_arr = ath.get("stats") or []
+                    if not a.get("id") or not stats_arr or ath.get("didNotPlay"):
+                        continue
+                    vals = [_nba_extract_stat(stats_arr, sk, labels) for sk in _NBA_FN_STATS]
+                    if any(v is None for v in vals):
+                        continue
+                    pos = _nba_fn_pos((a.get("position") or {}).get("abbreviation"))
+                    if not pos:
+                        pos = _nba_fn_roster_positions(team_id).get(str(a["id"]), "")
+                    rows.append([str(a["id"]), abbr, opp, pos, 1 if ath.get("starter") else 0,
+                                 str(ev_id)] + [float(v) for v in vals])
+    return {"rows": rows}, True
+
+
+def _nba_fn_season_days(today_str: str) -> list:
+    """Every completed regular-season slate before today (ET). Cached in memory
+    and in Supabase per date, so redeploys never re-download finished days."""
+    try:
+        as_of = date.fromisoformat(str(today_str)[:10])
+    except (TypeError, ValueError):
+        return []
+    start = date(as_of.year if as_of.month >= 10 else as_of.year - 1, 10, 1)
+    dates = []
+    d = start
+    while d < as_of:
+        dates.append(d.isoformat())
+        d += timedelta(days=1)
+    with _NBA_FN_LOCK:
+        missing = [x for x in dates if x not in _NBA_FN_DAY_MEM]
+        if missing:
+            try:
+                saved = _nba_sb_get({"app": f"eq.{_NBA_TRK_APP}", "category": f"eq.{_NBA_FN_DVP_CAT}",
+                                     "side": "eq.ALL", "date": f"gte.{start.isoformat()}",
+                                     "select": "date,detail", "limit": "400"}) or []
+                for r in saved:
+                    if r.get("date") and isinstance(r.get("detail"), dict):
+                        _NBA_FN_DAY_MEM[r["date"]] = r["detail"]
+            except Exception as exc:
+                print(f"[nba_fn] saved defense days unavailable: {exc}")
+            missing = [x for x in dates if x not in _NBA_FN_DAY_MEM]
+        if missing:
+            from concurrent.futures import ThreadPoolExecutor as _TPE
+            with _TPE(max_workers=4) as ex:
+                got = list(ex.map(lambda ds: (ds,) + _nba_fn_day_raw(ds), missing))
+            ups = []
+            for ds, doc, complete in got:
+                if complete and doc is not None:
+                    _NBA_FN_DAY_MEM[ds] = doc
+                    ups.append({"app": _NBA_TRK_APP, "date": ds, "category": _NBA_FN_DVP_CAT,
+                                "side": "ALL", "wins": 0, "losses": 0, "locked": True, "detail": doc})
+            for i in range(0, len(ups), 10):
+                _nba_sb_upsert(ups[i:i + 10], "app,date,category,side")
+            print(f"[nba_fn] defense data: {len(ups)} new slates cached, "
+                  f"{len(missing) - len(ups)} not final/unavailable")
+        return [(x, _NBA_FN_DAY_MEM[x]) for x in dates if x in _NBA_FN_DAY_MEM]
+
+
+def _nba_fn_rankings(days) -> dict:
+    """Allowed per game by each defense, overall ("T") and per position group."""
+    games, allowed, starts, last = {}, {}, {}, ""
+    for ds, doc in days:
+        for r in (doc or {}).get("rows") or []:
+            try:
+                pid, team, opp, pos, starter, eid = r[:6]
+                vals = r[6:10]
+            except (TypeError, ValueError):
+                continue
+            last = max(last, ds)
+            games.setdefault(opp, set()).add(eid)
+            for grp in ("T", pos) if pos else ("T",):
+                acc = allowed.setdefault((opp, grp), [0.0] * len(_NBA_FN_STATS))
+                for i, v in enumerate(vals):
+                    acc[i] += float(v)
+            st = starts.setdefault(pid, [0, 0, {}])
+            st[0] += int(starter)
+            st[1] += 1
+            if pos:
+                st[2][pos] = st[2].get(pos, 0) + 1
+    teams = {t: len(g) for t, g in games.items() if len(g) >= _NBA_FN_MIN_DEF_GAMES}
+    out = {"teams": {t: {"g": n} for t, n in teams.items()}, "n_teams": len(teams),
+           "through": last, "league": {}}
+    for grp in ("T",) + _NBA_FN_POS:
+        out["league"][grp] = {}
+        for i, sk in enumerate(_NBA_FN_STATS):
+            avgs = {t: allowed.get((t, grp), [0.0] * 4)[i] / n for t, n in teams.items()}
+            if not avgs:
+                continue
+            out["league"][grp][sk] = round(sum(avgs.values()) / len(avgs), 2)
+            for rank, (t, v) in enumerate(sorted(avgs.items(), key=lambda kv: (kv[1], kv[0])), 1):
+                out["teams"][t].setdefault(grp, {})[sk] = [round(v, 2), rank]
+    out["starts"] = {pid: [s[0], s[1], max(s[2], key=s[2].get) if s[2] else ""]
+                     for pid, s in starts.items()}
+    return out
+
+
+def _nba_funnel_rows(today_str, games, rosters, logs_by_player, dk_lookup, props_rows, rk):
+    """Funnel plays on genuine standard lines (Points, Rebounds, Assists, 3PM)."""
+    if not rk or not rk.get("n_teams"):
+        return []
+    try:
+        as_of = date.fromisoformat(str(today_str)[:10])
+    except (TypeError, ValueError):
+        return []
+    season_start = date(as_of.year if as_of.month >= 10 else as_of.year - 1, 10, 1).isoformat()
+    n_teams = rk["n_teams"]
+    tier = min(_NBA_FN_TIER, n_teams // 3) or 1
+    props_by_key = {}
+    for r in props_rows or []:
+        props_by_key.setdefault((str(r.get("player") or ""), r.get("stat")), r)
+    cands = []
+    for game in games or []:
+        for tid, team, opp, opp_name, venue in (
+                (game.get("home_id"), game.get("home"), game.get("away"), game.get("away_name"), "HOME"),
+                (game.get("away_id"), game.get("away"), game.get("home"), game.get("home_name"), "AWAY")):
+            dteam = rk["teams"].get(opp)
+            if not dteam:
+                continue
+            for player in (rosters or {}).get(tid, []) or []:
+                pid, pname = str(player.get("id") or ""), player.get("name") or ""
+                if not pname or not any((_nn(pname), s) in dk_lookup for s in _NBA_FN_STATS):
+                    continue
+                st = rk["starts"].get(pid)
+                pos = _nba_fn_pos(player.get("position")) or (st[2] if st else "")
+                logs, seen = [], set()
+                for g in logs_by_player.get(player.get("id"), logs_by_player.get(pid, [])) or []:
+                    d = _nba_et_date(g.get("date"))
+                    if not d or d >= today_str or d < season_start or d in seen:
+                        continue
+                    seen.add(d)
+                    logs.append((d, g))
+                logs.sort(key=lambda x: x[0], reverse=True)
+                if len(logs) < 3:
+                    continue
+                if st and st[1] >= 2:
+                    starter = st[0] * 2 >= st[1]
+                    start_note = f"started {st[0]}/{st[1]}"
+                else:
+                    mins = [float(g.get("MIN") or 0) for _, g in logs[:5]]
+                    starter = bool(mins) and sum(mins) / len(mins) >= 24
+                    start_note = f"{sum(mins) / max(len(mins), 1):.0f} MPG"
+                l10 = logs[:10]
+                for sk in _NBA_FN_STATS:
+                    quote = dk_lookup.get((_nn(pname), sk)) or {}
+                    try:
+                        line = float(quote.get("line"))
+                    except (TypeError, ValueError):
+                        continue
+                    if not math.isfinite(line):
+                        continue
+                    try:
+                        vals10 = [float(g[sk]) for _, g in l10]
+                        vals_all = [float(g[sk]) for _, g in logs]
+                    except (KeyError, TypeError, ValueError):
+                        continue
+                    for board, board_label in _NBA_FN_BOARDS:
+                        grp = pos if board == "position" else "T"
+                        if board == "position" and (not starter or not pos):
+                            continue
+                        cell = (dteam.get(grp) or {}).get(sk)
+                        league = (rk["league"].get(grp) or {}).get(sk)
+                        if not cell or not league:
+                            continue
+                        avg_allowed, rank = cell
+                        if rank <= tier:
+                            side, tag = "UNDER", "TOUGH"
+                        elif rank > n_teams - tier:
+                            side, tag = "OVER", "SOFT"
+                        else:
+                            continue
+                        over = side == "OVER"
+                        h10 = sum(v > line if over else v < line for v in vals10)
+                        hall = sum(v > line if over else v < line for v in vals_all)
+                        diff = (avg_allowed - league) / league if league else 0.0
+                        matchup_pts = min(100.0, abs(diff) * 400.0)
+                        l10_pct = h10 / len(vals10) * 100
+                        season_pct = hall / len(vals_all) * 100
+                        score = round(0.40 * matchup_pts + 0.35 * l10_pct + 0.25 * season_pct, 1)
+                        odds = _nba_hc_price(quote.get("over_odds" if over else "under_odds"))
+                        implied = _nba_coach_implied(odds) if odds is not None else None
+                        model = None
+                        prop = props_by_key.get((pname, sk)) or {}
+                        try:
+                            if prop and abs(float(prop.get("line")) - line) < 1e-9:
+                                model, _ = _nba_coach_prob(prop, side, line)
+                        except (TypeError, ValueError):
+                            model = None
+                        edge = (round((model - implied) * 100, 2)
+                                if model is not None and implied is not None else None)
+                        elite = rank <= 5 if side == "UNDER" else rank > n_teams - 5
+                        cands.append({
+                            "player": pname, "player_id": pid, "team": team or "",
+                            "opp": opp or "", "opp_name": opp_name or "", "venue": venue,
+                            "matchup": f"{game.get('away_name','')} @ {game.get('home_name','')}",
+                            "tipoff": game.get("tipoff", ""), "stat": sk,
+                            "stat_label": STAT_CONFIG[sk]["label"], "emoji": STAT_CONFIG[sk]["emoji"],
+                            "funnel": board, "board_label": board_label,
+                            "position": pos, "starter": bool(starter), "start_note": start_note,
+                            "pick": side, "def_tag": tag, "elite": elite,
+                            "def_rank": rank, "def_teams": n_teams,
+                            "def_games": dteam.get("g"), "allowed": avg_allowed,
+                            "league_allowed": league, "allowed_diff": round(diff * 100, 1),
+                            "line": line, "odds": odds,
+                            "book": ((quote.get("bookmaker_label") or quote.get("bookmaker") or "")
+                                     if odds is not None else ""),
+                            "l10_hits": h10, "l10_total": len(vals10),
+                            "l10_avg": round(sum(vals10) / len(vals10), 2),
+                            "season_hits": hall, "season_total": len(vals_all),
+                            "season_avg": round(sum(vals_all) / len(vals_all), 2),
+                            "recent_games": [{"d": d, "opp": g.get("opp", ""), "loc": g.get("location", ""),
+                                              "v": v} for (d, g), v in zip(l10, vals10)],
+                            "score": score,
+                            "app_probability": round(model * 100, 1) if model is not None else None,
+                            "implied_probability": round(implied * 100, 1) if implied is not None else None,
+                            "edge": edge,
+                        })
+    out = []
+    for board, board_label in _NBA_FN_BOARDS:
+        for sk in _NBA_FN_STATS:
+            for side in ("OVER", "UNDER"):
+                pool = [r for r in cands if r["funnel"] == board and r["stat"] == sk and r["pick"] == side]
+                pool.sort(key=lambda r: (-r["score"], -r["l10_hits"], r["odds"] is None,
+                                         r["player"].casefold(), r["player_id"]))
+                seen, rank = set(), 0
+                for r in pool:
+                    pk = (r["player"].casefold(), r["team"])
+                    if pk in seen:
+                        continue
+                    seen.add(pk)
+                    rank += 1
+                    if rank > _NBA_FN_LIMIT:
+                        break
+                    out.append({**r, "category": f"{board_label} {STAT_CONFIG[sk]['label']}",
+                                "fn_key": f"{board}|{sk}|{side}", "rank": rank,
+                                "is_overflow": rank > _NBA_FN_TOP})
+    return out
+
+
+def _nba_fn_dvp_view(rk) -> dict:
+    """Compact Defense-vs-Position table for the board."""
+    if not rk or not rk.get("n_teams"):
+        return {}
+    return {"teams": rk.get("teams") or {}, "n_teams": rk["n_teams"],
+            "through": rk.get("through", ""), "league": rk.get("league") or {},
+            "tier": min(_NBA_FN_TIER, rk["n_teams"] // 3) or 1}
+
+
+async def _nba_fn_build(today_str, games, rosters, logs_by_player, dk_lookup, props_rows, log):
+    """Defense data load is bounded; unfinished downloads keep caching for the next run."""
+    fut = asyncio.ensure_future(asyncio.to_thread(_nba_fn_season_days, today_str))
+    try:
+        days = await asyncio.wait_for(asyncio.shield(fut), timeout=75)
+    except asyncio.TimeoutError:
+        log.append("Funnel Plays: defense data still loading (it keeps caching); run again shortly")
+        return None, None
+    rk = _nba_fn_rankings(days)
+    rows = _nba_funnel_rows(today_str, games, rosters, logs_by_player, dk_lookup, props_rows, rk)
+    log.append(f"Funnel Plays: {len(rows)} plays vs {rk.get('n_teams', 0)} ranked defenses "
+               f"(through {rk.get('through') or 'n/a'})")
+    return rows, _nba_fn_dvp_view(rk)
+
+
+def _nba_fn_snapshot_rows(result: dict) -> list:
+    flat = []
+    for r in result.get("funnels") or []:
+        sk = r.get("stat")
+        if sk not in STAT_CONFIG or r.get("line") is None or r.get("pick") not in ("OVER", "UNDER"):
+            continue
+        odds = r.get("odds") if _nba_trk_priced(r.get("odds")) else None
+        flat.append({"name": r.get("player", ""), "team": r.get("team", ""), "opp": r.get("opp", ""),
+                     "category": r.get("category") or "", "market": _NBA_STAT_LABEL.get(sk, sk),
+                     "stat_key": sk, "side": r.get("pick"), "line": r.get("line"),
+                     "odds": odds, "book": (r.get("book") or "") if odds is not None else "",
+                     "rank": r.get("rank"), "is_overflow": bool(r.get("is_overflow")),
+                     "form": None, "form_key": None, "edge": r.get("edge"),
+                     "capture_scope": "funnel", "funnel": r.get("funnel"),
+                     "position": r.get("position"), "def_rank": r.get("def_rank"),
+                     "def_teams": r.get("def_teams"), "allowed": r.get("allowed"),
+                     "tipoff": r.get("tipoff")})
+    return flat
+
+
+def _nba_save_fn_snapshot(date_str: str, result: dict):
+    """Per game: unstarted games take the latest run; started games keep their
+    saved pregame Funnel rows. Never rewrites a locked (graded) date."""
+    if not _nba_main_board_ok(date_str, result) or not isinstance(result.get("funnels"), list):
+        return
+    from datetime import timezone as _tz
+    now_utc = datetime.now(_tz.utc)
+    with _NBA_TRK_LOCK:
+        locked = _nba_hist_sb_get({"app": f"eq.{_NBA_TRK_APP}", "category": f"eq.{_NBA_FN_LEDGER_CAT}",
+                                   "date": f"eq.{date_str}", "locked": "eq.true",
+                                   "select": "date", "limit": "1"})
+        if locked:
+            return
+        existing_rows = _nba_hist_sb_get({"app": f"eq.{_NBA_TRK_APP}", "category": f"eq.{_NBA_FN_SNAP_CAT}",
+                                          "side": "eq.ALL", "date": f"eq.{date_str}",
+                                          "select": "detail", "limit": "1"})
+        existing = (existing_rows[0].get("detail") or []) if existing_rows else []
+        fresh = [r for r in _nba_fn_snapshot_rows(result) if not _nba_tip_started(r.get("tipoff"), now_utc)]
+        kept = [r for r in existing if _nba_tip_started(r.get("tipoff"), now_utc)]
+        if not fresh:
+            return
+        ok = _nba_sb_upsert(
+            [{"app": _NBA_TRK_APP, "date": date_str, "category": _NBA_FN_SNAP_CAT,
+              "side": "ALL", "wins": 0, "losses": 0, "locked": False, "detail": kept + fresh}],
+            "app,date,category,side")
+    print(f"[nba_fn_track] snapshot {'saved' if ok else 'FAILED'}: {len(fresh)} pregame + "
+          f"{len(kept)} locked started-game Funnel picks -> {date_str}")
+
+
+def _nba_load_fn_snapshot(date_str: str) -> list:
+    rows = _nba_sb_get({"app": f"eq.{_NBA_TRK_APP}", "category": f"eq.{_NBA_FN_SNAP_CAT}",
+                        "side": "eq.ALL", "date": f"eq.{date_str}", "select": "detail", "limit": "1"})
+    d = (rows[0].get("detail") or []) if rows else []
+    return d if isinstance(d, list) else []
+
+
+def _nba_update_fn_ledger():
+    """Grade saved Funnel snapshots with the same box-score grader as Main."""
+    today = _nba_today().isoformat()
+    with _NBA_TRK_LOCK:
+        locked = {r["date"] for r in (_nba_sb_get(
+            {"app": f"eq.{_NBA_TRK_APP}", "category": f"eq.{_NBA_FN_LEDGER_CAT}",
+             "locked": "eq.true", "select": "date", "limit": "500"}) or [])}
+        dates = sorted({r["date"] for r in (_nba_sb_get(
+            {"app": f"eq.{_NBA_TRK_APP}", "category": f"eq.{_NBA_FN_SNAP_CAT}",
+             "side": "eq.ALL", "select": "date", "limit": "365"}) or []) if r.get("date")})
+        upserts = []
+        for d in dates:
+            if d >= today or d in locked:
+                continue
+            snap = _nba_load_fn_snapshot(d)
+            if not snap:
+                continue
+            try:
+                graded = _nba_grade_date(d, [{**r, "is_overflow": False} for r in snap])
+            except Exception as e:
+                print(f"[nba_fn_track] grade failed {d}: {e}")
+                continue
+            if not graded.get("any_game"):
+                continue
+            try:
+                old_enough = (_nba_today() - date.fromisoformat(d)).days >= 2
+            except Exception:
+                old_enough = False
+            if not graded.get("all_final") and not (old_enough and graded.get("fetch_ok")):
+                continue
+            det, agg = [], {}
+            for src, row in zip(snap, graded.get("main", [])):
+                if row.get("result") not in ("WIN", "LOSS", "PUSH"):
+                    continue
+                out = {k: src.get(k) for k in _NBA_FN_KEYS}
+                out.update({"result": row.get("result"), "actual": row.get("actual"),
+                            "profit": row.get("profit")})
+                det.append(out)
+                if out["result"] in ("WIN", "LOSS"):
+                    rec = agg.setdefault(out["category"], {}).setdefault(out.get("side", "OVER"), [0, 0])
+                    rec[0 if out["result"] == "WIN" else 1] += 1
+            upserts += [
+                {"app": _NBA_TRK_APP, "date": d, "category": _NBA_FN_LEDGER_CAT, "side": "ALL",
+                 "wins": 0, "losses": 0, "locked": True, "detail": agg},
+                {"app": _NBA_TRK_APP, "date": d, "category": _NBA_FN_DETAIL_CAT, "side": "ALL",
+                 "wins": 0, "losses": 0, "locked": True, "detail": det},
+            ]
+        if upserts:
+            for i in range(0, len(upserts), 10):
+                _nba_sb_upsert(upserts[i:i + 10], "app,date,category,side")
+            print(f"[nba_fn_track] locked {len(upserts)//2} dates")
+
+
+def _nba_fn_record_response() -> dict:
+    """Funnel record: graded rows plus PENDING saved pregame rows."""
+    det_rows = _nba_hist_sb_get({"app": f"eq.{_NBA_TRK_APP}", "category": f"eq.{_NBA_FN_DETAIL_CAT}",
+                                 "locked": "eq.true", "select": "date,detail", "limit": "365"})
+    detail_by_date = {r["date"]: (r.get("detail") or []) for r in (det_rows or []) if r.get("date")}
+    pending_dates = set()
+    try:
+        cutoff = (_nba_today() - timedelta(days=10)).isoformat()
+        snap_dates = sorted({r["date"] for r in (_nba_hist_sb_get(
+            {"app": f"eq.{_NBA_TRK_APP}", "category": f"eq.{_NBA_FN_SNAP_CAT}",
+             "side": "eq.ALL", "select": "date", "limit": "365"}) or []) if r.get("date")})
+        for d in snap_dates:
+            if d in detail_by_date or d < cutoff:
+                continue
+            snap = _nba_load_fn_snapshot(d)
+            if not snap:
+                continue
+            detail_by_date[d] = [{**{k: p.get(k) for k in _NBA_FN_KEYS},
+                                  "result": "PENDING", "actual": None, "profit": None} for p in snap]
+            pending_dates.add(d)
+    except Exception as exc:
+        print(f"[nba_fn_track] pending snapshot read failed: {exc}")
+    out = []
+    for d in sorted(detail_by_date, reverse=True):
+        det = []
+        for saved in detail_by_date[d]:
+            row = dict(saved)
+            row["is_overflow"] = bool(row.get("is_overflow"))
+            if not _nba_trk_priced(row.get("odds")):
+                row["odds"] = None
+                row["profit"] = None
+            row["stake"] = _NBA_TRK_STAKE if row.get("odds") is not None else None
+            det.append(row)
+        if det:
+            out.append({"date": d, "pending": d in pending_dates, "detail": det})
+    return {"dates": out, "stake": _NBA_TRK_STAKE, "record": "funnel"}
+
+
+def _nba_fn_warm():
+    """Startup warm of the defense data so the first run has rankings ready."""
+    time.sleep(30)
+    try:
+        _nba_fn_season_days(_nba_today().isoformat())
+    except Exception as exc:
+        print(f"[nba_fn] warm failed: {exc}")
+
+_nba_th.Thread(target=_nba_fn_warm, daemon=True).start()
+
+
+
 def _nba_update_all_ledgers():
     try:
         _nba_update_track_ledger()
@@ -926,6 +1459,10 @@ def _nba_update_all_ledgers():
         _nba_update_hc_ledger()
     except Exception as exc:
         print(f"[nba_hc_track] ledger update failed: {exc}")
+    try:
+        _nba_update_fn_ledger()
+    except Exception as exc:
+        print(f"[nba_fn_track] ledger update failed: {exc}")
 
 _nba_th.Thread(target=_nba_update_all_ledgers, daemon=True).start()
 
@@ -3118,7 +3655,16 @@ async def _run_analysis_core(selected_date: str = None, force: bool = False) -> 
         except Exception as _hce:
             print(f"[nba_hc] build failed: {_hce}")
             log.append("Hot/Cold board unavailable for this run")
-    result = {'date':today_str,'picks':top_picks,'all_picks':picks,'games':games,'log':log,'total':len(picks),'odds_loaded':odds_loaded,'historical_replay':historical_replay,'props_picks':props_picks,'props_nopick':props_nopick,'hot_cold':hot_cold}
+    # Funnel Plays: defense vs position / vs team spotlight boards (own record).
+    funnels, funnel_dvp = None, None
+    if not historical_replay:
+        try:
+            funnels, funnel_dvp = await _nba_fn_build(today_str, games, rosters, logs_by_player,
+                                                      dk_lookup, props_picks + props_nopick, log)
+        except Exception as _fne:
+            print(f"[nba_fn] build failed: {_fne}")
+            log.append("Funnel Plays board unavailable for this run")
+    result = {'date':today_str,'picks':top_picks,'all_picks':picks,'games':games,'log':log,'total':len(picks),'odds_loaded':odds_loaded,'historical_replay':historical_replay,'props_picks':props_picks,'props_nopick':props_nopick,'hot_cold':hot_cold,'funnels':funnels,'funnel_dvp':funnel_dvp}
     result = _nba_apply_season_scope(result)
     _cache.update(result)
     # Only cache if we actually got prop lines from the Odds API.
@@ -3494,10 +4040,12 @@ footer{text-align:center;padding:32px 24px;color:#4b5563;font-size:.78rem;border
     <button type="button" role="menuitem" class="nba-menu-item" style="--c:#a855f7" onclick="_nbaNavGo(function(){_nbaBoardOpen('nbaMpaPanel');})">&#11088; All MPA Specials</button>
     <button type="button" role="menuitem" class="nba-menu-item" style="--c:#22c55e" onclick="_nbaNavGo(function(){_nbaBoardOpen('nbaAllPicksPanel');})">&#127919; All Picks by Game</button>
     <button type="button" role="menuitem" class="nba-menu-item" style="--c:#ea580c" onclick="_nbaNavGo(openNbaHotColdBoard)">&#128293; Hot / Cold Players</button>
+    <button type="button" role="menuitem" class="nba-menu-item" style="--c:#22c55e" onclick="_nbaNavGo(openNbaFunnelBoard)">&#127919; Funnel Plays</button>
     <div class="nba-menu-head" role="presentation">&#128202; Records</div>
     <button type="button" role="menuitem" class="nba-menu-item" style="--c:#4338ca" onclick="_nbaNavGo(function(){_nbaOvOpen('nba-track-section');})">&#128202; Track Record</button>
     <button type="button" role="menuitem" class="nba-menu-item" style="--c:#0e7490" onclick="_nbaNavGo(openNbaOverflowRecord)">&#11088; Overflow Record</button>
     <button type="button" role="menuitem" class="nba-menu-item" style="--c:#ea580c" onclick="_nbaNavGo(openNbaHotColdRecord)">&#128293; Hot / Cold Record</button>
+    <button type="button" role="menuitem" class="nba-menu-item" style="--c:#22c55e" onclick="_nbaNavGo(openNbaFunnelRecord)">&#127919; Funnel Record</button>
     <button type="button" role="menuitem" class="nba-menu-item" style="--c:#d97706" onclick="_nbaNavGo(openNbaDowReport)">&#128197; Day of Week Trends</button>
     <button type="button" role="menuitem" class="nba-menu-item" style="--c:#7c3aed" onclick="_nbaNavGo(function(){openNbaCoachTrack();})">&#129504; Coach Track Record</button>
     <button type="button" role="menuitem" class="nba-menu-item" style="--c:#8b5cf6" onclick="_nbaNavGo(function(){openNbaGpRecord();})">&#128302; Game Predictor Record</button>
@@ -3523,7 +4071,7 @@ document.addEventListener('click',function(e){var w=e.target.closest?e.target.cl
 document.addEventListener('keydown',function(e){if(e.key==='Escape'){_nbaNavClose();_nbaOvClose();}});
 // Records, Game Predictor, 10K Sim and Auto Parlay open in one closable overlay
 // from Records &amp; Tools; none of them sit on the page until chosen.
-var _NBA_OV_TITLES={'nbaStreaksPanel':'&#128293; All Streaks','nbaMpaPanel':'&#11088; All MPA Specials','nbaAllPicksPanel':'&#127919; All Picks by Game','nba-hotcold-section':'&#128293; Hot / Cold Players','nba-mybets-card':'&#128176; My Bets','nba-track-section':'&#128202; Track Record','nba-overflow-track-section':'&#11088; Overflow Record','nba-hotcold-track-section':'&#128293; Hot / Cold Record','nba-dow-section':'&#128197; Day of Week Trends','nbaCoachTrackPanel':'&#129504; Coach Track Record','nbaGpRecordPanel':'&#128302; Game Predictor Record','nbaSimRecordPanel':'&#127922; Sim Record','nba-historical-track':'&#128218; Historical Track Record','nbaGpSection':'&#128302; Game Predictor','nbaSimSection':'&#127922; 10K Game Simulator','parlayCard':'&#127920; Auto Parlay Builder'};
+var _NBA_OV_TITLES={'nbaStreaksPanel':'&#128293; All Streaks','nbaMpaPanel':'&#11088; All MPA Specials','nbaAllPicksPanel':'&#127919; All Picks by Game','nba-hotcold-section':'&#128293; Hot / Cold Players','nba-mybets-card':'&#128176; My Bets','nba-track-section':'&#128202; Track Record','nba-overflow-track-section':'&#11088; Overflow Record','nba-hotcold-track-section':'&#128293; Hot / Cold Record','nba-funnel-section':'&#127919; Funnel Plays','nba-funnel-track-section':'&#127919; Funnel Record','nba-dow-section':'&#128197; Day of Week Trends','nbaCoachTrackPanel':'&#129504; Coach Track Record','nbaGpRecordPanel':'&#128302; Game Predictor Record','nbaSimRecordPanel':'&#127922; Sim Record','nba-historical-track':'&#128218; Historical Track Record','nbaGpSection':'&#128302; Game Predictor','nbaSimSection':'&#127922; 10K Game Simulator','parlayCard':'&#127920; Auto Parlay Builder'};
 var _nbaRecHome={},_nbaRecPrev={};
 function _nbaRecHost(){
   var ov=document.getElementById('nbaRecOv');
@@ -3718,6 +4266,30 @@ function _nbaOvClose(){
   <div id="nbaHcControls"></div>
   <div id="nbaHcBoard"></div>
 </div>
+<style>
+ .nba-fn-tag{display:inline-block;border-radius:999px;padding:1px 7px;font-size:.58rem;font-weight:900;letter-spacing:.06em;margin-left:4px}
+ .nba-fn-soft{background:rgba(34,197,94,.14);color:#4ade80;border:1px solid rgba(34,197,94,.35)}
+ .nba-fn-tough{background:rgba(239,68,68,.14);color:#f87171;border:1px solid rgba(239,68,68,.35)}
+ .nba-fn-elite{background:rgba(250,204,21,.14);color:#facc15;border:1px solid rgba(250,204,21,.35)}
+ .nba-fn-def{margin-top:6px;color:#cbd5e1;font-size:.7rem;line-height:1.45}
+ .nba-fn-wrap{overflow-x:auto;border:1px solid #1e293b;border-radius:12px;margin-top:10px}
+ .nba-fn-table{width:100%;border-collapse:collapse;font-size:.74rem;min-width:620px}
+ .nba-fn-table th{background:#0a0f1c;color:#818cf8;text-align:center;padding:9px 8px;font-size:.6rem;letter-spacing:.08em;text-transform:uppercase;white-space:nowrap}
+ .nba-fn-table th:first-child,.nba-fn-table td:first-child{text-align:left}
+ .nba-fn-table td{padding:7px 8px;border-top:1px solid #1e293b;color:#e2e8f0;text-align:center;white-space:nowrap}
+ .nba-fn-table td small{color:#94a3b8;margin-left:3px}
+ .nba-fn-cell-soft{background:rgba(34,197,94,.10);color:#4ade80!important;font-weight:800}
+ .nba-fn-cell-tough{background:rgba(239,68,68,.10);color:#f87171!important;font-weight:800}
+</style>
+<div id="nba-funnel-section" style="display:none;max-width:1400px;margin:28px auto 0;padding:0 24px 10px">
+  <div style="display:flex;justify-content:space-between;align-items:flex-end;gap:10px;flex-wrap:wrap;margin-bottom:10px">
+    <div><div style="font-size:.78rem;font-weight:700;color:#22c55e;text-transform:uppercase;letter-spacing:.15em">&#127919; Funnel Plays &middot; Defense Matchups</div>
+    <div style="font-size:.7rem;color:#94a3b8;margin-top:4px;max-width:900px;line-height:1.5">Every defense is ranked on Points, Rebounds, Assists and 3-Pointers allowed per game this regular season, overall and to Guards / Forwards / Centers. #1 = allows the fewest (toughest), #30 = allows the most (softest). Bottom 10 (softest) defenses = OVER funnels; Top 10 (toughest) = UNDER funnels. Position Funnels use starters at the matching position; Team Funnels use every player with a genuine line. Ranked by Funnel Score (40% matchup size vs league average, 35% last-10 hit rate at today&#39;s line, 25% season hit rate). Top 10 per board, market and side, ranks 11-20 as overflow; every play is saved pre-tip and tracked in the Funnel Record.</div></div>
+    <button type="button" class="nba-hc-btn" onclick="openNbaFunnelRecord()">&#128202; Funnel Record</button>
+  </div>
+  <div id="nbaFnControls"></div>
+  <div id="nbaFnBoard"></div>
+</div>
 <div id="props-section" style="display:none;max-width:1400px;margin:28px auto 0;padding:0 24px 40px">
   <div class="props-historical-label"></div>
   <div style="font-size:.78rem;font-weight:700;color:#f59e0b;text-transform:uppercase;letter-spacing:.15em;margin:0 0 14px;display:flex;align-items:center;gap:10px">&#9889; Player Props vs Opponent History</div>
@@ -3867,6 +4439,26 @@ function _nbaOvClose(){
     </div>
     <div id="nbaHcTopPct" style="display:none"></div><div id="nbaHcTopStats" style="display:none"></div>
     <div id="nbaHcBody"></div>
+  </div>
+</div>
+<div id="nba-funnel-track-section" style="display:none;max-width:1040px;margin:24px auto 0;padding:0 16px 40px">
+  <div class="card nba-trk-shell" style="padding:14px">
+    <div class="nba-record-hero">
+      <div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start;flex-wrap:wrap">
+        <div><div class="nba-record-kicker" style="color:#22c55e">NBA Performance Center &middot; Funnel Plays</div><h2 class="nba-record-title">&#127919; Funnel Track Record</h2><div class="nba-record-sub">Saved pre-tip Position Funnel and Team Funnel plays (Points, Rebounds, Assists, 3-Pointers): OVER vs bottom-10 defenses, UNDER vs top-10 defenses. Top 10 per board, market and side, plus ranks 11-20 as Funnel Overflow. Kept separate from the Main, Overflow, Hot / Cold and Coach totals. Hit rate counts every decided play; P/L counts only plays with a genuine saved price.</div></div>
+        <button class="nba-view-btn" onclick="_nbaOvClose()">Close</button>
+      </div>
+      <div class="nba-record-tools">
+        <label><span class="nba-record-label">Slate date</span><select id="nbaFnDateSelect" class="nba-record-control" onchange="renderNbaTrackDay('funnel')"><option value="">No saved dates</option></select></label><label><span class="nba-record-label">Period</span><select id="nbaFnPeriod" class="nba-record-control" onchange="renderNbaTrackDay('funnel')"><option value="day">Day</option><option value="week">Week &middot; last 7 days</option><option value="month">Month</option><option value="all">All Time</option></select></label>
+        <label><span class="nba-record-label">Funnel</span><select id="nbaFnType" class="nba-record-control" onchange="renderNbaTrackDay('funnel')"><option value="all">Position + Team</option><option value="position">Position Funnels</option><option value="team">Team Funnels</option></select></label>
+        <label><span class="nba-record-label">Board</span><select id="nbaFnBook" class="nba-record-control" onchange="renderNbaTrackDay('funnel')"><option value="main">Top 10</option><option value="overflow">Overflow &middot; ranks 11-20</option><option value="all">Top 10 + Overflow</option></select></label>
+        <label><span class="nba-record-label">Flat bet amount</span><input type="number" id="nbaFnBetSize" class="nba-record-control" value="100.00" min="1" step="5" style="width:110px" oninput="renderNbaTrackDay('funnel')"></label>
+        <button onclick="loadNbaTrackRecord('funnel')" class="nba-view-btn">&#8635; Refresh results</button>
+        <div class="nba-view-tabs"><button id="nbaFnCatBtn" class="nba-view-btn active" onclick="setNbaTrkView('category','funnel')">By Category</button><button id="nbaFnFullBtn" class="nba-view-btn" onclick="setNbaTrkView('full','funnel')">Full List</button></div>
+      </div>
+    </div>
+    <div id="nbaFnTopPct" style="display:none"></div><div id="nbaFnTopStats" style="display:none"></div>
+    <div id="nbaFnBody"></div>
   </div>
 </div>
 <style>
@@ -4111,6 +4703,7 @@ window._nbaDowCsv=function(){
 function _nbaUnlockDates(){try{var dp=document.getElementById('datePicker');if(dp){dp.removeAttribute('min');dp.removeAttribute('max');}}catch(e){}}
 if(window.IS_ADMIN){document.body.classList.add('is-admin');_nbaUnlockDates();}else{var _at=localStorage.getItem('__mpa_token')||'';var _ak=localStorage.getItem('__mpa_admin')||'';if(_at||_ak){fetch('/api/whoami?_tok='+encodeURIComponent(_at)+'&admin='+encodeURIComponent(_ak)).then(r=>r.json()).then(d=>{if(d&&d.is_admin){window.IS_ADMIN=true;document.body.classList.add('is-admin');_nbaUnlockDates();}}).catch(function(){});}}
 let nbaHotColdData=null;
+let nbaFunnelData=null,nbaFunnelDvp=null;
 let top10=[], allPicksData=[], nbaPropsData=[], nbaApprovedPicks=[], activeTopStat='ALL', activeTopSide='ALL', activeAllStat='ALL', sideFilter=null;
 
 function pctClass(p){return p>=90?['pct-green','bar-green']:p>=80?['pct-yellow','bar-yellow']:['pct-orange','bar-orange']}
@@ -4807,6 +5400,7 @@ async function runPicks(force=false){
     allPicksData=data.all_picks||[];
     nbaPropsData=(data.props_picks||[]).concat(data.props_nopick||[]);
     nbaHotColdData=Array.isArray(data.hot_cold)?data.hot_cold:null;
+    nbaFunnelData=Array.isArray(data.funnels)?data.funnels:null;nbaFunnelDvp=data.funnel_dvp||null;
     nbaApprovedPicks=(data.historical_replay?data.props_picks:data.picks)||[];
     activeTopStat='ALL';activeTopSide='ALL';activeAllStat='ALL';
     var _topSideChooser=document.getElementById('topSideChooser');if(_topSideChooser)_topSideChooser.style.display='none';
@@ -4873,6 +5467,7 @@ async function getPicks(){
     allPicksData=data.all_picks||[];
     nbaPropsData=(data.props_picks||[]).concat(data.props_nopick||[]);
     nbaHotColdData=Array.isArray(data.hot_cold)?data.hot_cold:null;
+    nbaFunnelData=Array.isArray(data.funnels)?data.funnels:null;nbaFunnelDvp=data.funnel_dvp||null;
     nbaApprovedPicks=(data.historical_replay?data.props_picks:data.picks)||[];
     activeTopStat='ALL';activeTopSide='ALL';activeAllStat='ALL';
     var _topSideChooser=document.getElementById('topSideChooser');if(_topSideChooser)_topSideChooser.style.display='none';
@@ -4973,8 +5568,100 @@ function renderNbaHotColdSection(){
   });
   body.innerHTML=html;
 }
+// ─── Funnel Plays board: defense vs position / vs team (own record) ───
+var _nbaFn={board:'position',side:'OVER',stat:'ALL',pos:'ALL',edge:'ALL',book:'main',dvpStat:'PTS'};
+var _NBA_FN_STATS=[['PTS','Points'],['REB','Rebounds'],['AST','Assists'],['FG3M','3-Pointers']];
+var _NBA_FN_POS={G:'Guards',F:'Forwards',C:'Centers'};
+function _nbaFnSet(key,val){_nbaFn[key]=val;renderNbaFunnelSection();}
+function _nbaFnBtns(key,opts,counts){
+  return opts.map(function(o){
+    var n=counts&&counts[o[0]]!=null?' <span class="nba-hc-n">'+counts[o[0]]+'</span>':'';
+    return '<button type="button" class="nba-hc-btn'+(_nbaFn[key]===o[0]?' active':'')+'" onclick="_nbaFnSet(&#39;'+key+'&#39;,&#39;'+o[0]+'&#39;)">'+o[1]+n+'</button>';
+  }).join('');
+}
+function _nbaFnCard(r){
+  var E=_nbaHcEsc,over=r.pick==='OVER',sideCol=over?'#4ade80':'#f87171',fc=over?'#22c55e':'#ef4444';
+  var tip='';try{if(r.tipoff)tip=new Date(r.tipoff).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'});}catch(e){}
+  var grp=r.funnel==='position'?(_NBA_FN_POS[r.position]||r.position||''):'all players';
+  var diff=Number(r.allowed_diff||0);
+  var tag=over?'<span class="nba-fn-tag nba-fn-soft">SOFT &middot; BOTTOM 10</span>':'<span class="nba-fn-tag nba-fn-tough">TOUGH &middot; TOP 10</span>';
+  if(r.elite)tag+='<span class="nba-fn-tag nba-fn-elite">'+(over?'BOTTOM 5':'TOP 5')+'</span>';
+  var chips=(r.recent_games||[]).map(function(g){var v=Number(g.v),hit=over?v>r.line:v<r.line,push=v===Number(r.line);return '<span class="nba-hc-chip" style="background:'+(push?'#334155':(hit?'rgba(34,197,94,.18)':'rgba(239,68,68,.18)'))+';color:'+(push?'#cbd5e1':(hit?'#4ade80':'#f87171'))+';border-radius:6px;padding:1px 5px;margin-right:3px;font-weight:800;font-size:.66rem">'+E(g.v)+'</span>';}).join('');
+  var odds=r.odds!=null?'<b>'+(r.odds>0?'+':'')+E(r.odds)+'</b> <span class="nba-hc-muted">'+E(r.book||'Book unavailable')+'</span>':'<span class="nba-hc-muted">No genuine price &middot; W/L only</span>';
+  var edge=r.edge!=null?' &middot; Edge <b style="color:'+(r.edge>0?'#4ade80':'#f87171')+'">'+(r.edge>0?'+':'')+E(r.edge)+'%</b>':'';
+  var logRows=(r.recent_games||[]).map(function(g){var v=Number(g.v),push=v===Number(r.line),hit=over?v>r.line:v<r.line;return '<tr><td>'+E(g.d)+'</td><td>'+(g.loc==='Away'?'@':'vs')+' '+E(g.opp)+'</td><td>'+E(g.v)+'</td><td style="color:'+(push?'#cbd5e1':(hit?'#4ade80':'#f87171'))+';font-weight:800">'+(push?'PUSH':(hit?'HIT':'MISS'))+'</td></tr>';}).join('');
+  return '<div class="nba-hc-card" style="--fc:'+fc+'">'+
+    '<button type="button" class="nba-hc-top" aria-expanded="false" onclick="_nbaHcToggle(this)">'+
+      '<span class="nba-hc-rank">#'+E(r.rank)+'</span>'+
+      '<span class="nba-hc-who"><b>'+E(r.player)+'</b><small>'+E(r.team)+' '+(r.venue==='AWAY'?'@':'vs')+' '+E(r.opp)+(tip?' &middot; '+E(tip):'')+(r.position?' &middot; '+E(r.position):'')+(r.start_note?' &middot; '+E(r.start_note):'')+'</small></span>'+
+    '</button>'+
+    '<div class="nba-hc-play"><span style="color:'+sideCol+';font-weight:900">'+r.pick+' '+E(r.line)+'</span> '+E(r.emoji||'')+' '+E(r.stat_label)+tag+'</div>'+
+    '<div class="nba-fn-def">'+E(r.opp)+' allows <b>'+E(r.allowed)+'</b> '+E(r.stat_label)+' / game to '+E(grp)+' &middot; <b>#'+E(r.def_rank)+' of '+E(r.def_teams)+'</b> <span class="nba-hc-muted">('+(diff>=0?'+':'')+E(diff)+'% vs league '+E(r.league_allowed)+', '+E(r.def_games)+' games)</span></div>'+
+    '<div class="nba-hc-line"><b>'+E(r.l10_hits)+'/'+E(r.l10_total)+'</b> last '+E(r.l10_total)+' &middot; avg <b>'+E(r.l10_avg)+'</b> &middot; season <b>'+E(r.season_hits)+'/'+E(r.season_total)+'</b> (avg '+E(r.season_avg)+') &middot; Funnel Score <b>'+E(r.score)+'</b></div>'+
+    '<div class="nba-hc-line">'+chips+'</div>'+
+    '<div class="nba-hc-line">'+odds+edge+'</div>'+
+    '<div class="nba-hc-more" onclick="_nbaHcToggle(this.parentElement.querySelector(&#39;.nba-hc-top&#39;))">&#9662; Game log</div>'+
+    '<div class="nba-hc-drop" style="display:none"><div class="nba-hc-dh">Last '+E(r.l10_total)+' current-season games &middot; any venue</div>'+
+    '<table class="nba-hc-log"><thead><tr><th>Date</th><th>Opp</th><th>'+E(r.stat_label)+'</th><th>vs '+E(r.line)+'</th></tr></thead><tbody>'+logRows+'</tbody></table></div>'+
+  '</div>';
+}
+function _nbaFnDvpTable(){
+  var d=nbaFunnelDvp,E=_nbaHcEsc;
+  if(!d||!d.teams||!d.n_teams)return '<div class="nba-hc-empty">Defense rankings are not available for this run yet.</div>';
+  var sk=_nbaFn.dvpStat,n=d.n_teams,tier=d.tier||10,lbl=(_NBA_FN_STATS.filter(function(s){return s[0]===sk;})[0]||[sk,sk])[1];
+  function cell(t,grp){var c=((d.teams[t]||{})[grp]||{})[sk];if(!c)return '<td>&mdash;</td>';var cls=c[1]>n-tier?' class="nba-fn-cell-soft"':(c[1]<=tier?' class="nba-fn-cell-tough"':'');return '<td'+cls+'>'+E(c[0])+'<small>#'+E(c[1])+'</small></td>';}
+  var teams=Object.keys(d.teams).sort(function(a,b){var x=((d.teams[a].T||{})[sk]||[0])[0],y=((d.teams[b].T||{})[sk]||[0])[0];return y-x;});
+  var lg=d.league||{};
+  var html='<div class="nba-hc-row"><span class="nba-hc-lbl">Market</span>'+_nbaFnBtns('dvpStat',_NBA_FN_STATS)+'</div>'+
+    '<div class="nba-hc-muted" style="font-size:.68rem">'+E(lbl)+' allowed per game &middot; regular season through '+E(d.through||'n/a')+' &middot; <span style="color:#4ade80">green = bottom '+tier+' (softest, OVER funnel)</span> &middot; <span style="color:#f87171">red = top '+tier+' (toughest, UNDER funnel)</span> &middot; sorted softest first</div>'+
+    '<div class="nba-fn-wrap"><table class="nba-fn-table"><thead><tr><th>Defense</th><th>GP</th><th>All players</th><th>Guards</th><th>Forwards</th><th>Centers</th></tr></thead><tbody>'+
+    teams.map(function(t){return '<tr><td><b>'+E(t)+'</b></td><td>'+E(d.teams[t].g)+'</td>'+cell(t,'T')+cell(t,'G')+cell(t,'F')+cell(t,'C')+'</tr>';}).join('')+
+    '<tr><td><b>League avg</b></td><td>&mdash;</td>'+['T','G','F','C'].map(function(g){return '<td>'+E((lg[g]||{})[sk]==null?'—':lg[g][sk])+'</td>';}).join('')+'</tr>'+
+    '</tbody></table></div>';
+  return html;
+}
+function renderNbaFunnelSection(){
+  var body=document.getElementById('nbaFnBoard'),ctl=document.getElementById('nbaFnControls');if(!body||!ctl)return;
+  var data=nbaFunnelData;
+  var boardBtns='<div class="nba-hc-row"><span class="nba-hc-lbl">Board</span>'+_nbaFnBtns('board',[['position','&#127919; Position Funnels'],['team','&#128737;&#65039; Team Funnels'],['dvp','&#128202; Defense Rankings']])+'</div>';
+  if(window.__NBA_HISTORICAL_REPLAY__){ctl.innerHTML='';body.innerHTML='<div class="nba-hc-empty">Funnel Plays are built from live runs only.</div>';return;}
+  if(_nbaFn.board==='dvp'){ctl.innerHTML=boardBtns;body.innerHTML=_nbaFnDvpTable();return;}
+  if(!Array.isArray(data)){ctl.innerHTML=boardBtns;body.innerHTML='<div class="nba-hc-empty">This saved run has no Funnel Plays yet (it was built before this section existed, or the defense data was still loading). The next live run builds it automatically.</div>';return;}
+  var base=data.filter(function(r){return r.funnel===_nbaFn.board&&(_nbaFn.book==='overflow'?!!r.is_overflow:!r.is_overflow);});
+  var sideCounts={OVER:base.filter(function(r){return r.pick==='OVER';}).length,UNDER:base.filter(function(r){return r.pick==='UNDER';}).length};
+  var bySide=base.filter(function(r){return r.pick===_nbaFn.side;});
+  var statCounts={ALL:bySide.length};_NBA_FN_STATS.forEach(function(s){statCounts[s[0]]=bySide.filter(function(r){return r.stat===s[0];}).length;});
+  var posCounts={ALL:bySide.length};['G','F','C'].forEach(function(p){posCounts[p]=bySide.filter(function(r){return r.position===p;}).length;});
+  ctl.innerHTML=boardBtns+
+    '<div class="nba-hc-row"><span class="nba-hc-lbl">Side</span>'+_nbaFnBtns('side',[['OVER','&#11014;&#65039; Overs &middot; bottom 10 defenses'],['UNDER','&#11015;&#65039; Unders &middot; top 10 defenses']],sideCounts)+'</div>'+
+    '<div class="nba-hc-row"><span class="nba-hc-lbl">Market</span>'+_nbaFnBtns('stat',[['ALL','All markets']].concat(_NBA_FN_STATS),statCounts)+'</div>'+
+    (_nbaFn.board==='position'?'<div class="nba-hc-row"><span class="nba-hc-lbl">Position</span>'+_nbaFnBtns('pos',[['ALL','All'],['G','Guards'],['F','Forwards'],['C','Centers']],posCounts)+'</div>':'')+
+    '<div class="nba-hc-row"><span class="nba-hc-lbl">Edge</span>'+_nbaFnBtns('edge',[['ALL','All plays'],['POS','Positive edge only']])+
+    '<span class="nba-hc-lbl" style="margin-left:12px">List</span>'+_nbaFnBtns('book',[['main','Top 10'],['overflow','Overflow 11-20']])+'</div>';
+  var rows=bySide.filter(function(r){
+    if(_nbaFn.stat!=='ALL'&&r.stat!==_nbaFn.stat)return false;
+    if(_nbaFn.board==='position'&&_nbaFn.pos!=='ALL'&&r.position!==_nbaFn.pos)return false;
+    if(_nbaFn.edge==='POS'&&!(r.edge!=null&&r.edge>0))return false;
+    return true;
+  });
+  if(!rows.length){body.innerHTML='<div class="nba-hc-empty">No player qualifies for this board / side / market / filter on the loaded slate.</div>';return;}
+  var html='';
+  _NBA_FN_STATS.forEach(function(s){
+    var list=rows.filter(function(r){return r.stat===s[0];}).sort(function(a,b){return a.rank-b.rank;});
+    if(!list.length)return;
+    html+='<div class="nba-hc-group"><div class="nba-hc-gh">'+_nbaHcEsc(list[0].category)+' &middot; '+_nbaFn.side+' <span class="nba-hc-muted">&middot; '+(_nbaFn.book==='overflow'?'ranks 11-20':'Top 10')+' &middot; '+list.length+' play'+(list.length===1?'':'s')+'</span></div><div class="nba-hc-grid">'+list.map(_nbaFnCard).join('')+'</div></div>';
+  });
+  body.innerHTML=html;
+}
+function openNbaFunnelBoard(){
+  var loaded=(typeof allPicksData!=='undefined'&&allPicksData&&allPicksData.length)||(typeof nbaPropsData!=='undefined'&&nbaPropsData&&nbaPropsData.length);
+  if(!Array.isArray(nbaFunnelData)&&!loaded){alert('Load or run picks first - Funnel Plays are built with each live run.');return;}
+  if(!_nbaOvOpen('nba-funnel-section'))return;
+  try{renderNbaFunnelSection();}catch(e){console.error('Funnel render failed',e);}
+}
 function renderPropsSection(picks, nopick) {
   try{renderNbaHotColdSection();}catch(e){console.error('Hot/Cold render failed',e);}
+  try{renderNbaFunnelSection();}catch(e){console.error('Funnel render failed',e);}
   var sec = document.getElementById('props-section');
   if (!sec) return;
   var all = (picks||[]).concat(nopick||[]);
@@ -5144,6 +5831,7 @@ document.addEventListener('DOMContentLoaded', function(){
     allPicksData = data.all_picks || [];
     nbaPropsData = (data.props_picks || []).concat(data.props_nopick || []);
     nbaHotColdData = Array.isArray(data.hot_cold) ? data.hot_cold : null;
+    nbaFunnelData = Array.isArray(data.funnels) ? data.funnels : null; nbaFunnelDvp = data.funnel_dvp || null;
     nbaApprovedPicks = (data.historical_replay ? data.props_picks : data.picks) || [];
     activeTopStat = 'ALL'; activeTopSide = 'ALL'; activeAllStat = 'ALL';
     var _topSideChooser=document.getElementById('topSideChooser');if(_topSideChooser)_topSideChooser.style.display='none';
@@ -5368,7 +6056,13 @@ var _nbaOvfData=null;
 var _nbaOvfView='category';
 var _nbaHcData=null;
 var _nbaHcView='category';
-function _nbaRecPrefix(record){return record==='overflow'?'nbaOvf':(record==='hotcold'?'nbaHc':'nbaTrk');}
+var _nbaFnData=null;
+var _nbaFnView='category';
+function _nbaRecPrefix(record){return record==='overflow'?'nbaOvf':(record==='hotcold'?'nbaHc':(record==='funnel'?'nbaFn':'nbaTrk'));}
+function openNbaFunnelRecord(){
+  var section=_nbaOvOpen('nba-funnel-track-section');if(!section)return;
+  if(_nbaFnData===null)loadNbaTrackRecord('funnel');
+}
 function openNbaHotColdRecord(){
   var section=_nbaOvOpen('nba-hotcold-track-section');if(!section)return;
   if(_nbaHcData===null)loadNbaTrackRecord('hotcold');
@@ -5385,7 +6079,7 @@ function openNbaOverflowRecord(){
 function setNbaTrkView(view,record){
   var prefix=_nbaRecPrefix(record);
   view=view==='full'?'full':'category';
-  if(record==='overflow')_nbaOvfView=view;else if(record==='hotcold')_nbaHcView=view;else _nbaTrkView=view;
+  if(record==='overflow')_nbaOvfView=view;else if(record==='hotcold')_nbaHcView=view;else if(record==='funnel')_nbaFnView=view;else _nbaTrkView=view;
   var c=document.getElementById(prefix+'CatBtn'),f=document.getElementById(prefix+'FullBtn');
   if(c)c.classList.toggle('active',view==='category');
   if(f)f.classList.toggle('active',view==='full');
@@ -5442,15 +6136,15 @@ function _nbaTrkPriced(odds){
   return Number.isFinite(o)&&(o>0||(o>=-1000&&o<=-100));
 }
 async function loadNbaTrackRecord(record){
-  var ovf=record==='overflow',hc=record==='hotcold',prefix=_nbaRecPrefix(record);
+  var ovf=record==='overflow',hc=record==='hotcold',fn=record==='funnel',prefix=_nbaRecPrefix(record);
   var body=document.getElementById(prefix+'Body');
     if(body) body.innerHTML=_nbaRecordEmpty('Loading official results','Fetching the latest graded pre-game snapshots.');
   try{
-    var r=await fetch(hc?'/api/hot-cold-track-record':(ovf?'/api/overflow-track-record':'/api/track-record'));
+    var r=await fetch(fn?'/api/funnel-track-record':(hc?'/api/hot-cold-track-record':(ovf?'/api/overflow-track-record':'/api/track-record')));
     if(!r.ok) throw new Error(await r.text());
     var d=await r.json();
     var data=d.dates||[];
-    if(ovf)_nbaOvfData=data;else if(hc)_nbaHcData=data;else _nbaTrkData=data;
+    if(ovf)_nbaOvfData=data;else if(hc)_nbaHcData=data;else if(fn)_nbaFnData=data;else _nbaTrkData=data;
     
     var ds = document.getElementById(prefix+'DateSelect');
     if(ds){
@@ -5487,8 +6181,8 @@ function _nbaPeriodLabel(period,bounds,picked){
 function toggleTrkAcc(el) { el.parentElement.classList.toggle('open'); }
 function nbaTrkCatClass(cat) { return 'cat-' + String(cat||'').replace(/[^a-zA-Z0-9]/g, ''); }
 function renderNbaTrackDay(record){
-  var ovf=record==='overflow',hc=record==='hotcold',prefix=_nbaRecPrefix(record);
-  var data=ovf?_nbaOvfData:(hc?_nbaHcData:_nbaTrkData),view=ovf?_nbaOvfView:(hc?_nbaHcView:_nbaTrkView);
+  var ovf=record==='overflow',hc=record==='hotcold',fn=record==='funnel',prefix=_nbaRecPrefix(record);
+  var data=ovf?_nbaOvfData:(hc?_nbaHcData:(fn?_nbaFnData:_nbaTrkData)),view=ovf?_nbaOvfView:(hc?_nbaHcView:(fn?_nbaFnView:_nbaTrkView));
   var sel = document.getElementById(prefix+'DateSelect').value;
   var out = document.getElementById(prefix+'Body');
   var topPct = document.getElementById(prefix+'TopPct');
@@ -5498,6 +6192,16 @@ function renderNbaTrackDay(record){
   if(hc&&data&&data.length){
     var hcBookEl=document.getElementById('nbaHcBook'),hcBook=hcBookEl?hcBookEl.value:'main';
     data=data.map(function(d){return Object.assign({},d,{detail:(d.detail||[]).filter(function(x){return hcBook==='all'||(hcBook==='overflow'?!!x.is_overflow:!x.is_overflow);})});});
+  }
+  if(fn&&data&&data.length){
+    var fnBookEl=document.getElementById('nbaFnBook'),fnBook=fnBookEl?fnBookEl.value:'main';
+    var fnTypeEl=document.getElementById('nbaFnType'),fnType=fnTypeEl?fnTypeEl.value:'all';
+    data=data.map(function(d){return Object.assign({},d,{detail:(d.detail||[]).filter(function(x){return (fnBook==='all'||(fnBook==='overflow'?!!x.is_overflow:!x.is_overflow))&&(fnType==='all'||x.funnel===fnType);})});});
+  }
+  if(fn&&(!data||!data.length)){
+    if(out) out.innerHTML=_nbaRecordEmpty('No saved Funnel results yet','Each live pre-tip run saves the Position Funnel and Team Funnel Top 10 (and ranks 11-20) per market and side. Results appear here once games finish.');
+    if(topPct) topPct.innerHTML=''; if(topStats) topStats.innerHTML='';
+    return;
   }
   if(hc&&(!data||!data.length)){
     if(out) out.innerHTML=_nbaRecordEmpty('No saved Hot / Cold results yet','Each live pre-tip run saves the Hot, Cold and Double Cold Top 10 (and ranks 11-20) per market. Results appear here once games finish.');
@@ -5519,6 +6223,7 @@ function renderNbaTrackDay(record){
   
   var cats = ["Points","Rebounds","Assists","3-Pointers","Pts+Reb+Ast","Pts+Reb","Pts+Ast","Reb+Ast","Blocks","Steals"];
   if(hc){var hcCats=[];['Hot','Cold','Double Cold'].forEach(function(f){cats.forEach(function(c){hcCats.push(f+' '+c);});});cats=hcCats;}
+  if(fn){var fnCats=[];['Position Funnel','Team Funnel'].forEach(function(f){['Points','Rebounds','Assists','3-Pointers'].forEach(function(c){fnCats.push(f+' '+c);});});cats=fnCats;}
   var groups = {};
   var dw=0, dl=0, dp=0, dpend=0, dnet=0, dstaked=0;
   
@@ -10394,6 +11099,21 @@ async def nba_hot_cold_track_record():
         return _JR(await asyncio.to_thread(_nba_hc_record_response))
     except RuntimeError:
         return _JR({"detail":"Saved Hot / Cold record is unavailable. Please retry."}, status_code=503)
+
+
+@app.get("/api/funnel-track-record")
+async def nba_funnel_track_record():
+    """Funnel Plays record (Top 10 + ranks 11-20 per board x market x side).
+    Kept out of the Main, Overflow, Hot/Cold and Coach totals."""
+    from fastapi.responses import JSONResponse as _JR
+    try:
+        await asyncio.wait_for(asyncio.to_thread(_nba_update_fn_ledger), timeout=40)
+    except Exception as exc:
+        print(f"[nba_fn_track] grading still running/failed on open: {exc!r}")
+    try:
+        return _JR(await asyncio.to_thread(_nba_fn_record_response))
+    except RuntimeError:
+        return _JR({"detail":"Saved Funnel record is unavailable. Please retry."}, status_code=503)
 
 
 @app.get("/api/overflow-track-record")
