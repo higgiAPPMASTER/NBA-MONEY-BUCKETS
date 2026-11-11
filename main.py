@@ -590,6 +590,10 @@ def _nba_trk_bg(date_str: str, result: dict):
         _nba_save_fn_snapshot(date_str, result)
     except Exception as exc:
         print(f"[nba_fn_track] snapshot NOT saved for {date_str}: {exc}")
+    try:
+        _nba_save_sg_snapshot(date_str, result)
+    except Exception as exc:
+        print(f"[nba_sg_track] snapshot NOT saved for {date_str}: {exc}")
     _nba_th.Thread(target=_nba_update_all_ledgers, daemon=True).start()
 
 _NBA_TRK_CACHED_TS: dict = {}
@@ -1449,6 +1453,197 @@ def _nba_fn_warm():
 _nba_th.Thread(target=_nba_fn_warm, daemon=True).start()
 
 
+# ─── NBA All Streaks + MPA Specials record (own record) ──────────────────────
+# Tracks every play shown on the All Streaks and All MPA Specials boards, saved
+# pre-tip per game exactly as displayed (same Streak and MPA rules, same
+# pattern-contradiction filter). Separate from Main/Overflow/Hot-Cold/Funnel/Coach.
+_NBA_SG_SNAP_CAT   = "__sg_picks__"
+_NBA_SG_DETAIL_CAT = "__sg_detail__"
+_NBA_SG_LEDGER_CAT = "__sg_ledger__"
+_NBA_SG_KEYS = _NBA_HC_KEYS + ("signal", "streak_n", "pattern")
+
+
+def _nba_sg_rate(p) -> float:
+    def _parse(s):
+        try:
+            a, b = str(s or "").split("/")[:2]
+            return float(a), float(b)
+        except (TypeError, ValueError):
+            return 0.0, 0.0
+    eh, et = _parse(p.get("alt_evens"))
+    oh, ot = _parse(p.get("alt_odds"))
+    return (eh + oh) / (et + ot) if (et + ot) else 0.0
+
+
+def _nba_sg_snapshot_rows(result: dict) -> list:
+    rows = [p for p in (result.get("all_picks") or []) if isinstance(p, dict)]
+    pattern_keys = {f"{p.get('player')}|{p.get('stat')}" for p in rows if p.get("has_consistency")}
+    picks = []
+    for p in rows:
+        sk = p.get("stat")
+        line = p.get("dk_line")
+        if sk not in STAT_CONFIG or line is None:
+            continue
+        sr = p.get("streak_rec")
+        if sr in ("OVER", "UNDER") and not (sr == "UNDER" and f"{p.get('player')}|{sk}" in pattern_keys):
+            picks.append(("streak", "Streak", sr, p, float(p.get("streak_n") or 0),
+                          f"{p.get('streak_n') or 0} straight {sr}"))
+        ar = p.get("alt_rec")
+        if ar in ("OVER", "UNDER"):
+            picks.append(("mpa", "MPA Special", ar, p, _nba_sg_rate(p),
+                          f"even {p.get('alt_evens') or '-'} / odd {p.get('alt_odds') or '-'}"))
+    groups = {}
+    for sig, label, side, p, score, pattern in picks:
+        groups.setdefault((sig, p.get("stat"), side), []).append((score, sig, label, side, p, pattern))
+    flat = []
+    for key in sorted(groups):
+        lst = sorted(groups[key], key=lambda x: (-x[0], str(x[4].get("player") or "")))
+        for i, (score, sig, label, side, p, pattern) in enumerate(lst, 1):
+            sk = p.get("stat")
+            raw = p.get("dk_over_odds") if side == "OVER" else p.get("dk_under_odds")
+            odds = _nba_hc_price(raw)
+            if odds is not None and not _nba_trk_priced(odds):
+                odds = None
+            mkt = _NBA_STAT_LABEL.get(sk, sk)
+            flat.append({"name": p.get("player", ""), "team": p.get("team", ""), "opp": p.get("opp", ""),
+                         "category": f"{label} {mkt}", "market": mkt, "stat_key": sk,
+                         "side": side, "line": p.get("dk_line"), "odds": odds,
+                         "book": (p.get("dk_book") or "") if odds is not None else "",
+                         "rank": i, "is_overflow": False, "form": None, "form_key": None,
+                         "edge": None, "capture_scope": "signals", "signal": sig,
+                         "streak_n": p.get("streak_n") if sig == "streak" else None,
+                         "pattern": pattern, "tipoff": p.get("tipoff")})
+    return flat
+
+
+def _nba_save_sg_snapshot(date_str: str, result: dict):
+    """Per game: unstarted games take the latest run; started games keep their
+    saved pregame Streak/MPA rows. Never rewrites a locked (graded) date."""
+    if not _nba_main_board_ok(date_str, result) or result.get("historical_replay") \
+            or not isinstance(result.get("all_picks"), list):
+        return
+    from datetime import timezone as _tz
+    now_utc = datetime.now(_tz.utc)
+    with _NBA_TRK_LOCK:
+        locked = _nba_hist_sb_get({"app": f"eq.{_NBA_TRK_APP}", "category": f"eq.{_NBA_SG_LEDGER_CAT}",
+                                   "date": f"eq.{date_str}", "locked": "eq.true",
+                                   "select": "date", "limit": "1"})
+        if locked:
+            return
+        existing_rows = _nba_hist_sb_get({"app": f"eq.{_NBA_TRK_APP}", "category": f"eq.{_NBA_SG_SNAP_CAT}",
+                                          "side": "eq.ALL", "date": f"eq.{date_str}",
+                                          "select": "detail", "limit": "1"})
+        existing = (existing_rows[0].get("detail") or []) if existing_rows else []
+        fresh = [r for r in _nba_sg_snapshot_rows(result) if not _nba_tip_started(r.get("tipoff"), now_utc)]
+        kept = [r for r in existing if _nba_tip_started(r.get("tipoff"), now_utc)]
+        if not fresh:
+            return
+        ok = _nba_sb_upsert(
+            [{"app": _NBA_TRK_APP, "date": date_str, "category": _NBA_SG_SNAP_CAT,
+              "side": "ALL", "wins": 0, "losses": 0, "locked": False, "detail": kept + fresh}],
+            "app,date,category,side")
+    print(f"[nba_sg_track] snapshot {'saved' if ok else 'FAILED'}: {len(fresh)} pregame + "
+          f"{len(kept)} locked started-game Streak/MPA picks -> {date_str}")
+
+
+def _nba_load_sg_snapshot(date_str: str) -> list:
+    rows = _nba_sb_get({"app": f"eq.{_NBA_TRK_APP}", "category": f"eq.{_NBA_SG_SNAP_CAT}",
+                        "side": "eq.ALL", "date": f"eq.{date_str}", "select": "detail", "limit": "1"})
+    d = (rows[0].get("detail") or []) if rows else []
+    return d if isinstance(d, list) else []
+
+
+def _nba_update_sg_ledger():
+    """Grade saved Streak/MPA snapshots with the same box-score grader as Main."""
+    today = _nba_today().isoformat()
+    with _NBA_TRK_LOCK:
+        locked = {r["date"] for r in (_nba_sb_get(
+            {"app": f"eq.{_NBA_TRK_APP}", "category": f"eq.{_NBA_SG_LEDGER_CAT}",
+             "locked": "eq.true", "select": "date", "limit": "500"}) or [])}
+        dates = sorted({r["date"] for r in (_nba_sb_get(
+            {"app": f"eq.{_NBA_TRK_APP}", "category": f"eq.{_NBA_SG_SNAP_CAT}",
+             "side": "eq.ALL", "select": "date", "limit": "365"}) or []) if r.get("date")})
+        upserts = []
+        for d in dates:
+            if d >= today or d in locked:
+                continue
+            snap = _nba_load_sg_snapshot(d)
+            if not snap:
+                continue
+            try:
+                graded = _nba_grade_date(d, [{**r, "is_overflow": False} for r in snap])
+            except Exception as e:
+                print(f"[nba_sg_track] grade failed {d}: {e}")
+                continue
+            if not graded.get("any_game"):
+                continue
+            try:
+                old_enough = (_nba_today() - date.fromisoformat(d)).days >= 2
+            except Exception:
+                old_enough = False
+            if not graded.get("all_final") and not (old_enough and graded.get("fetch_ok")):
+                continue
+            det, agg = [], {}
+            for src, row in zip(snap, graded.get("main", [])):
+                if row.get("result") not in ("WIN", "LOSS", "PUSH"):
+                    continue
+                out = {k: src.get(k) for k in _NBA_SG_KEYS}
+                out.update({"result": row.get("result"), "actual": row.get("actual"),
+                            "profit": row.get("profit")})
+                det.append(out)
+                if out["result"] in ("WIN", "LOSS"):
+                    rec = agg.setdefault(out["category"], {}).setdefault(out.get("side", "OVER"), [0, 0])
+                    rec[0 if out["result"] == "WIN" else 1] += 1
+            upserts += [
+                {"app": _NBA_TRK_APP, "date": d, "category": _NBA_SG_LEDGER_CAT, "side": "ALL",
+                 "wins": 0, "losses": 0, "locked": True, "detail": agg},
+                {"app": _NBA_TRK_APP, "date": d, "category": _NBA_SG_DETAIL_CAT, "side": "ALL",
+                 "wins": 0, "losses": 0, "locked": True, "detail": det},
+            ]
+        if upserts:
+            for i in range(0, len(upserts), 10):
+                _nba_sb_upsert(upserts[i:i + 10], "app,date,category,side")
+            print(f"[nba_sg_track] locked {len(upserts)//2} dates")
+
+
+def _nba_sg_record_response() -> dict:
+    """Streak/MPA record: graded rows plus PENDING saved pregame rows."""
+    det_rows = _nba_hist_sb_get({"app": f"eq.{_NBA_TRK_APP}", "category": f"eq.{_NBA_SG_DETAIL_CAT}",
+                                 "locked": "eq.true", "select": "date,detail", "limit": "365"})
+    detail_by_date = {r["date"]: (r.get("detail") or []) for r in (det_rows or []) if r.get("date")}
+    pending_dates = set()
+    try:
+        cutoff = (_nba_today() - timedelta(days=10)).isoformat()
+        snap_dates = sorted({r["date"] for r in (_nba_hist_sb_get(
+            {"app": f"eq.{_NBA_TRK_APP}", "category": f"eq.{_NBA_SG_SNAP_CAT}",
+             "side": "eq.ALL", "select": "date", "limit": "365"}) or []) if r.get("date")})
+        for d in snap_dates:
+            if d in detail_by_date or d < cutoff:
+                continue
+            snap = _nba_load_sg_snapshot(d)
+            if not snap:
+                continue
+            detail_by_date[d] = [{**{k: p.get(k) for k in _NBA_SG_KEYS},
+                                  "result": "PENDING", "actual": None, "profit": None} for p in snap]
+            pending_dates.add(d)
+    except Exception as exc:
+        print(f"[nba_sg_track] pending snapshot read failed: {exc}")
+    out = []
+    for d in sorted(detail_by_date, reverse=True):
+        det = []
+        for saved in detail_by_date[d]:
+            row = dict(saved)
+            row["is_overflow"] = False
+            if not _nba_trk_priced(row.get("odds")):
+                row["odds"] = None
+                row["profit"] = None
+            row["stake"] = _NBA_TRK_STAKE if row.get("odds") is not None else None
+            det.append(row)
+        if det:
+            out.append({"date": d, "pending": d in pending_dates, "detail": det})
+    return {"dates": out, "stake": _NBA_TRK_STAKE, "record": "signals"}
+
+
 
 def _nba_update_all_ledgers():
     try:
@@ -1463,6 +1658,10 @@ def _nba_update_all_ledgers():
         _nba_update_fn_ledger()
     except Exception as exc:
         print(f"[nba_fn_track] ledger update failed: {exc}")
+    try:
+        _nba_update_sg_ledger()
+    except Exception as exc:
+        print(f"[nba_sg_track] ledger update failed: {exc}")
 
 _nba_th.Thread(target=_nba_update_all_ledgers, daemon=True).start()
 
@@ -4046,6 +4245,8 @@ footer{text-align:center;padding:32px 24px;color:#4b5563;font-size:.78rem;border
     <button type="button" role="menuitem" class="nba-menu-item" style="--c:#0e7490" onclick="_nbaNavGo(openNbaOverflowRecord)">&#11088; Overflow Record</button>
     <button type="button" role="menuitem" class="nba-menu-item" style="--c:#ea580c" onclick="_nbaNavGo(openNbaHotColdRecord)">&#128293; Hot / Cold Record</button>
     <button type="button" role="menuitem" class="nba-menu-item" style="--c:#22c55e" onclick="_nbaNavGo(openNbaFunnelRecord)">&#127919; Funnel Record</button>
+    <button type="button" role="menuitem" class="nba-menu-item" style="--c:#f97316" onclick="_nbaNavGo(function(){openNbaSignalsRecord(&#39;streak&#39;);})">&#128293; Streaks Record</button>
+    <button type="button" role="menuitem" class="nba-menu-item" style="--c:#a855f7" onclick="_nbaNavGo(function(){openNbaSignalsRecord(&#39;mpa&#39;);})">&#11088; MPA Specials Record</button>
     <button type="button" role="menuitem" class="nba-menu-item" style="--c:#d97706" onclick="_nbaNavGo(openNbaDowReport)">&#128197; Day of Week Trends</button>
     <button type="button" role="menuitem" class="nba-menu-item" style="--c:#7c3aed" onclick="_nbaNavGo(function(){openNbaCoachTrack();})">&#129504; Coach Track Record</button>
     <button type="button" role="menuitem" class="nba-menu-item" style="--c:#8b5cf6" onclick="_nbaNavGo(function(){openNbaGpRecord();})">&#128302; Game Predictor Record</button>
@@ -4071,7 +4272,7 @@ document.addEventListener('click',function(e){var w=e.target.closest?e.target.cl
 document.addEventListener('keydown',function(e){if(e.key==='Escape'){_nbaNavClose();_nbaOvClose();}});
 // Records, Game Predictor, 10K Sim and Auto Parlay open in one closable overlay
 // from Records &amp; Tools; none of them sit on the page until chosen.
-var _NBA_OV_TITLES={'nbaStreaksPanel':'&#128293; All Streaks','nbaMpaPanel':'&#11088; All MPA Specials','nbaAllPicksPanel':'&#127919; All Picks by Game','nba-hotcold-section':'&#128293; Hot / Cold Players','nba-mybets-card':'&#128176; My Bets','nba-track-section':'&#128202; Track Record','nba-overflow-track-section':'&#11088; Overflow Record','nba-hotcold-track-section':'&#128293; Hot / Cold Record','nba-funnel-section':'&#127919; Funnel Plays','nba-funnel-track-section':'&#127919; Funnel Record','nba-dow-section':'&#128197; Day of Week Trends','nbaCoachTrackPanel':'&#129504; Coach Track Record','nbaGpRecordPanel':'&#128302; Game Predictor Record','nbaSimRecordPanel':'&#127922; Sim Record','nba-historical-track':'&#128218; Historical Track Record','nbaGpSection':'&#128302; Game Predictor','nbaSimSection':'&#127922; 10K Game Simulator','parlayCard':'&#127920; Auto Parlay Builder'};
+var _NBA_OV_TITLES={'nbaStreaksPanel':'&#128293; All Streaks','nbaMpaPanel':'&#11088; All MPA Specials','nbaAllPicksPanel':'&#127919; All Picks by Game','nba-hotcold-section':'&#128293; Hot / Cold Players','nba-mybets-card':'&#128176; My Bets','nba-track-section':'&#128202; Track Record','nba-overflow-track-section':'&#11088; Overflow Record','nba-hotcold-track-section':'&#128293; Hot / Cold Record','nba-funnel-section':'&#127919; Funnel Plays','nba-funnel-track-section':'&#127919; Funnel Record','nba-signals-track-section':'&#128293; Streaks &amp; &#11088; MPA Specials Record','nba-dow-section':'&#128197; Day of Week Trends','nbaCoachTrackPanel':'&#129504; Coach Track Record','nbaGpRecordPanel':'&#128302; Game Predictor Record','nbaSimRecordPanel':'&#127922; Sim Record','nba-historical-track':'&#128218; Historical Track Record','nbaGpSection':'&#128302; Game Predictor','nbaSimSection':'&#127922; 10K Game Simulator','parlayCard':'&#127920; Auto Parlay Builder'};
 var _nbaRecHome={},_nbaRecPrev={};
 function _nbaRecHost(){
   var ov=document.getElementById('nbaRecOv');
@@ -4459,6 +4660,26 @@ function _nbaOvClose(){
     </div>
     <div id="nbaFnTopPct" style="display:none"></div><div id="nbaFnTopStats" style="display:none"></div>
     <div id="nbaFnBody"></div>
+  </div>
+</div>
+<div id="nba-signals-track-section" style="display:none;max-width:1040px;margin:24px auto 0;padding:0 16px 40px">
+  <div class="card nba-trk-shell" style="padding:14px">
+    <div class="nba-record-hero">
+      <div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start;flex-wrap:wrap">
+        <div><div class="nba-record-kicker" style="color:#fb923c">NBA Performance Center &middot; All Streaks &amp; MPA Specials</div><h2 class="nba-record-title">&#128293; Streaks &amp; &#11088; MPA Specials Track Record</h2><div class="nba-record-sub">Every play on the All Streaks board (3+ straight games Over or Under today&#39;s line vs this opponent) and the All MPA Specials board (even/odd game rhythm), saved pre-tip at the standard line exactly as shown. Each is graded per market and side. Kept separate from the Main, Overflow, Hot / Cold, Funnel and Coach totals. Hit rate counts every decided play; P/L counts only plays with a genuine saved price.</div></div>
+        <button class="nba-view-btn" onclick="_nbaOvClose()">Close</button>
+      </div>
+      <div class="nba-record-tools">
+        <label><span class="nba-record-label">Slate date</span><select id="nbaSgDateSelect" class="nba-record-control" onchange="renderNbaTrackDay('signals')"><option value="">No saved dates</option></select></label><label><span class="nba-record-label">Period</span><select id="nbaSgPeriod" class="nba-record-control" onchange="renderNbaTrackDay('signals')"><option value="day">Day</option><option value="week">Week &middot; last 7 days</option><option value="month">Month</option><option value="all">All Time</option></select></label>
+        <label><span class="nba-record-label">Plays</span><select id="nbaSgType" class="nba-record-control" onchange="renderNbaTrackDay('signals')"><option value="all">Streaks + MPA Specials</option><option value="streak">All Streaks</option><option value="mpa">All MPA Specials</option></select></label>
+        <label><span class="nba-record-label">Side</span><select id="nbaSgSide" class="nba-record-control" onchange="renderNbaTrackDay('signals')"><option value="ALL">All</option><option value="OVER">Overs</option><option value="UNDER">Unders</option></select></label>
+        <label><span class="nba-record-label">Flat bet amount</span><input type="number" id="nbaSgBetSize" class="nba-record-control" value="100.00" min="1" step="5" style="width:110px" oninput="renderNbaTrackDay('signals')"></label>
+        <button onclick="loadNbaTrackRecord('signals')" class="nba-view-btn">&#8635; Refresh results</button>
+        <div class="nba-view-tabs"><button id="nbaSgCatBtn" class="nba-view-btn active" onclick="setNbaTrkView('category','signals')">By Category</button><button id="nbaSgFullBtn" class="nba-view-btn" onclick="setNbaTrkView('full','signals')">Full List</button></div>
+      </div>
+    </div>
+    <div id="nbaSgTopPct" style="display:none"></div><div id="nbaSgTopStats" style="display:none"></div>
+    <div id="nbaSgBody"></div>
   </div>
 </div>
 <style>
@@ -5059,6 +5280,8 @@ function toggleSig(id,hdr){
   el.style.display=hidden?'block':'none';
   if(ch)ch.style.transform=hidden?'rotate(180deg)':'';
 }
+var _nbaStreakSide='ALL';
+function _nbaStreakSet(v){_nbaStreakSide=v;renderSignalLists(allPicksData);}
 function renderSignalLists(picks){
   // Build set of player|stat combos that have a strong PATTERN (always OVER-direction).
   // Any STREAK/MPA UNDER on the same combo contradicts the pattern, so suppress it.
@@ -5066,7 +5289,10 @@ function renderSignalLists(picks){
   const contradicts=p=>{const k=`${p.player}|${p.stat}`;return patternKeys.has(k);};
   const streaks=(picks||[]).filter(p=>p.streak_rec && !(p.streak_rec==='UNDER' && contradicts(p))).slice().sort((a,b)=>(b.streak_n||0)-(a.streak_n||0));
   const mpas=(picks||[]).filter(p=>p.alt_rec);
-  const sc=document.getElementById('streakCount'); if(sc) sc.textContent=streaks.length;
+  const stkCounts={ALL:streaks.length,OVER:streaks.filter(p=>p.streak_rec==='OVER').length,UNDER:streaks.filter(p=>p.streak_rec==='UNDER').length};
+  const stkShown=_nbaStreakSide==='ALL'?streaks:streaks.filter(p=>p.streak_rec===_nbaStreakSide);
+  const stkBar='<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;padding:10px 14px;border-bottom:1px solid #1a1a1a;background:#0a0a0a"><span style="color:#94a3b8;font-size:.62rem;font-weight:800;letter-spacing:.1em;text-transform:uppercase;margin-right:4px">Side</span>'+[['ALL','All'],['OVER','Overs'],['UNDER','Unders']].map(o=>`<button type="button" class="nba-hc-btn${_nbaStreakSide===o[0]?' active':''}" onclick="event.stopPropagation();_nbaStreakSet('${o[0]}')">${o[1]} <span class="nba-hc-n">${stkCounts[o[0]]}</span></button>`).join('')+'</div>';
+  const sc=document.getElementById('streakCount'); if(sc) sc.textContent=stkShown.length;
   const mc=document.getElementById('mpaCount'); if(mc) mc.textContent=mpas.length;
   const dirColor=d=>d==='OVER'?'#4ade80':d==='UNDER'?'#f87171':'#9ca3af';
   const dirBg=d=>d==='OVER'?'rgba(74,222,128,.14)':d==='UNDER'?'rgba(239,68,68,.14)':'rgba(156,163,175,.1)';
@@ -5078,7 +5304,7 @@ function renderSignalLists(picks){
     ${sigHTML}
   </div>`;};
   const sl=document.getElementById('streakList');
-  if(sl) sl.innerHTML = streaks.length ? streaks.map(p=>row(p,`<span style="background:${dirBg(p.streak_rec)};color:${dirColor(p.streak_rec)};border:1px solid ${dirColor(p.streak_rec)}55;padding:4px 9px;border-radius:6px;font-weight:900;font-size:.72rem;white-space:nowrap">🔥 ${p.streak_n} ${p.streak_rec}</span>`)).join('') : '<div style="padding:18px;text-align:center;color:#555;font-size:.78rem">No streaks today</div>';
+  if(sl) sl.innerHTML = stkBar + (stkShown.length ? stkShown.map(p=>row(p,`<span style="background:${dirBg(p.streak_rec)};color:${dirColor(p.streak_rec)};border:1px solid ${dirColor(p.streak_rec)}55;padding:4px 9px;border-radius:6px;font-weight:900;font-size:.72rem;white-space:nowrap">🔥 ${p.streak_n} ${p.streak_rec}</span>`)).join('') : '<div style="padding:18px;text-align:center;color:#555;font-size:.78rem">'+(_nbaStreakSide==='ALL'?'No streaks today':'No '+(_nbaStreakSide==='OVER'?'Over':'Under')+' streaks today')+'</div>');
   const ml=document.getElementById('mpaList');
   if(ml) ml.innerHTML = mpas.length ? mpas.map(p=>row(p,`<span style="background:${dirBg(p.alt_rec)};color:${dirColor(p.alt_rec)};border:1px solid ${dirColor(p.alt_rec)}55;padding:4px 9px;border-radius:6px;font-weight:900;font-size:.72rem;white-space:nowrap">⭐ ${p.alt_rec}${p.alt_evens&&p.alt_odds?` (even: ${p.alt_evens} · odd: ${p.alt_odds})`:''}</span>`)).join('') : '<div style="padding:18px;text-align:center;color:#555;font-size:.78rem">No MPA specials today</div>';
 }
@@ -6058,7 +6284,14 @@ var _nbaHcData=null;
 var _nbaHcView='category';
 var _nbaFnData=null;
 var _nbaFnView='category';
-function _nbaRecPrefix(record){return record==='overflow'?'nbaOvf':(record==='hotcold'?'nbaHc':(record==='funnel'?'nbaFn':'nbaTrk'));}
+var _nbaSgData=null;
+var _nbaSgView='category';
+function _nbaRecPrefix(record){return record==='overflow'?'nbaOvf':(record==='hotcold'?'nbaHc':(record==='funnel'?'nbaFn':(record==='signals'?'nbaSg':'nbaTrk')));}
+function openNbaSignalsRecord(type){
+  var section=_nbaOvOpen('nba-signals-track-section');if(!section)return;
+  var t=document.getElementById('nbaSgType');if(t&&type)t.value=type;
+  if(_nbaSgData===null)loadNbaTrackRecord('signals');else renderNbaTrackDay('signals');
+}
 function openNbaFunnelRecord(){
   var section=_nbaOvOpen('nba-funnel-track-section');if(!section)return;
   if(_nbaFnData===null)loadNbaTrackRecord('funnel');
@@ -6079,7 +6312,7 @@ function openNbaOverflowRecord(){
 function setNbaTrkView(view,record){
   var prefix=_nbaRecPrefix(record);
   view=view==='full'?'full':'category';
-  if(record==='overflow')_nbaOvfView=view;else if(record==='hotcold')_nbaHcView=view;else if(record==='funnel')_nbaFnView=view;else _nbaTrkView=view;
+  if(record==='overflow')_nbaOvfView=view;else if(record==='hotcold')_nbaHcView=view;else if(record==='funnel')_nbaFnView=view;else if(record==='signals')_nbaSgView=view;else _nbaTrkView=view;
   var c=document.getElementById(prefix+'CatBtn'),f=document.getElementById(prefix+'FullBtn');
   if(c)c.classList.toggle('active',view==='category');
   if(f)f.classList.toggle('active',view==='full');
@@ -6136,15 +6369,15 @@ function _nbaTrkPriced(odds){
   return Number.isFinite(o)&&(o>0||(o>=-1000&&o<=-100));
 }
 async function loadNbaTrackRecord(record){
-  var ovf=record==='overflow',hc=record==='hotcold',fn=record==='funnel',prefix=_nbaRecPrefix(record);
+  var ovf=record==='overflow',hc=record==='hotcold',fn=record==='funnel',sg=record==='signals',prefix=_nbaRecPrefix(record);
   var body=document.getElementById(prefix+'Body');
     if(body) body.innerHTML=_nbaRecordEmpty('Loading official results','Fetching the latest graded pre-game snapshots.');
   try{
-    var r=await fetch(fn?'/api/funnel-track-record':(hc?'/api/hot-cold-track-record':(ovf?'/api/overflow-track-record':'/api/track-record')));
+    var r=await fetch(sg?'/api/signals-track-record':fn?'/api/funnel-track-record':(hc?'/api/hot-cold-track-record':(ovf?'/api/overflow-track-record':'/api/track-record')));
     if(!r.ok) throw new Error(await r.text());
     var d=await r.json();
     var data=d.dates||[];
-    if(ovf)_nbaOvfData=data;else if(hc)_nbaHcData=data;else if(fn)_nbaFnData=data;else _nbaTrkData=data;
+    if(ovf)_nbaOvfData=data;else if(hc)_nbaHcData=data;else if(fn)_nbaFnData=data;else if(sg)_nbaSgData=data;else _nbaTrkData=data;
     
     var ds = document.getElementById(prefix+'DateSelect');
     if(ds){
@@ -6181,8 +6414,8 @@ function _nbaPeriodLabel(period,bounds,picked){
 function toggleTrkAcc(el) { el.parentElement.classList.toggle('open'); }
 function nbaTrkCatClass(cat) { return 'cat-' + String(cat||'').replace(/[^a-zA-Z0-9]/g, ''); }
 function renderNbaTrackDay(record){
-  var ovf=record==='overflow',hc=record==='hotcold',fn=record==='funnel',prefix=_nbaRecPrefix(record);
-  var data=ovf?_nbaOvfData:(hc?_nbaHcData:(fn?_nbaFnData:_nbaTrkData)),view=ovf?_nbaOvfView:(hc?_nbaHcView:(fn?_nbaFnView:_nbaTrkView));
+  var ovf=record==='overflow',hc=record==='hotcold',fn=record==='funnel',sg=record==='signals',prefix=_nbaRecPrefix(record);
+  var data=ovf?_nbaOvfData:(hc?_nbaHcData:(fn?_nbaFnData:(sg?_nbaSgData:_nbaTrkData))),view=ovf?_nbaOvfView:(hc?_nbaHcView:(fn?_nbaFnView:(sg?_nbaSgView:_nbaTrkView)));
   var sel = document.getElementById(prefix+'DateSelect').value;
   var out = document.getElementById(prefix+'Body');
   var topPct = document.getElementById(prefix+'TopPct');
@@ -6197,6 +6430,16 @@ function renderNbaTrackDay(record){
     var fnBookEl=document.getElementById('nbaFnBook'),fnBook=fnBookEl?fnBookEl.value:'main';
     var fnTypeEl=document.getElementById('nbaFnType'),fnType=fnTypeEl?fnTypeEl.value:'all';
     data=data.map(function(d){return Object.assign({},d,{detail:(d.detail||[]).filter(function(x){return (fnBook==='all'||(fnBook==='overflow'?!!x.is_overflow:!x.is_overflow))&&(fnType==='all'||x.funnel===fnType);})});});
+  }
+  if(sg&&data&&data.length){
+    var sgTypeEl=document.getElementById('nbaSgType'),sgType=sgTypeEl?sgTypeEl.value:'all';
+    var sgSideEl=document.getElementById('nbaSgSide'),sgSide=sgSideEl?sgSideEl.value:'ALL';
+    data=data.map(function(d){return Object.assign({},d,{detail:(d.detail||[]).filter(function(x){return (sgType==='all'||x.signal===sgType)&&(sgSide==='ALL'||String(x.side||'').toUpperCase()===sgSide);})});});
+  }
+  if(sg&&(!data||!data.length)){
+    if(out) out.innerHTML=_nbaRecordEmpty('No saved Streak / MPA results yet','Each live pre-tip run saves every All Streaks and All MPA Specials play per market and side. Results appear here once games finish.');
+    if(topPct) topPct.innerHTML=''; if(topStats) topStats.innerHTML='';
+    return;
   }
   if(fn&&(!data||!data.length)){
     if(out) out.innerHTML=_nbaRecordEmpty('No saved Funnel results yet','Each live pre-tip run saves the Position Funnel and Team Funnel Top 10 (and ranks 11-20) per market and side. Results appear here once games finish.');
@@ -6223,6 +6466,7 @@ function renderNbaTrackDay(record){
   
   var cats = ["Points","Rebounds","Assists","3-Pointers","Pts+Reb+Ast","Pts+Reb","Pts+Ast","Reb+Ast","Blocks","Steals"];
   if(hc){var hcCats=[];['Hot','Cold','Double Cold'].forEach(function(f){cats.forEach(function(c){hcCats.push(f+' '+c);});});cats=hcCats;}
+  if(sg){var sgCats=[];['Streak','MPA Special'].forEach(function(f){cats.forEach(function(c){sgCats.push(f+' '+c);});});cats=sgCats;}
   if(fn){var fnCats=[];['Position Funnel','Team Funnel'].forEach(function(f){['Points','Rebounds','Assists','3-Pointers'].forEach(function(c){fnCats.push(f+' '+c);});});cats=fnCats;}
   var groups = {};
   var dw=0, dl=0, dp=0, dpend=0, dnet=0, dstaked=0;
@@ -11114,6 +11358,21 @@ async def nba_funnel_track_record():
         return _JR(await asyncio.to_thread(_nba_fn_record_response))
     except RuntimeError:
         return _JR({"detail":"Saved Funnel record is unavailable. Please retry."}, status_code=503)
+
+
+@app.get("/api/signals-track-record")
+async def nba_signals_track_record():
+    """All Streaks + MPA Specials record (every displayed play, per market/side).
+    Kept out of the Main, Overflow, Hot/Cold, Funnel and Coach totals."""
+    from fastapi.responses import JSONResponse as _JR
+    try:
+        await asyncio.wait_for(asyncio.to_thread(_nba_update_sg_ledger), timeout=40)
+    except Exception as exc:
+        print(f"[nba_sg_track] grading still running/failed on open: {exc!r}")
+    try:
+        return _JR(await asyncio.to_thread(_nba_sg_record_response))
+    except RuntimeError:
+        return _JR({"detail":"Saved Streak / MPA record is unavailable. Please retry."}, status_code=503)
 
 
 @app.get("/api/overflow-track-record")
