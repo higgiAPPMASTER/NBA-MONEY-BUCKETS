@@ -613,8 +613,8 @@ def _nba_trk_bg_throttled(date_str: str, result: dict):
 _NBA_HC_SNAP_CAT   = "__hc_picks__"
 _NBA_HC_DETAIL_CAT = "__hc_detail__"
 _NBA_HC_LEDGER_CAT = "__hc_ledger__"
-_NBA_HC_FORMS = (("hot", "Hot", "OVER"), ("cold", "Cold", "UNDER"),
-                 ("double_cold", "Double Cold", "UNDER"))
+_NBA_HC_FORMS = (("hot", "Hot", "OVER"), ("double_hot", "Double Hot", "OVER"),
+                 ("cold", "Cold", "UNDER"), ("double_cold", "Double Cold", "UNDER"))
 _NBA_HC_TOP = 10       # Top 10 main per form x market
 _NBA_HC_LIMIT = 20     # ranks 11-20 are the Hot/Cold overflow
 _NBA_HC_KEYS = ("name","team","opp","category","market","stat_key","side","line","odds",
@@ -656,7 +656,7 @@ def _nba_hc_price(raw):
 
 
 def _nba_hot_cold_rows(today_str, games, rosters, logs_by_player, dk_lookup, props_rows):
-    """Hot (OVER) / Cold (UNDER) / Double Cold form plays for every market with a
+    """Hot (OVER) / Double Hot (OVER) / Cold (UNDER) / Double Cold form plays for every market with a
     genuine standard sportsbook line. Independent of the ordinary pick gates."""
     try:
         as_of = date.fromisoformat(str(today_str)[:10])
@@ -730,6 +730,7 @@ def _nba_hot_cold_rows(today_str, games, rosters, logs_by_player, dk_lookup, pro
                             "stat_label": sc["label"], "emoji": sc["emoji"],
                             "pick": side, "form": form,
                             "double_cold": form == "COLD" and supports,
+                            "double_hot": form == "HOT" and supports,
                             "matchup_supports": supports, "line": line, "odds": odds,
                             "book": ((quote.get("bookmaker_label") or quote.get("bookmaker") or "")
                                      if odds is not None else ""),
@@ -759,7 +760,8 @@ def _nba_hot_cold_rows(today_str, games, rosters, logs_by_player, dk_lookup, pro
     for form_key, form_label, side in _NBA_HC_FORMS:
         for sk, sc in STAT_CONFIG.items():
             pool = [r for r in candidates if r["stat"] == sk and r["pick"] == side
-                    and (form_key != "double_cold" or r["double_cold"])]
+                    and (form_key != "double_cold" or r["double_cold"])
+                    and (form_key != "double_hot" or r["double_hot"])]
             pool.sort(key=rank_key)
             seen_players = set()
             rank = 0
@@ -4351,6 +4353,7 @@ function _nbaOvClose(){
   <div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap;margin-top:10px;font-size:.74rem;color:#cbd5e1">
     <span style="color:#94a3b8;font-weight:700">Also include:</span>
     <label><input type="checkbox" name="parlayHcForm" value="hot"> 🔥 Hot</label>
+    <label><input type="checkbox" name="parlayHcForm" value="double_hot"> 🔥🔥 Double Hot</label>
     <label><input type="checkbox" name="parlayHcForm" value="cold"> 🧊 Cold</label>
     <label><input type="checkbox" name="parlayHcForm" value="double_cold"> ❄️ Double Cold</label>
   </div>
@@ -4461,7 +4464,7 @@ function _nbaOvClose(){
 <div id="nba-hotcold-section" style="display:none;max-width:1400px;margin:28px auto 0;padding:0 24px 10px">
   <div style="display:flex;justify-content:space-between;align-items:flex-end;gap:10px;flex-wrap:wrap;margin-bottom:10px">
     <div><div style="font-size:.78rem;font-weight:700;color:#f97316;text-transform:uppercase;letter-spacing:.15em">&#128293; Hot / &#129482; Cold Players</div>
-    <div style="font-size:.7rem;color:#94a3b8;margin-top:4px;max-width:900px;line-height:1.5">Hot = OVER in 80%+ of the last 5 current-season games (2+ games in October) with the average above the genuine sportsbook line. Cold = the same for UNDER. Double Cold = Cold plus 70%+ Under in 3+ of the last 5 meetings vs today&#39;s opponent. Top 10 per form and market, ranks 11-20 as overflow; every play is saved pre-tip and tracked in the Hot / Cold Record. Edge appears only when the app has a same-line estimate and a genuine price.</div></div>
+    <div style="font-size:.7rem;color:#94a3b8;margin-top:4px;max-width:900px;line-height:1.5">Hot = OVER in 80%+ of the last 5 current-season games (2+ games in October) with the average above the genuine sportsbook line. Double Hot = Hot plus 70%+ Over in 3+ of the last 5 meetings vs today&#39;s opponent (any venue). Cold = the same as Hot for UNDER. Double Cold = Cold plus 70%+ Under in 3+ of the last 5 meetings vs today&#39;s opponent. Top 10 per form and market, ranks 11-20 as overflow; every play is saved pre-tip and tracked in the Hot / Cold Record. Edge appears only when the app has a same-line estimate and a genuine price.</div></div>
     <button type="button" class="nba-hc-btn" onclick="openNbaHotColdRecord()">&#128202; Hot / Cold Record</button>
   </div>
   <div id="nbaHcControls"></div>
@@ -4627,7 +4630,7 @@ function _nbaOvClose(){
   <div class="card nba-trk-shell" style="padding:14px">
     <div class="nba-record-hero">
       <div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start;flex-wrap:wrap">
-        <div><div class="nba-record-kicker" style="color:#f97316">NBA Performance Center · Hot / Cold</div><h2 class="nba-record-title">&#128293; Hot / Cold Track Record</h2><div class="nba-record-sub">Saved pre-tip Hot (OVER), Cold (UNDER) and Double Cold (UNDER) plays for every market: Top 10 per form and market, plus ranks 11-20 as Hot / Cold Overflow. Kept separate from the Main, Overflow and Coach totals. Hit rate counts every decided play; P/L counts only plays with a genuine saved price.</div></div>
+        <div><div class="nba-record-kicker" style="color:#f97316">NBA Performance Center · Hot / Cold</div><h2 class="nba-record-title">&#128293; Hot / Cold Track Record</h2><div class="nba-record-sub">Saved pre-tip Hot (OVER), Double Hot (OVER), Cold (UNDER) and Double Cold (UNDER) plays for every market: Top 10 per form and market, plus ranks 11-20 as Hot / Cold Overflow. Kept separate from the Main, Overflow and Coach totals. Hit rate counts every decided play; P/L counts only plays with a genuine saved price.</div></div>
         <button class="nba-view-btn" onclick="_nbaOvClose()">Close</button>
       </div>
       <div class="nba-record-tools">
@@ -4773,7 +4776,7 @@ function aggRow(label,a,attrs){
 function aggTable(first,rowsHtml){
   return '<div class="nba-dow-wrap"><table class="nba-dow-table nba-dow-agg"><thead><tr><th>'+nbaTrkEsc(first)+'</th><th>Picks</th><th>Dates</th><th>Team-games</th><th>W-L</th><th>Win %</th><th>Not decided</th><th>Priced</th><th>Money (P/L)</th><th>ROI</th></tr></thead><tbody>'+rowsHtml+'</tbody></table></div>';
 }
-function hcCats(){var o=[];['Hot','Cold','Double Cold'].forEach(function(f){CATS.forEach(function(c){o.push(f+' '+c);});});return o;}
+function hcCats(){var o=[];['Hot','Double Hot','Cold','Double Cold'].forEach(function(f){CATS.forEach(function(c){o.push(f+' '+c);});});return o;}
 function catOrder(list){
   var coach=S.lane==='coach',cats=coach?[]:(S.lane==='hotcold'?hcCats():CATS.slice());
   list.forEach(function(r){var c=r.category||'';if(c&&cats.indexOf(c)<0)cats.push(c);});
@@ -5365,9 +5368,9 @@ function _parlayPool(){
   var mpgOf={};(allPicksData||[]).forEach(function(p){if(p.mpg!=null)mpgOf[p.player]=p.mpg;});
   (Array.isArray(nbaHotColdData)?nbaHotColdData:[]).forEach(function(r){
     if(!hcForms[r.form_key]) return;
-    var t=r.form_key==='double_cold'?'DCOLD':(r.form==='HOT'?'HOT':'COLD');
+    var t=r.form_key==='double_cold'?'DCOLD':(r.form_key==='double_hot'?'DHOT':(r.form==='HOT'?'HOT':'COLD'));
     var c={type:t,dir:r.pick,conf:Math.round((r.recent_hits||0)/Math.max(1,r.recent_total||1)*100),
-      reason:(t==='HOT'?'🔥 HOT ':(t==='DCOLD'?'❄️ DOUBLE COLD ':'🧊 COLD '))+r.recent_hits+'/'+r.recent_total+' last '+r.recent_total+' (avg '+r.recent_avg+')'+(r.opp_total?' · '+r.opp_hits+'/'+r.opp_total+' vs '+r.opp:''),
+      reason:(t==='HOT'?'🔥 HOT ':(t==='DHOT'?'🔥🔥 DOUBLE HOT ':(t==='DCOLD'?'❄️ DOUBLE COLD ':'🧊 COLD ')))+r.recent_hits+'/'+r.recent_total+' last '+r.recent_total+' (avg '+r.recent_avg+')'+(r.opp_total?' · '+r.opp_hits+'/'+r.opp_total+' vs '+r.opp:''),
       p:r,player:r.player,team:r.team,opp:r.opp,stat:r.stat_label,emoji:r.emoji||'',line:r.line,
       odds:r.odds==null?'':((r.odds>0?'+':'')+r.odds),mpg:(mpgOf[r.player]!=null?mpgOf[r.player]:null)};
     c.dec=_amToDec(c.odds);c.hasOdds=!!c.dec;
@@ -5429,8 +5432,8 @@ function _renderParlay(randomize){
   var am = priced? _decToAm(dec) : null;
   var payout = priced? (100*dec) : null;
   var dirColor=function(d){return d==='OVER'?'#4ade80':d==='UNDER'?'#f87171':'#9ca3af';};
-  var tagBg={PICK:'rgba(253,184,39,.16)',LINE:'rgba(74,222,128,.14)',STREAK:'rgba(249,115,22,.16)',MPA:'rgba(168,85,247,.16)',HOT:'rgba(249,115,22,.16)',COLD:'rgba(56,189,248,.16)',DCOLD:'rgba(129,140,248,.18)'};
-  var tagFg={PICK:'#FDB827',LINE:'#4ade80',STREAK:'#fb923c',MPA:'#c084fc',HOT:'#fb923c',COLD:'#7dd3fc',DCOLD:'#a5b4fc'};
+  var tagBg={PICK:'rgba(253,184,39,.16)',LINE:'rgba(74,222,128,.14)',STREAK:'rgba(249,115,22,.16)',MPA:'rgba(168,85,247,.16)',HOT:'rgba(249,115,22,.16)',DHOT:'rgba(239,68,68,.18)',COLD:'rgba(56,189,248,.16)',DCOLD:'rgba(129,140,248,.18)'};
+  var tagFg={PICK:'#FDB827',LINE:'#4ade80',STREAK:'#fb923c',MPA:'#c084fc',HOT:'#fb923c',DHOT:'#f87171',COLD:'#7dd3fc',DCOLD:'#a5b4fc'};
   var rows=legs.map(function(l,i){var fo=_fmtOdds(l.odds);return '<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:10px 12px;border-bottom:1px solid #1a1a1a">'
     +'<div style="min-width:0">'
     +'<div style="font-weight:800;color:#fff;font-size:.85rem">'+(i+1)+'. '+(l.emoji||'')+' '+l.player+' <span style="color:#777;font-size:.7rem">'+l.team+' vs '+l.opp+'</span> <span style="background:'+(tagBg[l.type]||'#222')+';color:'+(tagFg[l.type]||'#aaa')+';padding:1px 6px;border-radius:4px;font-size:.6rem;font-weight:800">'+l.type+'</span></div>'
@@ -5722,7 +5725,7 @@ async function getPicks(){
 // ─── Hot / Cold board (NHL layout): separate spotlight boards + record ───
 var _nbaHc={form:'hot',stat:'ALL',edge:'ALL',book:'main'};
 var _NBA_HC_STATS=[['PTS','Points'],['REB','Rebounds'],['AST','Assists'],['FG3M','3-Pointers'],['PRA','Pts+Reb+Ast'],['PTS_REB','Pts+Reb'],['PTS_AST','Pts+Ast'],['REB_AST','Reb+Ast'],['BLK','Blocks'],['STL','Steals']];
-var _NBA_HC_FORMS=[['hot','&#128293; Hot'],['cold','&#129482; Cold'],['double_cold','&#10052;&#65039; Double Cold']];
+var _NBA_HC_FORMS=[['hot','&#128293; Hot'],['double_hot','&#128293;&#128293; Double Hot'],['cold','&#129482; Cold'],['double_cold','&#10052;&#65039; Double Cold']];
 function _nbaHcEsc(v){return String(v==null?'':v).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
 function _nbaHcSet(key,val){_nbaHc[key]=val;renderNbaHotColdSection();}
 function _nbaHcToggle(el){var d=el&&el.parentElement&&el.parentElement.querySelector('.nba-hc-drop');if(!d)return;var open=d.style.display!=='none';d.style.display=open?'none':'block';el.setAttribute('aria-expanded',open?'false':'true');}
@@ -5733,7 +5736,7 @@ function _nbaHcBtns(key,opts,counts){
   }).join('');
 }
 function _nbaHcCard(r){
-  var over=r.pick==='OVER',sideCol=over?'#4ade80':'#f87171',formCol=r.form==='HOT'?'#f97316':'#38bdf8';
+  var over=r.pick==='OVER',sideCol=over?'#4ade80':'#f87171',formCol=r.form_key==='double_hot'?'#ef4444':(r.form==='HOT'?'#f97316':'#38bdf8');
   var tip='';try{if(r.tipoff)tip=new Date(r.tipoff).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'});}catch(e){}
   var head=r.player_id?'<img class="nba-hc-head" loading="lazy" alt="" src="https://a.espncdn.com/i/headshots/nba/players/full/'+encodeURIComponent(r.player_id)+'.png" onerror="this.style.visibility=&#39;hidden&#39;">':'<div class="nba-hc-head"></div>';
   var chips=(r.recent_games||[]).map(function(g){var v=Number(g.v),hit=over?v>r.line:v<r.line,push=v===Number(r.line);return '<span class="nba-hc-chip '+(push?'push':(hit?'hit':'miss'))+'" title="'+_nbaHcEsc(g.d+' '+(g.loc==='away'?'@ ':'vs ')+g.opp)+'">'+_nbaHcEsc(g.v)+'</span>';}).join('');
@@ -5753,7 +5756,7 @@ function _nbaHcCard(r){
     '<button type="button" class="nba-hc-top" aria-expanded="false" onclick="_nbaHcToggle(this)">'+
       '<span class="nba-hc-rank">#'+r.rank+'</span>'+head+
       '<span class="nba-hc-who"><b>'+_nbaHcEsc(r.player)+'</b><small>'+_nbaHcEsc(r.team)+' '+(r.venue==='AWAY'?'@':'vs')+' '+_nbaHcEsc(r.opp)+(tip?' · '+_nbaHcEsc(tip):'')+'</small></span>'+
-      '<span class="nba-hc-badge">'+(r.form_key==='double_cold'?'&#10052;&#65039; DOUBLE COLD':(r.form==='HOT'?'&#128293; HOT':'&#129482; COLD'))+'</span>'+
+      '<span class="nba-hc-badge">'+(r.form_key==='double_cold'?'&#10052;&#65039; DOUBLE COLD':(r.form_key==='double_hot'?'&#128293;&#128293; DOUBLE HOT':(r.form==='HOT'?'&#128293; HOT':'&#129482; COLD')))+'</span>'+
     '</button>'+
     '<div class="nba-hc-play"><span style="color:'+sideCol+';font-weight:900">'+r.pick+' '+_nbaHcEsc(r.line)+'</span> '+_nbaHcEsc(r.emoji||'')+' '+_nbaHcEsc(r.stat_label)+'</div>'+
     '<div class="nba-hc-line">'+odds+'</div>'+
@@ -6447,7 +6450,7 @@ function renderNbaTrackDay(record){
     return;
   }
   if(hc&&(!data||!data.length)){
-    if(out) out.innerHTML=_nbaRecordEmpty('No saved Hot / Cold results yet','Each live pre-tip run saves the Hot, Cold and Double Cold Top 10 (and ranks 11-20) per market. Results appear here once games finish.');
+    if(out) out.innerHTML=_nbaRecordEmpty('No saved Hot / Cold results yet','Each live pre-tip run saves the Hot, Double Hot, Cold and Double Cold Top 10 (and ranks 11-20) per market. Results appear here once games finish.');
     if(topPct) topPct.innerHTML=''; if(topStats) topStats.innerHTML='';
     return;
   }
@@ -6465,7 +6468,7 @@ function renderNbaTrackDay(record){
   picked.forEach(function(d){(d.detail||[]).forEach(function(x){day.detail.push(Object.assign({},x,{_pdate:period==='day'?'':d.date}));});});
   
   var cats = ["Points","Rebounds","Assists","3-Pointers","Pts+Reb+Ast","Pts+Reb","Pts+Ast","Reb+Ast","Blocks","Steals"];
-  if(hc){var hcCats=[];['Hot','Cold','Double Cold'].forEach(function(f){cats.forEach(function(c){hcCats.push(f+' '+c);});});cats=hcCats;}
+  if(hc){var hcCats=[];['Hot','Double Hot','Cold','Double Cold'].forEach(function(f){cats.forEach(function(c){hcCats.push(f+' '+c);});});cats=hcCats;}
   if(sg){var sgCats=[];['Streak','MPA Special'].forEach(function(f){cats.forEach(function(c){sgCats.push(f+' '+c);});});cats=sgCats;}
   if(fn){var fnCats=[];['Position Funnel','Team Funnel'].forEach(function(f){['Points','Rebounds','Assists','3-Pointers'].forEach(function(c){fnCats.push(f+' '+c);});});cats=fnCats;}
   var groups = {};
@@ -6684,20 +6687,21 @@ NBA_COACH_HTML = r"""
     </div>
     <div class="ncx-grid" data-ncx-panel="form" hidden>
       <button type="button" class="nba-coach-preset ncx-preset" style="--c:#f97316" onclick="nbaCoachPreset('hot')"><b class="ncx-t">&#128293; Hot · Top 10</b><small>OVER in 80%+ of last 5 · avg over the line</small></button>
+      <button type="button" class="nba-coach-preset ncx-preset" style="--c:#ef4444" onclick="nbaCoachPreset('double_hot')"><b class="ncx-t">&#128293;&#128293; Double Hot · Top 10</b><small>Hot + 70%+ Over in 3+ meetings vs opponent</small></button>
       <button type="button" class="nba-coach-preset ncx-preset" style="--c:#38bdf8" onclick="nbaCoachPreset('cold')"><b class="ncx-t">&#129482; Cold · Top 10</b><small>UNDER in 80%+ of last 5 · avg under the line</small></button>
       <button type="button" class="nba-coach-preset ncx-preset" style="--c:#818cf8" onclick="nbaCoachPreset('double_cold')"><b class="ncx-t">&#10052;&#65039; Double Cold · Top 10</b><small>Cold + 70%+ Under in 3+ meetings vs opponent</small></button>
     </div>
     <div class="ncx-grid ncx-mk-grid" data-ncx-panel="form" hidden>
-        <div class="ncx-mk"><div class="ncx-mk-t">Points</div><div class="ncx-mk-b"><button type="button" class="nba-coach-preset ncx-ov" onclick="nbaCoachPreset('hot|PTS')">&#128293; Hot</button><button type="button" class="nba-coach-preset ncx-un" onclick="nbaCoachPreset('cold|PTS')">&#129482; Cold</button><button type="button" class="nba-coach-preset ncx-un" onclick="nbaCoachPreset('double_cold|PTS')">&#10052;&#65039; Double Cold</button></div></div>
-        <div class="ncx-mk"><div class="ncx-mk-t">Rebounds</div><div class="ncx-mk-b"><button type="button" class="nba-coach-preset ncx-ov" onclick="nbaCoachPreset('hot|REB')">&#128293; Hot</button><button type="button" class="nba-coach-preset ncx-un" onclick="nbaCoachPreset('cold|REB')">&#129482; Cold</button><button type="button" class="nba-coach-preset ncx-un" onclick="nbaCoachPreset('double_cold|REB')">&#10052;&#65039; Double Cold</button></div></div>
-        <div class="ncx-mk"><div class="ncx-mk-t">Assists</div><div class="ncx-mk-b"><button type="button" class="nba-coach-preset ncx-ov" onclick="nbaCoachPreset('hot|AST')">&#128293; Hot</button><button type="button" class="nba-coach-preset ncx-un" onclick="nbaCoachPreset('cold|AST')">&#129482; Cold</button><button type="button" class="nba-coach-preset ncx-un" onclick="nbaCoachPreset('double_cold|AST')">&#10052;&#65039; Double Cold</button></div></div>
-        <div class="ncx-mk"><div class="ncx-mk-t">3-Pointers</div><div class="ncx-mk-b"><button type="button" class="nba-coach-preset ncx-ov" onclick="nbaCoachPreset('hot|FG3M')">&#128293; Hot</button><button type="button" class="nba-coach-preset ncx-un" onclick="nbaCoachPreset('cold|FG3M')">&#129482; Cold</button><button type="button" class="nba-coach-preset ncx-un" onclick="nbaCoachPreset('double_cold|FG3M')">&#10052;&#65039; Double Cold</button></div></div>
-        <div class="ncx-mk"><div class="ncx-mk-t">PRA</div><div class="ncx-mk-b"><button type="button" class="nba-coach-preset ncx-ov" onclick="nbaCoachPreset('hot|PRA')">&#128293; Hot</button><button type="button" class="nba-coach-preset ncx-un" onclick="nbaCoachPreset('cold|PRA')">&#129482; Cold</button><button type="button" class="nba-coach-preset ncx-un" onclick="nbaCoachPreset('double_cold|PRA')">&#10052;&#65039; Double Cold</button></div></div>
-        <div class="ncx-mk"><div class="ncx-mk-t">Pts+Reb</div><div class="ncx-mk-b"><button type="button" class="nba-coach-preset ncx-ov" onclick="nbaCoachPreset('hot|PTS_REB')">&#128293; Hot</button><button type="button" class="nba-coach-preset ncx-un" onclick="nbaCoachPreset('cold|PTS_REB')">&#129482; Cold</button><button type="button" class="nba-coach-preset ncx-un" onclick="nbaCoachPreset('double_cold|PTS_REB')">&#10052;&#65039; Double Cold</button></div></div>
-        <div class="ncx-mk"><div class="ncx-mk-t">Pts+Ast</div><div class="ncx-mk-b"><button type="button" class="nba-coach-preset ncx-ov" onclick="nbaCoachPreset('hot|PTS_AST')">&#128293; Hot</button><button type="button" class="nba-coach-preset ncx-un" onclick="nbaCoachPreset('cold|PTS_AST')">&#129482; Cold</button><button type="button" class="nba-coach-preset ncx-un" onclick="nbaCoachPreset('double_cold|PTS_AST')">&#10052;&#65039; Double Cold</button></div></div>
-        <div class="ncx-mk"><div class="ncx-mk-t">Reb+Ast</div><div class="ncx-mk-b"><button type="button" class="nba-coach-preset ncx-ov" onclick="nbaCoachPreset('hot|REB_AST')">&#128293; Hot</button><button type="button" class="nba-coach-preset ncx-un" onclick="nbaCoachPreset('cold|REB_AST')">&#129482; Cold</button><button type="button" class="nba-coach-preset ncx-un" onclick="nbaCoachPreset('double_cold|REB_AST')">&#10052;&#65039; Double Cold</button></div></div>
-        <div class="ncx-mk"><div class="ncx-mk-t">Blocks</div><div class="ncx-mk-b"><button type="button" class="nba-coach-preset ncx-ov" onclick="nbaCoachPreset('hot|BLK')">&#128293; Hot</button><button type="button" class="nba-coach-preset ncx-un" onclick="nbaCoachPreset('cold|BLK')">&#129482; Cold</button><button type="button" class="nba-coach-preset ncx-un" onclick="nbaCoachPreset('double_cold|BLK')">&#10052;&#65039; Double Cold</button></div></div>
-        <div class="ncx-mk"><div class="ncx-mk-t">Steals</div><div class="ncx-mk-b"><button type="button" class="nba-coach-preset ncx-ov" onclick="nbaCoachPreset('hot|STL')">&#128293; Hot</button><button type="button" class="nba-coach-preset ncx-un" onclick="nbaCoachPreset('cold|STL')">&#129482; Cold</button><button type="button" class="nba-coach-preset ncx-un" onclick="nbaCoachPreset('double_cold|STL')">&#10052;&#65039; Double Cold</button></div></div>
+        <div class="ncx-mk"><div class="ncx-mk-t">Points</div><div class="ncx-mk-b"><button type="button" class="nba-coach-preset ncx-ov" onclick="nbaCoachPreset('hot|PTS')">&#128293; Hot</button><button type="button" class="nba-coach-preset ncx-ov" onclick="nbaCoachPreset('double_hot|PTS')">&#128293;&#128293; Double Hot</button><button type="button" class="nba-coach-preset ncx-un" onclick="nbaCoachPreset('cold|PTS')">&#129482; Cold</button><button type="button" class="nba-coach-preset ncx-un" onclick="nbaCoachPreset('double_cold|PTS')">&#10052;&#65039; Double Cold</button></div></div>
+        <div class="ncx-mk"><div class="ncx-mk-t">Rebounds</div><div class="ncx-mk-b"><button type="button" class="nba-coach-preset ncx-ov" onclick="nbaCoachPreset('hot|REB')">&#128293; Hot</button><button type="button" class="nba-coach-preset ncx-ov" onclick="nbaCoachPreset('double_hot|REB')">&#128293;&#128293; Double Hot</button><button type="button" class="nba-coach-preset ncx-un" onclick="nbaCoachPreset('cold|REB')">&#129482; Cold</button><button type="button" class="nba-coach-preset ncx-un" onclick="nbaCoachPreset('double_cold|REB')">&#10052;&#65039; Double Cold</button></div></div>
+        <div class="ncx-mk"><div class="ncx-mk-t">Assists</div><div class="ncx-mk-b"><button type="button" class="nba-coach-preset ncx-ov" onclick="nbaCoachPreset('hot|AST')">&#128293; Hot</button><button type="button" class="nba-coach-preset ncx-ov" onclick="nbaCoachPreset('double_hot|AST')">&#128293;&#128293; Double Hot</button><button type="button" class="nba-coach-preset ncx-un" onclick="nbaCoachPreset('cold|AST')">&#129482; Cold</button><button type="button" class="nba-coach-preset ncx-un" onclick="nbaCoachPreset('double_cold|AST')">&#10052;&#65039; Double Cold</button></div></div>
+        <div class="ncx-mk"><div class="ncx-mk-t">3-Pointers</div><div class="ncx-mk-b"><button type="button" class="nba-coach-preset ncx-ov" onclick="nbaCoachPreset('hot|FG3M')">&#128293; Hot</button><button type="button" class="nba-coach-preset ncx-ov" onclick="nbaCoachPreset('double_hot|FG3M')">&#128293;&#128293; Double Hot</button><button type="button" class="nba-coach-preset ncx-un" onclick="nbaCoachPreset('cold|FG3M')">&#129482; Cold</button><button type="button" class="nba-coach-preset ncx-un" onclick="nbaCoachPreset('double_cold|FG3M')">&#10052;&#65039; Double Cold</button></div></div>
+        <div class="ncx-mk"><div class="ncx-mk-t">PRA</div><div class="ncx-mk-b"><button type="button" class="nba-coach-preset ncx-ov" onclick="nbaCoachPreset('hot|PRA')">&#128293; Hot</button><button type="button" class="nba-coach-preset ncx-ov" onclick="nbaCoachPreset('double_hot|PRA')">&#128293;&#128293; Double Hot</button><button type="button" class="nba-coach-preset ncx-un" onclick="nbaCoachPreset('cold|PRA')">&#129482; Cold</button><button type="button" class="nba-coach-preset ncx-un" onclick="nbaCoachPreset('double_cold|PRA')">&#10052;&#65039; Double Cold</button></div></div>
+        <div class="ncx-mk"><div class="ncx-mk-t">Pts+Reb</div><div class="ncx-mk-b"><button type="button" class="nba-coach-preset ncx-ov" onclick="nbaCoachPreset('hot|PTS_REB')">&#128293; Hot</button><button type="button" class="nba-coach-preset ncx-ov" onclick="nbaCoachPreset('double_hot|PTS_REB')">&#128293;&#128293; Double Hot</button><button type="button" class="nba-coach-preset ncx-un" onclick="nbaCoachPreset('cold|PTS_REB')">&#129482; Cold</button><button type="button" class="nba-coach-preset ncx-un" onclick="nbaCoachPreset('double_cold|PTS_REB')">&#10052;&#65039; Double Cold</button></div></div>
+        <div class="ncx-mk"><div class="ncx-mk-t">Pts+Ast</div><div class="ncx-mk-b"><button type="button" class="nba-coach-preset ncx-ov" onclick="nbaCoachPreset('hot|PTS_AST')">&#128293; Hot</button><button type="button" class="nba-coach-preset ncx-ov" onclick="nbaCoachPreset('double_hot|PTS_AST')">&#128293;&#128293; Double Hot</button><button type="button" class="nba-coach-preset ncx-un" onclick="nbaCoachPreset('cold|PTS_AST')">&#129482; Cold</button><button type="button" class="nba-coach-preset ncx-un" onclick="nbaCoachPreset('double_cold|PTS_AST')">&#10052;&#65039; Double Cold</button></div></div>
+        <div class="ncx-mk"><div class="ncx-mk-t">Reb+Ast</div><div class="ncx-mk-b"><button type="button" class="nba-coach-preset ncx-ov" onclick="nbaCoachPreset('hot|REB_AST')">&#128293; Hot</button><button type="button" class="nba-coach-preset ncx-ov" onclick="nbaCoachPreset('double_hot|REB_AST')">&#128293;&#128293; Double Hot</button><button type="button" class="nba-coach-preset ncx-un" onclick="nbaCoachPreset('cold|REB_AST')">&#129482; Cold</button><button type="button" class="nba-coach-preset ncx-un" onclick="nbaCoachPreset('double_cold|REB_AST')">&#10052;&#65039; Double Cold</button></div></div>
+        <div class="ncx-mk"><div class="ncx-mk-t">Blocks</div><div class="ncx-mk-b"><button type="button" class="nba-coach-preset ncx-ov" onclick="nbaCoachPreset('hot|BLK')">&#128293; Hot</button><button type="button" class="nba-coach-preset ncx-ov" onclick="nbaCoachPreset('double_hot|BLK')">&#128293;&#128293; Double Hot</button><button type="button" class="nba-coach-preset ncx-un" onclick="nbaCoachPreset('cold|BLK')">&#129482; Cold</button><button type="button" class="nba-coach-preset ncx-un" onclick="nbaCoachPreset('double_cold|BLK')">&#10052;&#65039; Double Cold</button></div></div>
+        <div class="ncx-mk"><div class="ncx-mk-t">Steals</div><div class="ncx-mk-b"><button type="button" class="nba-coach-preset ncx-ov" onclick="nbaCoachPreset('hot|STL')">&#128293; Hot</button><button type="button" class="nba-coach-preset ncx-ov" onclick="nbaCoachPreset('double_hot|STL')">&#128293;&#128293; Double Hot</button><button type="button" class="nba-coach-preset ncx-un" onclick="nbaCoachPreset('cold|STL')">&#129482; Cold</button><button type="button" class="nba-coach-preset ncx-un" onclick="nbaCoachPreset('double_cold|STL')">&#10052;&#65039; Double Cold</button></div></div>
     </div>
     <div class="ncx-grid ncx-mk-grid" data-ncx-panel="props" hidden>
         <div class="ncx-mk"><div class="ncx-mk-t">Points</div><div class="ncx-mk-b"><button type="button" class="nba-coach-preset ncx-ov" onclick="nbaCoachPreset('points over')">Over · Top 10</button><button type="button" class="nba-coach-preset ncx-un" onclick="nbaCoachPreset('points under')">Under · Top 10</button></div></div>
@@ -6750,7 +6754,7 @@ NBA_COACH_HTML = r"""
   {key:'REB_AST',label:'Reb + Ast'},{key:'BLK',label:'Blocks'},{key:'STL',label:'Steals'}
  ];
  var __nbaPerfectParlayFormCats=[
-  {key:'HC_HOT',form:'hot',label:'&#128293; Hot'},{key:'HC_COLD',form:'cold',label:'&#129482; Cold'},
+  {key:'HC_HOT',form:'hot',label:'&#128293; Hot'},{key:'HC_DOUBLE_HOT',form:'double_hot',label:'&#128293;&#128293; Double Hot'},{key:'HC_COLD',form:'cold',label:'&#129482; Cold'},
   {key:'HC_DOUBLE_COLD',form:'double_cold',label:'&#10052;&#65039; Double Cold'}
  ];
 function _nbaHcParlayRows(selected,side){
@@ -6789,6 +6793,7 @@ function nbaCoachPreset(q){
   alternate_minus:'What are the Best - Alternate NBA Plays? — Top 10',
   alternate_plus:'What are the Best + Alternate NBA Plays? — Top 10',
   hot:'What are the Hot NBA plays? — Top 10',
+  double_hot:'What are the Double Hot NBA plays? — Top 10',
   cold:'What are the Cold NBA plays? — Top 10',
   double_cold:'What are the Double Cold NBA plays? — Top 10',
    'points over':'What are the Top 10 Points OVER plays?',
@@ -6812,12 +6817,12 @@ function nbaCoachPreset(q){
    'steals over':'What are the Top 10 Steals OVER plays?',
    'steals under':'What are the Top 10 Steals UNDER plays?'
  };
- var formModes={hot:1,cold:1,double_cold:1};
+ var formModes={hot:1,double_hot:1,cold:1,double_cold:1};
  window.__nbaCoachStat='';
  var fm=String(q).split('|');
  if(fm.length===2&&formModes[fm[0]]){
   var mkLbl={PTS:'Points',REB:'Rebounds',AST:'Assists',FG3M:'3-Pointers',PRA:'Pts+Reb+Ast',PTS_REB:'Pts+Reb',PTS_AST:'Pts+Ast',REB_AST:'Reb+Ast',BLK:'Blocks',STL:'Steals'}[fm[1]]||fm[1];
-  var fLbl={hot:'Hot',cold:'Cold',double_cold:'Double Cold'}[fm[0]];
+  var fLbl={hot:'Hot',double_hot:'Double Hot',cold:'Cold',double_cold:'Double Cold'}[fm[0]];
   window.__nbaCoachStat=fm[1];
   labels[q]='What are the '+fLbl+' '+mkLbl+' NBA plays? — Top 10';
   q=fm[0];labels[q]=labels[fm.join('|')];
@@ -7123,7 +7128,7 @@ async function nbaCoachSearch(forceMode,presetQuery){
    var controller=window.AbortController?new AbortController():null;
    var timer=controller?setTimeout(function(){controller.abort();},40000):null;
    try{
-     var r=await fetch('/api/nba/coach-edge?_tok='+encodeURIComponent(tok),{method:'POST',headers:{'Content-Type':'application/json'},signal:controller?controller.signal:undefined,body:JSON.stringify({date:ds,query:q,mode:mode,count:10,stat:(forceMode&&/^(hot|cold|double_cold)$/.test(forceMode))?(window.__nbaCoachStat||''):''})});
+     var r=await fetch('/api/nba/coach-edge?_tok='+encodeURIComponent(tok),{method:'POST',headers:{'Content-Type':'application/json'},signal:controller?controller.signal:undefined,body:JSON.stringify({date:ds,query:q,mode:mode,count:10,stat:(forceMode&&/^(hot|double_hot|cold|double_cold)$/.test(forceMode))?(window.__nbaCoachStat||''):''})});
     var d=await r.json(); if(!r.ok) throw new Error(d.detail||'Coach Edge unavailable');
     __nbaCoachRows=(d.results||[]).slice(0,10); msg.textContent='';
     var questionHtml='<div class="nba-coach-question">'+_nbaEsc(question)+'</div>';
@@ -7134,7 +7139,7 @@ async function nbaCoachSearch(forceMode,presetQuery){
     var isSafe=mode==='safest';
     var rows=__nbaCoachRows.map(function(x,i){
       var noEdge=x.edge==null,e=Number(x.edge*100),moved=x.base_line!=null&&Number(x.base_line)!==Number(x.line);
-      var formTxt=x.form_category?'<br><span style="color:'+(x.form==='HOT'?'#fb923c':'#7dd3fc')+';font-size:.6rem;font-weight:900">'+_nbaEsc(x.form_category)+(x.double_cold?' · DOUBLE COLD':'')+' · '+_nbaEsc(String(x.recent_hits))+'/'+_nbaEsc(String(x.recent_total))+' L5</span>':'';
+      var formTxt=x.form_category?'<br><span style="color:'+(x.form==='HOT'?'#fb923c':'#7dd3fc')+';font-size:.6rem;font-weight:900">'+_nbaEsc(x.form_category)+(x.double_cold?' · DOUBLE COLD':'')+(x.double_hot?' · DOUBLE HOT':'')+' · '+_nbaEsc(String(x.recent_hits))+'/'+_nbaEsc(String(x.recent_total))+' L5</span>':'';
       var fromTxt=x.base_line!=null?'<br><span style="color:#64748b;font-size:.62rem">'+(moved?'from book '+_nbaEsc(String(x.base_line))+' · ':'book line · ')+_nbaEsc(String(x.base_hits))+'/'+_nbaEsc(String(x.games))+'</span>':'';
       return '<tr tabindex="0" onclick="nbaCoachDetail('+i+')" onkeydown="if(event.key===\'Enter\'||event.key===\' \'){event.preventDefault();nbaCoachDetail('+i+')}">'+
        '<td>'+(i+1)+'</td><td><b style="color:#fff;text-decoration:underline;text-decoration-style:dotted;text-underline-offset:2px">'+_nbaEsc(x.player)+'</b><br><span style="color:#64748b">'+_nbaEsc(x.team||'NBA')+(x.alternate?' · ALTERNATE':'')+'</span></td>'+
@@ -8425,18 +8430,19 @@ def _nba_coach_rows(standard, alternate, query="", mode="all", count=100):
 
 _NBA_COACH_FORM_PRESETS = (
     ("Hot Top 10", "hot"),
+    ("Double Hot Top 10", "double_hot"),
     ("Cold Top 10", "cold"),
     ("Double Cold Top 10", "double_cold"),
 )
 # Same form x market boards as the Hot / Cold section (e.g. "Hot Points").
 _NBA_COACH_FORM_MARKET_PRESETS = tuple(
     (f"{form_label} {cfg['label']}", form_key, stat_key)
-    for form_key, form_label, _side in (("hot", "Hot", "OVER"), ("cold", "Cold", "UNDER"),
-                                        ("double_cold", "Double Cold", "UNDER"))
+    for form_key, form_label, _side in (("hot", "Hot", "OVER"), ("double_hot", "Double Hot", "OVER"),
+                                        ("cold", "Cold", "UNDER"), ("double_cold", "Double Cold", "UNDER"))
     for stat_key, cfg in STAT_CONFIG.items())
 
 def _nba_coach_form_rows(hot_cold, form_key, query="", count=10, stat=None):
-    """Hot / Cold / Double Cold Coach presets: the section's own Top 10 rows,
+    """Hot / Double Hot / Cold / Double Cold Coach presets: the section's own Top 10 rows,
     genuine side prices only, no edge gate, ranked by form strength, one play
     per player (strongest qualifying market)."""
     q = (query or "").lower()
@@ -8464,6 +8470,7 @@ def _nba_coach_form_rows(hot_cold, form_key, query="", count=10, stat=None):
             "category": r.get("stat_label") or _NBA_STAT_LABEL.get(r.get("stat"), r.get("stat")),
             "form_category": r.get("category"), "form": r.get("form"),
             "double_cold": bool(r.get("double_cold")),
+            "double_hot": bool(r.get("double_hot")),
             "side": r.get("pick"), "line": r.get("line"), "odds": odds,
             "model_probability": round(model, 5) if model is not None else None,
             "implied_probability": implied,
@@ -8505,7 +8512,7 @@ async def nba_coach_edge(request: Request):
     body = await request.json()
     ds = str(body.get("date") or _nba_today().isoformat())
     mode = str(body.get("mode") or "all").lower()
-    if mode in ("hot", "cold", "double_cold"):
+    if mode in ("hot", "double_hot", "cold", "double_cold"):
         board = _cache_get("nba", ds)
         if not board:
             from fastapi import HTTPException
@@ -8516,7 +8523,7 @@ async def nba_coach_edge(request: Request):
         stat = str(body.get("stat") or "").upper() or None
         rows = _nba_coach_form_rows(board.get("hot_cold"), mode, str(body.get("query", "")),
                                     min(10, int(body.get("count", 10) or 10)), stat)
-        label = {"hot": "Hot", "cold": "Cold", "double_cold": "Double Cold"}[mode]
+        label = {"hot": "Hot", "double_hot": "Double Hot", "cold": "Cold", "double_cold": "Double Cold"}[mode]
         if stat in STAT_CONFIG:
             label += " " + STAT_CONFIG[stat]["label"]
         if not rows:
