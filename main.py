@@ -261,7 +261,57 @@ async def _nba_refresh_season_scope(date_str, result):
                 for g in games]
         except Exception as exc:
             print(f"[nba_season] season metadata unavailable for {date_str}: {exc}")
-    return _nba_apply_season_scope(out)
+    if not out.get("historical_replay") and out.get("season_log_version") != _NBA_SEASON_LOG_VERSION:
+        try:
+            out = await _nba_hydrate_season_logs(date_str, out)
+        except Exception as exc:
+            print(f"[nba_season_log] hydrate failed for {date_str}: {exc}")
+    return _nba_apply_season_scope(_nba_annotate_normal(out))
+
+
+_NBA_SEASON_LOG_VERSION = 1
+
+
+async def _nba_hydrate_season_logs(date_str, result):
+    """Saved boards from before the this-season display log: rebuild each row's
+    Last 10 (current season only) and its average. Picks are never changed."""
+    groups = ("picks", "all_picks", "props_picks", "props_nopick")
+    pids = sorted({str(r.get("player_id")) for g in groups for r in (result.get(g) or [])
+                   if isinstance(r, dict) and r.get("player_id")})
+    if not pids:
+        return result
+    try:
+        season = _nba_current_espn_season(date.fromisoformat(str(date_str)[:10]))
+    except (TypeError, ValueError):
+        return result
+    sem = asyncio.Semaphore(24)
+    logs = {}
+    async with httpx.AsyncClient(timeout=8) as client:
+        async def one(pid):
+            logs[pid] = await get_player_gamelogs_espn(pid, season, sem, client)
+        tasks = [asyncio.create_task(one(pid)) for pid in pids]
+        done, pending = await asyncio.wait(tasks, timeout=30)
+        for t in pending:
+            t.cancel()
+    if pending:
+        print(f"[nba_season_log] {len(pending)}/{len(pids)} players unfinished for {date_str}; retry next load")
+    out = dict(result)
+    for g in groups:
+        rows = []
+        for r in out.get(g) or []:
+            pid = str(r.get("player_id") or "") if isinstance(r, dict) else ""
+            sk = r.get("stat") if isinstance(r, dict) else None
+            if pid in logs and sk in STAT_CONFIG:
+                glog = _nba_season_last10(logs[pid], sk, date_str)
+                r = {**r, "recent_glog": glog, "recent_avg": _nba_season_avg(glog)}
+                if "gap" in r and glog and r.get("dk_line") and g in ("picks", "all_picks"):
+                    r["gap"] = round(_nba_season_avg(glog) - float(r["dk_line"]), 1)
+            rows.append(r)
+        if g in out:
+            out[g] = rows
+    if not pending:
+        out["season_log_version"] = _NBA_SEASON_LOG_VERSION
+    return out
 
 
 def _nba_sb_get(params: dict) -> list:
@@ -401,7 +451,11 @@ def _nba_snapshot_standard_rows(result: dict) -> list:
     """Use the category OVER/UNDER buttons' source, order and side verdict."""
     flat = []
     ranks, seen = {}, set()
-    for p in result.get("all_picks") or []:
+    rows = result.get("all_picks") or []
+    if not result.get("historical_replay"):
+        rows = _nba_normal_ranked([{**p, **_nba_normal_blend(p)} for p in rows
+                                   if isinstance(p, dict)])
+    for p in rows:
         sk   = p.get("stat","")
         if p.get("has_consistency"):
             side = "OVER"
@@ -435,7 +489,9 @@ def _nba_snapshot_standard_rows(result: dict) -> list:
                      "rank":rank,"is_overflow":rank>_NBA_TRK_TOP,
                      "capture_scope":"category_side_top10",
                      "tipoff":p.get("tipoff"),
-                     "score":p.get("hit_rate") or 0})
+                     "score":p.get("hit_rate") or 0,
+                     "hist_pct":p.get("hist_pct"),"season_pct":p.get("season_pct"),
+                     "blend_pct":p.get("blend_pct")})
     return flat
 
 
@@ -642,6 +698,149 @@ def _nba_et_date(raw) -> str:
         return dt.astimezone(_ZI("America/New_York")).date().isoformat()
     except Exception:
         return s[:10]
+
+
+def _nba_season_last10(logs, stat_key, today_str, limit=10):
+    """Display log: the player's most recent games THIS season only (regular
+    season + playoffs, all opponents and venues), newest first, before today."""
+    try:
+        as_of = date.fromisoformat(str(today_str)[:10])
+    except (TypeError, ValueError):
+        return []
+    season_start = date(as_of.year if as_of.month >= 10 else as_of.year - 1, 10, 1).isoformat()
+    out, seen = [], set()
+    for g in sorted(logs or [], key=lambda x: str(x.get("date", "")), reverse=True):
+        d = _nba_et_date(g.get("date"))
+        if not d or d < season_start or d >= str(today_str)[:10] or d in seen:
+            continue
+        try:
+            v = float(g[stat_key])
+        except (KeyError, TypeError, ValueError):
+            continue
+        seen.add(d)
+        out.append({"d": g.get("date", ""), "opp": g.get("opp", ""),
+                    "loc": g.get("location", ""),
+                    "v": int(v) if v.is_integer() else v})
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _nba_season_avg(glog):
+    vals = [float(g["v"]) for g in glog or [] if isinstance(g, dict) and g.get("v") is not None]
+    return round(sum(vals) / len(vals), 1) if vals else None
+
+
+# NORMAL PICKS ONLY: opponent H/A history blended with this season's form.
+# Backtested on saved live boards (Oct 23 - Nov 15 2026): the current-season
+# last-10 side rate predicted results far better than opponent history.
+_NBA_NORMAL_SEASON_MIN_GAMES = 5     # season check / blend only once 5+ games
+_NBA_NORMAL_SEASON_MIN_RATE = 0.5    # 5+ of last 10 this season on the pick side
+
+
+def _nba_normal_side(p):
+    """Same side verdict as the category OVER/UNDER buttons and the record."""
+    if p.get("has_consistency"):
+        return "OVER"
+    votes = [p.get(k) for k in ("line_rec", "streak_rec", "alt_rec")]
+    over, under = votes.count("OVER"), votes.count("UNDER")
+    return "OVER" if over > under else "UNDER" if under > over else None
+
+
+def _nba_normal_hist_weight(meetings):
+    return 0.35 if meetings <= 2 else 0.5 if meetings <= 5 else 0.6
+
+
+def _nba_normal_blend(p):
+    """History (vs opponent at venue) + this season's last 10, at the line."""
+    side = _nba_normal_side(p)
+    line = p.get("dk_line")
+    if line is None:
+        line = p.get("fd_line")
+    out = {"normal_side": side, "hist_hits": None, "hist_games": 0,
+           "season_hits": None, "season_games": 0, "hist_pct": None,
+           "season_pct": None, "blend_pct": None, "season_ok": True}
+    try:
+        line = float(line)
+    except (TypeError, ValueError):
+        return out
+    if side is None:
+        return out
+    def _vals(rows):
+        vals = []
+        for g in rows or []:
+            try:
+                vals.append(float(g.get("v")))
+            except (AttributeError, TypeError, ValueError):
+                continue
+        return vals
+    hit = (lambda v: v > line) if side == "OVER" else (lambda v: v < line)
+    hv = _vals(p.get("glog"))[:10]
+    sv = _vals(p.get("recent_glog"))[:10]
+    hh, hn = sum(1 for v in hv if hit(v)), len(hv)
+    sh, sn = sum(1 for v in sv if hit(v)), len(sv)
+    h_rate = (hh + 1) / (hn + 2) if hn else None   # 1/1 counts ~67%, not 100%
+    s_rate = sh / sn if sn else None
+    if sn >= _NBA_NORMAL_SEASON_MIN_GAMES:
+        w = _nba_normal_hist_weight(hn) if h_rate is not None else 0.0
+        blend = w * (h_rate or 0.0) + (1 - w) * s_rate
+        ok = s_rate >= _NBA_NORMAL_SEASON_MIN_RATE
+    else:
+        blend = h_rate if h_rate is not None else 0.0
+        ok = True
+    out.update({"hist_hits": hh, "hist_games": hn, "season_hits": sh,
+                "season_games": sn,
+                "hist_pct": round(hh / hn * 100, 1) if hn else None,
+                "season_pct": round(s_rate * 100, 1) if s_rate is not None else None,
+                "blend_pct": round(blend * 100, 1), "season_ok": ok})
+    return out
+
+
+def _nba_normal_ranked(rows):
+    """Normal-board order: plays passing the season check, best blended % first
+    (stable, so ties keep the original order)."""
+    keep = [p for p in rows or [] if isinstance(p, dict) and p.get("season_ok", True)]
+    return sorted(keep, key=lambda p: -(p.get("blend_pct") if p.get("blend_pct") is not None else -1))
+
+
+def _nba_annotate_normal(result):
+    """Add blend fields to every all_picks row and build the normal top cards.
+    all_picks keeps its original rows and order for every other feature."""
+    if not isinstance(result, dict) or result.get("historical_replay"):
+        return result
+    rows = []
+    for p in result.get("all_picks") or []:
+        rows.append({**p, **_nba_normal_blend(p)} if isinstance(p, dict) else p)
+    out = dict(result)
+    out["all_picks"] = rows
+    out["normal_top"] = _nba_top_cards(_nba_normal_ranked(rows))[0]
+    return out
+
+
+def _nba_top_cards(picks, card_min_mpg=24):
+    """Top cards: TOP_N distinct players; starters/6th men (mpg >= floor) first,
+    then the highest-minute backups only if needed to fill the board."""
+    top_picks = []
+    _seen_players = set()
+    _below = []
+    for _pk in picks:
+        _mpg = _pk.get('mpg')
+        if _mpg is not None and _mpg < card_min_mpg:
+            _below.append(_pk)
+            continue
+        top_picks.append(_pk)
+        _seen_players.add(_pk['player'])
+        if len(_seen_players) >= TOP_N:
+            break
+    if len(_seen_players) < TOP_N:
+        _below.sort(key=lambda x: (x.get('mpg') or 0), reverse=True)
+        for _pk in _below:
+            if _pk['player'] in _seen_players:
+                top_picks.append(_pk)
+            elif len(_seen_players) < TOP_N:
+                top_picks.append(_pk)
+                _seen_players.add(_pk['player'])
+    return top_picks, _seen_players
 
 
 def _nba_hc_price(raw):
@@ -3352,7 +3551,10 @@ async def _run_analysis_core(selected_date: str = None, force: bool = False) -> 
         if _fc and not _nba_fg3m_logs_sane(_fc):
             _fc = None
         if _fc:
+            _had_log_ver = _fc.get("season_log_version")
             _fc = await _nba_refresh_season_scope(today_str, _fc)
+            if _fc.get("season_log_version") != _had_log_ver and historical_replay:
+                _cache_set('nba', today_str, _fc)
             if not historical_replay:
                 _schedule_nba_alternates_warm(today_str)
             _cache.update(_fc)
@@ -3653,6 +3855,7 @@ async def _run_analysis_core(selected_date: str = None, force: bool = False) -> 
                 # MPA Special: player rhythm across all recent games (not opponent-filtered).
                 recent10 = all_logs_player[:10]
                 recent_vals = [float(l[sk]) for l in recent10]
+                season10 = [] if historical_replay else _nba_season_last10(all_logs_player, sk, today_str)
                 line_rec, line_rec_pct, line_rec_hits = _line_pick(dk_line, [float(l[sk]) for l in opp_logs_all[:10]], opp_logs_all[:10], sk)
                 streak_rec, streak_n = _streak_pick(dk_line, opp_logs_all, sk)
                 alt_rec, alt_evens, alt_odds = _alt_pick(dk_line, recent10, sk)
@@ -3693,9 +3896,9 @@ async def _run_analysis_core(selected_date: str = None, force: bool = False) -> 
                               'has_consistency': result is not None,
                               'historical_replay': historical_replay,
                               'replay_threshold': result.get('threshold') if historical_replay and result else None,
-                              'recent_avg': round(sum(recent_vals)/len(recent_vals), 1) if recent_vals else None,
-                               'recent_glog': [{'d': l['date'], 'v': l[sk]} for l in recent10],
-                              'gap': round((sum(recent_vals)/len(recent_vals)) - dk_line, 1) if recent_vals and dk_line else None,
+                              'recent_avg': _nba_season_avg(season10),
+                              'recent_glog': season10,
+                              'gap': round(_nba_season_avg(season10) - dk_line, 1) if season10 and dk_line else None,
                               'mpg': round(sum(float(l.get('MIN',0) or 0) for l in recent10)/len(recent10), 1) if recent10 else None})
 
         for player in rosters.get(game['away_id'], []):
@@ -3725,6 +3928,7 @@ async def _run_analysis_core(selected_date: str = None, force: bool = False) -> 
                 result = pattern_at_line(vals, dk_line if dk_line is not None else fd_line)
                 recent10 = all_logs_player[:10]
                 recent_vals = [float(l[sk]) for l in recent10]
+                season10 = [] if historical_replay else _nba_season_last10(all_logs_player, sk, today_str)
                 line_rec, line_rec_pct, line_rec_hits = _line_pick(dk_line, [float(l[sk]) for l in opp_logs_all[:10]], opp_logs_all[:10], sk)
                 streak_rec, streak_n = _streak_pick(dk_line, opp_logs_all, sk)
                 alt_rec, alt_evens, alt_odds = _alt_pick(dk_line, recent10, sk)
@@ -3760,9 +3964,9 @@ async def _run_analysis_core(selected_date: str = None, force: bool = False) -> 
                               'streak_rec': streak_rec, 'streak_n': streak_n,
                               'alt_rec': alt_rec, 'alt_evens': alt_evens, 'alt_odds': alt_odds,
                               'has_consistency': result is not None,
-                              'recent_avg': round(sum(recent_vals)/len(recent_vals), 1) if recent_vals else None,
-                               'recent_glog': [{'d': l['date'], 'v': l[sk]} for l in recent10],
-                              'gap': round((sum(recent_vals)/len(recent_vals)) - dk_line, 1) if recent_vals and dk_line else None,
+                              'recent_avg': _nba_season_avg(season10),
+                              'recent_glog': season10,
+                              'gap': round(_nba_season_avg(season10) - dk_line, 1) if season10 and dk_line else None,
                               'mpg': round(sum(float(l.get('MIN',0) or 0) for l in recent10)/len(recent10), 1) if recent10 else None})
 
     # Sort: consistency picks first (by hit rate), then non-consistency
@@ -3825,6 +4029,7 @@ async def _run_analysis_core(selected_date: str = None, force: bool = False) -> 
                         if not ob or ob.get('line') is None: continue
                         line = float(ob['line'])
                     dk_ob = dk_lookup.get((_nn(pname),sk),{})
+                    season10 = [] if historical_replay else _nba_season_last10(logs_by_player.get(pid, []), sk, today_str)
                     dk_over = None if historical_replay else dk_ob.get('over_odds','')
                     dk_under = None if historical_replay else dk_ob.get('under_odds','')
                     # Same trade-aware filter: only games with current team vs today's opp at this location
@@ -3834,7 +4039,7 @@ async def _run_analysis_core(selected_date: str = None, force: bool = False) -> 
                     if not opp_logs:
                         if historical_replay:
                             continue
-                        props_nopick.append({**_form_swing(logs_by_player.get(pid, []), sk),'player':pname,'player_id':pid,'stat':sk,'stat_label':sc['label'],'emoji':sc['emoji'],'team':cur_team,'side':side,'opp_name':opp_name,'line':line,'avg':None,'games':0,'history':'—','gap':None,'pick':None,'fd_odds':ob.get('odds',''),'dk_over_odds':dk_over,'dk_under_odds':dk_under,'bookmaker':dk_ob.get('bookmaker') or ob.get('bookmaker',''),'bookmaker_label':dk_ob.get('bookmaker_label') or ob.get('bookmaker_label',''),'matchup':matchup_str})
+                        props_nopick.append({**_form_swing(logs_by_player.get(pid, []), sk),'player':pname,'player_id':pid,'stat':sk,'stat_label':sc['label'],'emoji':sc['emoji'],'team':cur_team,'side':side,'opp_name':opp_name,'line':line,'avg':None,'games':0,'history':'—','recent_glog':season10,'recent_avg':_nba_season_avg(season10),'gap':None,'pick':None,'fd_odds':ob.get('odds',''),'dk_over_odds':dk_over,'dk_under_odds':dk_under,'bookmaker':dk_ob.get('bookmaker') or ob.get('bookmaker',''),'bookmaker_label':dk_ob.get('bookmaker_label') or ob.get('bookmaker_label',''),'matchup':matchup_str})
                         continue
                     vals = [float(l[sk]) for l in opp_logs]
                     avg = round(sum(vals)/len(vals),1)
@@ -3842,7 +4047,7 @@ async def _run_analysis_core(selected_date: str = None, force: bool = False) -> 
                     gap = round(avg-line,1) if line is not None else None
                     pick = ('OVER' if replay else
                             ('OVER' if avg>line else ('UNDER' if avg<line else None)))
-                    entry = {**_form_swing(logs_by_player.get(pid, []), sk),'player':pname,'player_id':pid,'stat':sk,'stat_label':sc['label'],'emoji':sc['emoji'],'team':cur_team,'side':side,'opp_name':opp_name,'line':line,'replay_threshold':replay.get('threshold') if replay else None,'avg':avg,'games':len(vals),'history':','.join(str(int(v)) for v in vals[:8]),'gap':gap,'pick':pick,'fd_odds':None if historical_replay else ob.get('odds',''),'dk_over_odds':dk_over,'dk_under_odds':dk_under,'bookmaker':dk_ob.get('bookmaker') or ob.get('bookmaker',''),'bookmaker_label':dk_ob.get('bookmaker_label') or ob.get('bookmaker_label',''),'matchup':matchup_str,'historical_replay':historical_replay}
+                    entry = {**_form_swing(logs_by_player.get(pid, []), sk),'player':pname,'player_id':pid,'stat':sk,'stat_label':sc['label'],'emoji':sc['emoji'],'team':cur_team,'side':side,'opp_name':opp_name,'line':line,'replay_threshold':replay.get('threshold') if replay else None,'avg':avg,'games':len(vals),'history':','.join(str(int(v)) for v in vals[:8]),'recent_glog':season10,'recent_avg':_nba_season_avg(season10),'gap':gap,'pick':pick,'fd_odds':None if historical_replay else ob.get('odds',''),'dk_over_odds':dk_over,'dk_under_odds':dk_under,'bookmaker':dk_ob.get('bookmaker') or ob.get('bookmaker',''),'bookmaker_label':dk_ob.get('bookmaker_label') or ob.get('bookmaker_label',''),'matchup':matchup_str,'historical_replay':historical_replay}
                     (props_picks if pick else props_nopick).append(entry)
     props_picks.sort(key=lambda x:abs(x.get('gap') or 0),reverse=True)
     log.append(f"Props: {len(props_picks)} picks")
@@ -3865,8 +4070,8 @@ async def _run_analysis_core(selected_date: str = None, force: bool = False) -> 
         except Exception as _fne:
             print(f"[nba_fn] build failed: {_fne}")
             log.append("Funnel Plays board unavailable for this run")
-    result = {'date':today_str,'picks':top_picks,'all_picks':picks,'games':games,'log':log,'total':len(picks),'odds_loaded':odds_loaded,'historical_replay':historical_replay,'props_picks':props_picks,'props_nopick':props_nopick,'hot_cold':hot_cold,'funnels':funnels,'funnel_dvp':funnel_dvp}
-    result = _nba_apply_season_scope(result)
+    result = {'date':today_str,'picks':top_picks,'all_picks':picks,'games':games,'log':log,'total':len(picks),'odds_loaded':odds_loaded,'historical_replay':historical_replay,'props_picks':props_picks,'props_nopick':props_nopick,'hot_cold':hot_cold,'funnels':funnels,'funnel_dvp':funnel_dvp,'season_log_version':_NBA_SEASON_LOG_VERSION}
+    result = _nba_apply_season_scope(_nba_annotate_normal(result))
     _cache.update(result)
     # Only cache if we actually got prop lines from the Odds API.
     # Otherwise the empty result gets pinned for 6h even after sportsbooks post lines.
@@ -5045,6 +5250,16 @@ function filterTopSide(side){
   renderTopCategory();
 }
 
+// Normal picks: drop plays failing the season check; best blended % first.
+function _nbaNormalRows(rows){
+  const kept=(rows||[]).filter(p=>p&&p.season_ok!==false);
+  if(!kept.some(p=>p.blend_pct!=null))return kept;
+  return kept.map((p,i)=>[p,i]).sort((a,b)=>{
+    const x=a[0].blend_pct==null?-1:a[0].blend_pct, y=b[0].blend_pct==null?-1:b[0].blend_pct;
+    return (y-x)||(a[1]-b[1]);
+  }).map(t=>t[0]);
+}
+
 function _nbaTopSideOf(p){
   return p&&p.historical_replay&&p.side?p.side:_nbaPickVerdict(p);
 }
@@ -5054,7 +5269,7 @@ function renderTopCategory(){
   if(activeTopStat==='ALL'&&activeTopSide==='ALL'){
     source=top10;
   }else{
-    source=allPicksData.filter(p=>
+    source=_nbaNormalRows(allPicksData).filter(p=>
       (activeTopStat==='ALL'||p.stat===activeTopStat)&&
       (activeTopSide==='ALL'||_nbaTopSideOf(p)===activeTopSide)
     ).slice(0,activeTopSide==='ALL'?12:10);
@@ -5078,7 +5293,8 @@ function toggleSide(side){
 function applyAllFilters(){
   const searchQ=(document.getElementById('playerSearchInput')||{}).value||'';
   const sq=searchQ.toLowerCase().trim();
-  let filtered = activeAllStat==='ALL' ? allPicksData : allPicksData.filter(p=>p.stat===activeAllStat);
+  const _normal=_nbaNormalRows(allPicksData);
+  let filtered = activeAllStat==='ALL' ? _normal : _normal.filter(p=>p.stat===activeAllStat);
   if(sq) filtered=filtered.filter(p=>(p.player||'').toLowerCase().includes(sq));
   if(sideFilter){
     filtered = filtered.filter(p => p.side===sideFilter || p.line_rec===sideFilter || p.streak_rec===sideFilter || p.alt_rec===sideFilter);
@@ -5181,7 +5397,13 @@ function renderTop10Cards(picks){
     if(s.recent_avg!=null){
       const g=s.gap!=null?s.gap:null;
       const gc=g==null?'#94a3b8':g>0?'#4ade80':g<0?'#f87171':'#94a3b8';
-      tile('L10 all-opp avg',`${s.recent_avg}${g==null?'':` <small style="color:${gc}">${g>0?'+':''}${g}</small>`}`);
+      tile('L'+((s.recent_glog||[]).length||10)+' avg (this season)',`${s.recent_avg}${g==null?'':` <small style="color:${gc}">${g>0?'+':''}${g}</small>`}`);
+    }
+    if(s.blend_pct!=null){
+      const _bs=s.normal_side||'';
+      const _h=s.hist_games?`H ${s.hist_hits}/${s.hist_games}`:'H —';
+      const _ss=s.season_games?`S ${s.season_hits}/${s.season_games}`:'S —';
+      tile(`Blended % ${_bs} (history + this season)`,`<span style="color:${pctClr(s.blend_pct)}">${s.blend_pct}%</span> <small>${_h} · ${_ss}</small>`);
     }
     if(s.best_bet){
       const bb=s.best_bet, isPass=bb.side==='PASS';
@@ -5292,6 +5514,7 @@ function renderAllByGame(picks){
         const badges = [];
         if(p.form_badge) badges.push(`<span title="Display-only last-5 form versus season average" style="background:${p.form_badge==='HOT'?'rgba(249,115,22,.15)':'rgba(96,165,250,.15)'};color:${p.form_badge==='HOT'?'#fb923c':'#60a5fa'};padding:2px 7px;border-radius:6px;font-size:.65rem;font-weight:800;margin-right:4px">${p.form_badge}</span>`);
         if(p.has_consistency) badges.push(`<span style="background:rgba(245,158,11,.15);color:#fbbf24;padding:2px 7px;border-radius:6px;font-size:.65rem;font-weight:700;margin-right:4px">PICK ${p.pct}%</span>`);
+        if(p.blend_pct!=null) badges.push(`<span title="History vs this opponent at this venue blended with this season last 10, at the line" style="background:rgba(56,189,248,.14);color:#38bdf8;padding:2px 7px;border-radius:6px;font-size:.65rem;font-weight:800;margin-right:4px">BLEND ${p.normal_side||''} ${p.blend_pct}% · H ${p.hist_games?p.hist_hits+'/'+p.hist_games:'—'} · S ${p.season_games?p.season_hits+'/'+p.season_games:'—'}</span>`);
         if(p.historical_replay && p.side) badges.push(`<span style="background:${p.side==='UNDER'?'rgba(239,68,68,.15)':'rgba(74,222,128,.15)'};color:${p.side==='UNDER'?'#f87171':'#4ade80'};padding:2px 7px;border-radius:6px;font-size:.65rem;font-weight:700;margin-right:4px">${p.side} ${p.line} · ${p.book||'Archived sportsbook'}</span>`);
         const loc=(p.location||'').toLowerCase();
         if(p.line_rec) badges.push(`<span style="background:${p.line_rec==='UNDER'?'rgba(239,68,68,.15)':'rgba(74,222,128,.15)'};color:${p.line_rec==='UNDER'?'#f87171':'#4ade80'};padding:2px 7px;border-radius:6px;font-size:.65rem;font-weight:700;margin-right:4px">LINE ${p.line_rec} ${p.dk_line} ${p.line_rec_pct}% vs ${p.opp} ${loc}</span>`);
@@ -5548,7 +5771,7 @@ async function openLadder(key){
     ? recent.map(g=>`<div style="display:flex;justify-content:space-between;padding:6px 10px;border-bottom:1px solid #1a1a1a;font-size:.82rem">
         <span style="color:#999">${fmtD(g.d)}</span>
         <span style="color:#fff;font-weight:800">${esc(g.v)}</span></div>`).join('')
-    : '<div style="padding:14px;color:#666;text-align:center;font-size:.8rem">No pre-game last-10 results available</div>';
+    : '<div style="padding:14px;color:#666;text-align:center;font-size:.8rem">No current-season games before this date</div>';
   // Ladder: book line ±3, over/under counts at each
   const lad=p.ladder||[];
   let ladHTML;
@@ -5583,7 +5806,7 @@ async function openLadder(key){
     <div style="padding:12px 14px">
       <div style="color:#888;font-size:.7rem;font-weight:800;letter-spacing:.08em;margin-bottom:5px">ALT LINE HIT RATES (book ±3)</div>
       <div style="background:#0a0a0a;border:1px solid #1f1f1f;border-radius:9px;overflow:hidden;margin-bottom:14px">${ladHTML}</div>
-      <div style="color:#888;font-size:.7rem;font-weight:800;letter-spacing:.08em;margin-bottom:5px">LAST ${recent.length||10} ${esc(p.stat_label)} RESULTS BEFORE GAME</div>
+      <div style="color:#888;font-size:.7rem;font-weight:800;letter-spacing:.08em;margin-bottom:5px">LAST ${recent.length||10} ${esc(p.stat_label)} RESULTS · THIS SEASON</div>
       <div style="background:#0a0a0a;border:1px solid #1f1f1f;border-radius:9px;overflow:hidden;margin-bottom:14px">${recentHTML}</div>
       <div style="color:#888;font-size:.7rem;font-weight:800;letter-spacing:.08em;margin-bottom:5px">GAME LOG vs ${esc(p.opp)} (${loc})</div>
       <div style="background:#0a0a0a;border:1px solid #1f1f1f;border-radius:9px;overflow:hidden">${logHTML}</div>
@@ -5666,7 +5889,7 @@ async function runPicks(force=false){
       document.getElementById('content').innerHTML=`<div class="msg-card"><span class="ico"></span><h2>No Games Today</h2><p>No NBA games scheduled for ${data.date||selectedDate}. Check back on game day.</p></div>`;
       return;
     }
-    top10=data.picks||[];
+    top10=data.normal_top||data.picks||[];
     allPicksData=data.all_picks||[];
     nbaPropsData=(data.props_picks||[]).concat(data.props_nopick||[]);
     nbaHotColdData=Array.isArray(data.hot_cold)?data.hot_cold:null;
@@ -5699,10 +5922,10 @@ async function runPicks(force=false){
     lb.innerHTML=log.join('<br>')+`<br> ${data.total} total picks found`;
     // Log box hidden from end users — internal diagnostics only.
     // document.getElementById('content').appendChild(lb);
-    document.getElementById('totalCount').textContent=allPicksData.length;
+    document.getElementById('totalCount').textContent=_nbaNormalRows(allPicksData).length;
     document.getElementById('allPicksWrap').style.display='block';
     renderSignalLists(allPicksData);
-    renderAllByGame(allPicksData);
+    renderAllByGame(_nbaNormalRows(allPicksData));
     renderPropsSection(data.props_picks, data.props_nopick);
   }catch(e){
     document.getElementById('content').innerHTML=`<div class="msg-card"><span class="ico"></span><h2 style="color:#ef4444">Something went wrong</h2><p>${e.message}</p></div>`;
@@ -5733,7 +5956,7 @@ async function getPicks(){
       document.getElementById('content').innerHTML=`<div class="msg-card"><span class="ico"></span><h2>No Games Today</h2><p>No NBA games scheduled for ${data.date||selectedDate}. Check back on game day.</p></div>`;
       return;
     }
-    top10=data.picks||[];
+    top10=data.normal_top||data.picks||[];
     allPicksData=data.all_picks||[];
     nbaPropsData=(data.props_picks||[]).concat(data.props_nopick||[]);
     nbaHotColdData=Array.isArray(data.hot_cold)?data.hot_cold:null;
@@ -5750,10 +5973,10 @@ async function getPicks(){
       document.getElementById('content').innerHTML=`<div class="msg-card"><span class="ico"></span><h2>No Cards Today</h2><p>All 70%+ plays and the parlay builder are below.</p></div>`;
     }
     if(top10.length||allPicksData.length){
-      document.getElementById('totalCount').textContent=allPicksData.length;
+      document.getElementById('totalCount').textContent=_nbaNormalRows(allPicksData).length;
       document.getElementById('allPicksWrap').style.display='block';
       renderSignalLists(allPicksData);
-      renderAllByGame(allPicksData);
+      renderAllByGame(_nbaNormalRows(allPicksData));
     }
     renderPropsSection(data.props_picks, data.props_nopick);
   }catch(e){
@@ -6097,7 +6320,7 @@ document.addEventListener('DOMContentLoaded', function(){
     var dp = document.getElementById('datePicker');
     if (dp && data.date) dp.value = data.date;
     if (data.games) renderGames(data.games);
-    top10        = data.picks || [];
+    top10        = data.normal_top || data.picks || [];
     allPicksData = data.all_picks || [];
     nbaPropsData = (data.props_picks || []).concat(data.props_nopick || []);
     nbaHotColdData = Array.isArray(data.hot_cold) ? data.hot_cold : null;
@@ -6115,11 +6338,11 @@ document.addEventListener('DOMContentLoaded', function(){
       // Render the all-picks sections whenever there are plays, even if the card minutes
       // floor left zero cards.
       var tc = document.getElementById('totalCount');
-      if (tc) tc.textContent = allPicksData.length;
+      if (tc) tc.textContent = _nbaNormalRows(allPicksData).length;
       var ap = document.getElementById('allPicksWrap');
       if (ap) ap.style.display = 'block';
       renderSignalLists(allPicksData);
-      renderAllByGame(allPicksData);
+      renderAllByGame(_nbaNormalRows(allPicksData));
     }
     renderPropsSection(data.props_picks, data.props_nopick);
   } catch (e) { console.error('snapshot render failed', e); }
@@ -7276,11 +7499,11 @@ function nbaCoachDetail(i){
    '<div title="Book implied" style="position:absolute;top:-4px;bottom:-4px;left:calc('+(implied*100).toFixed(1)+'% - 1px);width:3px;background:#f8fafc;border-radius:2px;box-shadow:0 0 6px rgba(255,255,255,.6)"></div>'+
   '</div><div style="color:#64748b;font-size:.66rem;margin-top:7px">White marker = sportsbook break-even. Bar past the marker = edge.</div></div>'+
  '<div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-top:12px">'+
-  '<div style="'+tileCss+'"><div style="'+kCss+'">Recent avg</div><div style="color:#e2e8f0;font-weight:900;font-size:1.05rem;margin-top:3px">'+_nbaEsc(String(x.recent_average==null?'—':x.recent_average))+'</div></div>'+
-  '<div style="'+tileCss+'"><div style="'+kCss+'">Log vs line</div><div style="color:#e2e8f0;font-weight:900;font-size:1.05rem;margin-top:3px">'+(games.length?gHits+'/'+games.length:'—')+'</div></div>'+
+  '<div style="'+tileCss+'"><div style="'+kCss+'">'+(games.length?'L'+games.length+' avg (this season)':'Season avg')+'</div><div style="color:#e2e8f0;font-weight:900;font-size:1.05rem;margin-top:3px">'+_nbaEsc(String(x.recent_average==null?'—':x.recent_average))+'</div></div>'+
+  '<div style="'+tileCss+'"><div style="'+kCss+'">'+(games.length?'L'+games.length+' vs line':'Last 10 vs line')+'</div><div style="color:#e2e8f0;font-weight:900;font-size:1.05rem;margin-top:3px">'+(games.length?gHits+'/'+games.length:'—')+'</div></div>'+
   '<div style="'+tileCss+'"><div style="'+kCss+'">Vs opponent</div><div style="color:#e2e8f0;font-weight:900;font-size:1.05rem;margin-top:3px">'+(oppList.length?oHits+'/'+oppList.length:'—')+'</div></div></div>'+
- '<div style="'+secCss+'"><div style="color:#c4b5fd;font-size:.66rem;font-weight:900;letter-spacing:.08em;margin-bottom:8px">GAME LOG · '+_nbaEsc(x.side)+' '+_nbaEsc(String(x.line))+'</div><div style="display:flex;flex-wrap:wrap;gap:5px">'+_chips(games)+'</div>'+
-  '<div style="color:#c4b5fd;font-size:.66rem;font-weight:900;letter-spacing:.08em;margin:12px 0 8px">OPPONENT HISTORY</div><div style="display:flex;flex-wrap:wrap;gap:5px">'+(oppList.length?_chips(oppList):'<span style="color:#64748b;font-size:.78rem">'+_nbaEsc(String(x.opponent_history||'No qualifying opponent history'))+'</span>')+'</div>'+
+ '<div style="'+secCss+'"><div style="color:#c4b5fd;font-size:.66rem;font-weight:900;letter-spacing:.08em;margin-bottom:8px">LAST '+(games.length||10)+' GAMES · THIS SEASON · '+_nbaEsc(x.side)+' '+_nbaEsc(String(x.line))+' <span style="color:#64748b;font-weight:700;letter-spacing:0">(newest first)</span></div><div style="display:flex;flex-wrap:wrap;gap:5px">'+(games.length?_chips(games):'<span style="color:#64748b;font-size:.78rem">No current-season games saved for this play. Run the date again to load them.</span>')+'</div>'+
+  '<div style="color:#c4b5fd;font-size:.66rem;font-weight:900;letter-spacing:.08em;margin:12px 0 8px">OPPONENT HISTORY'+(x.opp?' · VS '+_nbaEsc(String(x.opp).toUpperCase()):'')+(x.opp_venue==='HOME'||x.opp_venue==='AWAY'?' · '+_nbaEsc(x.opp_venue):'')+' <span style="color:#64748b;font-weight:700;letter-spacing:0">(all seasons, newest first)</span></div><div style="display:flex;flex-wrap:wrap;gap:5px">'+(oppList.length?_chips(oppList):'<span style="color:#64748b;font-size:.78rem">'+_nbaEsc(String(x.opponent_history||'No qualifying opponent history'))+'</span>')+'</div>'+
   '<div style="color:#64748b;font-size:.64rem;margin-top:9px"><span style="color:#4ade80">Green</span> = would have cashed · <span style="color:#f87171">Red</span> = missed</div></div>'+
  '<div style="margin-top:10px;color:#94a3b8;font-size:.76rem;line-height:1.5">'+_nbaEsc(x.selection_reason||'Positive Coach Edge based on opponent history and the exact sportsbook price.')+'</div>'+
  '<button onclick="_nbaCoachOpenBet()" style="width:100%;margin-top:14px;padding:12px 14px;background:linear-gradient(90deg,#4338ca,#6366f1);color:#fff;border:0;border-radius:11px;font-weight:900;cursor:pointer;letter-spacing:.02em">Open exact bet form</button>'+
@@ -8357,8 +8580,12 @@ def _nba_coach_safest_rows(standard, alternate, count=10):
                 "book": source, "source": source, "alternate": bool(is_alt),
                 "base_line": base_line, "base_hits": base_hits, "hits": hits, "games": n,
                 "base_hit_rate": round(base_hits / n, 5), "safest": True,
-                "recent_average": round(sum(vals[-10:]) / len(vals[-10:]), 1),
-                "game_log": vals[-10:], "opponent_history": r.get("history") or "—",
+                "recent_average": _nba_season_avg(r.get("recent_glog")),
+                "game_log": [g.get("v") for g in (r.get("recent_glog") or []) if isinstance(g, dict)],
+                "game_log_dates": [g.get("d") for g in (r.get("recent_glog") or []) if isinstance(g, dict)],
+                "opp_venue": str(r.get("side") or r.get("location") or "").upper(),
+                "opp": r.get("opp") or r.get("opp_name") or "",
+                "opponent_history": r.get("history") or "—",
                 "selection_reason": (
                     f"{side} {base_line:g} hit {base_hits}/{n} vs {opp}"
                     f"{(' ' + venue) if venue in ('home', 'away') else ''}; "
@@ -8443,10 +8670,12 @@ def _nba_coach_rows(standard, alternate, query="", mode="all", count=100):
                     "model_probability":round(model,5),"implied_probability":implied,
                     "edge":round(edge,5),"coach_edge":round(edge*100,2),
                     "book":_nba_coach_source(r),
-                    "recent_average":(
-                        round(sum(vals[-10:])/len(vals[-10:]),1)
-                        if vals else None),
-                    "game_log":vals[-10:],"opponent_history":signal.get("history") or "—",
+                    "recent_average":_nba_season_avg(signal.get("recent_glog")),
+                    "game_log":[g.get("v") for g in (signal.get("recent_glog") or []) if isinstance(g, dict)],
+                    "game_log_dates":[g.get("d") for g in (signal.get("recent_glog") or []) if isinstance(g, dict)],
+                    "opp_venue":str(signal.get("side") or signal.get("location") or "").upper(),
+                    "opp":signal.get("opp") or signal.get("opp_name") or "",
+                    "opponent_history":signal.get("history") or "—",
                     "source":_nba_coach_source(r),"alternate":bool(is_alt),
                     "selection_reason":"Positive Coach Edge: empirical H/A opponent log exceeds American-odds implied probability."})
         return out
@@ -11139,8 +11368,7 @@ async def nba_player_pre_game_log(request: Request, date: str = "",
         [game for result in results if isinstance(result, list) for game in result
          if str(game.get("date", ""))[:10] < date],
         key=lambda game: str(game.get("date", "")), reverse=True)
-    recent = [{"d": game.get("date"), "v": game.get(stat)}
-              for game in logs[:10] if game.get(stat) is not None]
+    recent = [{"d": g["d"], "v": g["v"]} for g in _nba_season_last10(logs, stat, date)]
     team_abbr, opp_abbr = _norm_abbr(team), _norm_abbr(opp)
     loc = "Home" if str(location).lower() == "home" else "Away"
     matchup = [{"d": game.get("date"), "v": game.get(stat)}
