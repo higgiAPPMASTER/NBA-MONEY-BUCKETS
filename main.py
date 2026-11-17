@@ -492,7 +492,8 @@ def _nba_snapshot_standard_rows(result: dict) -> list:
                      "tipoff":p.get("tipoff"),
                      "score":p.get("hit_rate") or 0,
                      "hist_pct":p.get("hist_pct"),"season_pct":p.get("season_pct"),
-                     "opp_pct":p.get("opp_pct"),"true_pct":p.get("true_pct")})
+                     "opp_pct":p.get("opp_pct"),"true_pct":p.get("true_pct"),
+                     "so_starter":p.get("so_starter")})
     return flat
 
 
@@ -773,6 +774,207 @@ def _nba_opp_vals(logs, opp, team, stat_key, before=None):
     return out
 
 
+# STARTER OUT -> BACKUP BUMP (live boards only; feeds True Prob and rankings).
+# When ESPN lists a starter (24+ MPG this season) Out or Doubtful, the same-
+# position backups get their True Prob "season" half from this season's games
+# WITHOUT that starter (3+ such games, and his minutes rose 4+ in them).
+# With fewer than 3 such games the next man up gets a fixed, capped bump:
+# his per-minute rate x extra minutes (40% of the starter's MPG, max 10),
+# capped at 25% of his season average. Old saved boards are never changed.
+_NBA_SO_STATUSES = ("out", "doubtful")
+_NBA_SO_STARTER_MPG = 24.0
+_NBA_SO_MIN_WO_GAMES = 3
+_NBA_SO_MIN_JUMP = 4.0
+_NBA_SO_BACKUP_MIN_MPG = 10.0
+_NBA_SO_FALLBACK_MIN_MPG = 12.0
+_NBA_SO_EXTRA_SHARE = 0.40
+_NBA_SO_EXTRA_MAX = 10.0
+_NBA_SO_BUMP_CAP = 0.25
+
+
+def _nba_so_group(pos):
+    p = str(pos or "").upper()
+    if p.startswith("C"):
+        return "C"
+    if "G" in p:
+        return "G"
+    return "F" if p else ""
+
+
+def _nba_so_games(logs, team, today_str):
+    """This-season games on `team` before today: {et_date: game}."""
+    try:
+        as_of = date.fromisoformat(str(today_str)[:10])
+    except (TypeError, ValueError):
+        return {}
+    start = date(as_of.year if as_of.month >= 10 else as_of.year - 1, 10, 1).isoformat()
+    out = {}
+    for g in logs or []:
+        d = _nba_et_date(g.get("date"))
+        if d and start <= d < str(today_str)[:10] and (not team or g.get("player_team") == team):
+            out.setdefault(d, g)
+    return out
+
+
+def _nba_so_mpg(games):
+    return (sum(float(g.get("MIN", 0) or 0) for g in games) / len(games)) if games else None
+
+
+async def _nba_so_injuries(games):
+    """ESPN game-summary injury lists: {team_id: [rows]}; failures -> empty."""
+    out = {}
+    sem = asyncio.Semaphore(6)
+    async with httpx.AsyncClient(timeout=8) as client:
+        async def one(g):
+            key = f"sumbits:{g['event_id']}"
+            bits = _nba_gp_mem_get(key, 240)
+            if bits is None:
+                async with sem:
+                    r = await client.get(f"{_NBA_GP_ESPN}/summary", params={"event": g["event_id"]})
+                if r.status_code != 200:
+                    raise RuntimeError(f"HTTP {r.status_code}")
+                bits = _nba_gp_mem_set(key, _nba_gp_summary_bits(
+                    r.json(), g["home"], g["away"], g["home_id"], g["away_id"]))
+            return bits[3] or {}
+        res = await asyncio.gather(*[one(g) for g in games if g.get("event_id")],
+                                   return_exceptions=True)
+    failed = 0
+    for r in res:
+        if isinstance(r, dict):
+            for tid, rows in r.items():
+                out.setdefault(str(tid), []).extend(rows or [])
+        else:
+            failed += 1
+    return out, failed
+
+
+async def _nba_starter_out_map(today_str, games, rosters, logs_by_player, log):
+    """{backup player_id: bump info} for today's Out/Doubtful starters."""
+    try:
+        inj, failed = await asyncio.wait_for(_nba_so_injuries(games), timeout=20)
+    except Exception as exc:
+        log.append(f"Starter-out check unavailable ({exc}); no backup bumps applied")
+        return {}
+    if failed:
+        log.append(f"Starter-out check: injury report missing for {failed} game(s)")
+    abbr = {}
+    for g in games:
+        abbr[str(g["home_id"])] = g["home"]
+        abbr[str(g["away_id"])] = g["away"]
+    outs = []   # (team_id, team, injury row)
+    for tid, rows in inj.items():
+        for r in rows:
+            st = str(r.get("status") or "").lower()
+            if r.get("id") and any(k in st for k in _NBA_SO_STATUSES):
+                outs.append((tid, abbr.get(tid, ""), r))
+    if not outs:
+        return {}
+    season = _nba_current_espn_season(date.fromisoformat(str(today_str)[:10]))
+    need = [r["id"] for _, _, r in outs if r["id"] not in logs_by_player]
+    extra = {}
+    if need:
+        sem = asyncio.Semaphore(12)
+        async with httpx.AsyncClient(timeout=8) as client:
+            async def fetch(pid):
+                extra[pid] = await get_player_gamelogs_espn(pid, season, sem, client)
+            try:
+                await asyncio.wait_for(asyncio.gather(*[fetch(pid) for pid in need],
+                                                      return_exceptions=True), timeout=25)
+            except asyncio.TimeoutError:
+                log.append("Starter-out check: some injured players' logs timed out")
+    injured_ids = {r["id"] for _, _, r in outs}
+    so_map = {}
+    for tid, team, r in outs:
+        s_logs = logs_by_player.get(r["id"]) or extra.get(r["id"]) or []
+        s_games = _nba_so_games(s_logs, team, today_str)
+        s_mpg = _nba_so_mpg(list(s_games.values()))
+        if len(s_games) < 3 or s_mpg is None or s_mpg < _NBA_SO_STARTER_MPG:
+            continue    # not a starter, or out all season (already in the numbers)
+        grp = _nba_so_group(r.get("pos"))
+        tenure = min(s_games)
+        cands = []
+        for pl in rosters.get(tid) or rosters.get(str(tid)) or []:
+            pid = str(pl.get("id"))
+            if pid == r["id"] or pid in injured_ids or pid not in logs_by_player:
+                continue
+            if grp and _nba_so_group(pl.get("position")) != grp:
+                continue
+            b_games = _nba_so_games(logs_by_player[pid], team, today_str)
+            with_g = [g for d, g in b_games.items() if d in s_games]
+            wo = {d: g for d, g in b_games.items() if d not in s_games and d >= tenure}
+            mpg_with = _nba_so_mpg(with_g)
+            if mpg_with is None or mpg_with >= _NBA_SO_STARTER_MPG or mpg_with < _NBA_SO_BACKUP_MIN_MPG:
+                continue
+            mpg_wo = _nba_so_mpg(list(wo.values()))
+            cands.append({"pid": pid, "wo": wo, "mpg_with": mpg_with, "mpg_wo": mpg_wo,
+                          "games": b_games})
+        base = {"so_starter": r.get("name") or "", "so_status": r.get("status") or "",
+                "so_starter_mpg": round(s_mpg, 1)}
+        data = [c for c in cands if len(c["wo"]) >= _NBA_SO_MIN_WO_GAMES
+                and c["mpg_wo"] - c["mpg_with"] >= _NBA_SO_MIN_JUMP]
+        if data:
+            for c in data:
+                if c["pid"] in so_map:
+                    continue
+                so_map[c["pid"]] = {**base, "so_mode": "without",
+                                    "so_dates": sorted(c["wo"], reverse=True),
+                                    "so_games": len(c["wo"]),
+                                    "so_mpg_with": round(c["mpg_with"], 1),
+                                    "so_mpg_wo": round(c["mpg_wo"], 1)}
+            continue
+        nxt = [c for c in cands if c["mpg_with"] >= _NBA_SO_FALLBACK_MIN_MPG
+               and len(c["wo"]) < _NBA_SO_MIN_WO_GAMES]
+        if not nxt:
+            continue
+        c = max(nxt, key=lambda x: x["mpg_with"])
+        if c["pid"] in so_map:
+            continue
+        so_map[c["pid"]] = {**base, "so_mode": "bump",
+                            "so_extra_min": round(min(_NBA_SO_EXTRA_MAX, _NBA_SO_EXTRA_SHARE * s_mpg), 1),
+                            "so_games": len(c["wo"]),
+                            "so_mpg_with": round(c["mpg_with"], 1)}
+    if so_map:
+        log.append(f"Starter-out bump: {len(so_map)} backup(s) adjusted")
+    return so_map
+
+
+def _nba_so_apply(rows, so_map, logs_by_player, today_str):
+    """Stamp each backup's rows with the without-starter values or fixed bump."""
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        info = so_map.get(str(row.get("player_id") or ""))
+        sk = row.get("stat")
+        if not info or sk not in STAT_CONFIG:
+            continue
+        team = row.get("team") or ""
+        games = _nba_so_games(logs_by_player.get(str(row.get("player_id"))) or [], team, today_str)
+        stamp = {k: v for k, v in info.items() if k != "so_dates"}
+        if info["so_mode"] == "without":
+            vals = []
+            for d in info["so_dates"]:
+                try:
+                    v = float(games[d][sk])
+                except (KeyError, TypeError, ValueError):
+                    continue
+                vals.append(int(v) if v.is_integer() else v)
+            if len(vals) < _NBA_SO_MIN_WO_GAMES:
+                continue
+            stamp["wo_vals"] = vals
+        else:
+            gl = list(games.values())
+            mins = sum(float(g.get("MIN", 0) or 0) for g in gl)
+            try:
+                tot = sum(float(g.get(sk, 0) or 0) for g in gl)
+            except (TypeError, ValueError):
+                continue
+            if not gl or mins <= 0 or tot <= 0:
+                continue
+            add = min(tot / mins * info["so_extra_min"], _NBA_SO_BUMP_CAP * tot / len(gl))
+            stamp["so_add"] = round(add, 2)
+        row.update(stamp)
+
+
 def _nba_tp_nums(seq):
     if isinstance(seq, str):
         seq = seq.split(",")
@@ -797,7 +999,14 @@ def _nba_true_prob(row, side, line):
     if side not in ("OVER", "UNDER") or not isinstance(row, dict):
         return None
     hit = (lambda v: v > line) if side == "OVER" else (lambda v: v < line)
-    if row.get("season_vals") is not None:
+    so_mode = row.get("so_mode")
+    if so_mode == "without" and len(_nba_tp_nums(row.get("wo_vals"))) >= _NBA_SO_MIN_WO_GAMES:
+        # Starter out: this season's games without him replace the season half.
+        sv, s_src = _nba_tp_nums(row.get("wo_vals")), "without"
+    elif so_mode == "bump" and row.get("so_add") is not None and row.get("season_vals") is not None:
+        add = float(row.get("so_add") or 0)
+        sv, s_src = [v + add for v in _nba_tp_nums(row.get("season_vals"))], "bump"
+    elif row.get("season_vals") is not None:
         sv, s_src = _nba_tp_nums(row.get("season_vals")), "season"
     else:   # boards saved before True Prob: this-season last 10
         sv, s_src = _nba_tp_nums(row.get("recent_glog")), "last10"
@@ -814,7 +1023,7 @@ def _nba_true_prob(row, side, line):
     m_rate = (mh + 1) / (mn + 2) if mn else None
     if m_rate is None:
         prob = None
-    elif sn >= _NBA_TP_SEASON_MIN_GAMES:
+    elif sn >= (_NBA_SO_MIN_WO_GAMES if s_src == "without" else _NBA_TP_SEASON_MIN_GAMES):
         prob = (s_rate + m_rate) / 2
     else:
         prob = m_rate
@@ -827,6 +1036,9 @@ def _nba_true_prob(row, side, line):
             "opp_pct": round(mh / mn * 100, 1) if mn else None,
             "ha_hits": vh, "ha_games": vn,
             "ha_pct": round(vh / vn * 100, 1) if vn else None,
+            "so_starter": row.get("so_starter") if s_src in ("without", "bump") else None,
+            "so_status": row.get("so_status") if s_src in ("without", "bump") else None,
+            "so_add": row.get("so_add") if s_src == "bump" else None,
             "true_pct": round(prob * 100, 1) if prob is not None else None}
 
 
@@ -836,7 +1048,8 @@ def _nba_tp_fields(tp):
         return {}
     return {k: tp.get(k) for k in ("true_pct", "season_hits", "season_games", "season_pct",
                                    "season_src", "opp_hits", "opp_games", "opp_pct", "opp_src",
-                                   "ha_hits", "ha_games", "ha_pct")}
+                                   "ha_hits", "ha_games", "ha_pct",
+                                   "so_starter", "so_status", "so_add")}
 
 
 def _nba_normal_side(p):
@@ -884,6 +1097,9 @@ def _nba_normal_ranked(rows):
     return sorted(keep, key=lambda p: -(p.get("true_pct") if p.get("true_pct") is not None else -1))
 
 
+_NBA_ALL_STATS_EXCLUDE = ("BLK", "STL")
+
+
 def _nba_annotate_normal(result):
     """Add True Prob fields to every all_picks row and build the normal top cards.
     all_picks keeps its original rows and order for every other feature."""
@@ -894,7 +1110,9 @@ def _nba_annotate_normal(result):
         rows.append({**p, **_nba_normal_blend(p)} if isinstance(p, dict) else p)
     out = dict(result)
     out["all_picks"] = rows
-    out["normal_top"] = _nba_top_cards(_nba_normal_ranked(rows))[0]
+    # All Stats top cards never use Steals or Blocks (their own boards keep them).
+    out["normal_top"] = _nba_top_cards([p for p in _nba_normal_ranked(rows)
+                                        if p.get("stat") not in _NBA_ALL_STATS_EXCLUDE])[0]
     return out
 
 
@@ -4144,6 +4362,17 @@ async def _run_analysis_core(selected_date: str = None, force: bool = False) -> 
                     (props_picks if pick else props_nopick).append(entry)
     props_picks.sort(key=lambda x:abs(x.get('gap') or 0),reverse=True)
     log.append(f"Props: {len(props_picks)} picks")
+    # Starter out -> backup bump (live only): stamps rows before every
+    # True Prob consumer (boards, Coach, Edge, Hot/Cold, Funnels) reads them.
+    if not historical_replay:
+        try:
+            _so_map = await _nba_starter_out_map(today_str, games, rosters, logs_by_player, log)
+            if _so_map:
+                for _grp in (picks, props_picks, props_nopick):
+                    _nba_so_apply(_grp, _so_map, logs_by_player, today_str)
+        except Exception as _soe:
+            print(f"[nba_so] starter-out bump failed: {_soe}")
+            log.append("Starter-out check failed; no backup bumps applied")
     # Hot / Cold form section: separate spotlight boards; never alters the picks above.
     hot_cold = []
     if not historical_replay:
@@ -5359,8 +5588,22 @@ function _nbaTpBreak(x){
   var s=x.season_games?(x.season_hits+'/'+x.season_games+(x.season_src==='last10'?' (L10)':'')):'—';
   var m=x.opp_games?(x.opp_hits+'/'+x.opp_games+(x.opp_src==='venue'?' (H/A only)':'')):'—';
   var h=x.ha_games?(x.ha_hits+'/'+x.ha_games):'—';
-  return 'Season '+s+' · vs Opp H+A '+m+' · vs Opp H/A '+h;
+  return _nbaSeasonLabel(x)+' '+s+' · vs Opp H+A '+m+' · vs Opp H/A '+h;
 }
+// Starter out: the season half uses games without him, or a capped bump.
+function _nbaSeasonLabel(x){
+  if(x&&x.season_src==='without')return 'Season w/o '+(x.so_starter||'starter');
+  if(x&&x.season_src==='bump')return 'Season +'+(x.so_add!=null?x.so_add:'')+' bump ('+(x.so_starter||'starter')+' out)';
+  return 'Season';
+}
+function _nbaSoBadge(x,big){
+  if(!x||!x.so_starter||(x.season_src!=='without'&&x.season_src!=='bump'))return '';
+  var tip=x.season_src==='without'
+    ?'Starter '+x.so_starter+' is '+(x.so_status||'out')+': the season half of True Prob uses this season&#39;s games without him.'
+    :'Starter '+x.so_starter+' is '+(x.so_status||'out')+': too few games without him, so a capped bump of +'+x.so_add+' is added to his season games.';
+  return '<span title="'+tip+'" style="background:rgba(34,197,94,.16);color:#4ade80;border:1px solid #4ade8088;padding:'+(big?'4px 9px':'2px 7px')+';border-radius:'+(big?'999px':'6px')+';font-size:'+(big?'.68rem':'.65rem')+';font-weight:900;margin-right:4px">STARTER OUT: '+_nbaSoEsc(x.so_starter)+'</span>';
+}
+function _nbaSoEsc(v){return String(v==null?'':v).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];});}
 
 function _nbaTopSideOf(p){
   return p&&p.historical_replay&&p.side?p.side:_nbaPickVerdict(p);
@@ -5368,11 +5611,13 @@ function _nbaTopSideOf(p){
 
 function renderTopCategory(){
   let source;
+  // All Stats boards never include Steals or Blocks; their own tabs keep them.
+  const _allOk=p=>p.stat!=='BLK'&&p.stat!=='STL';
   if(activeTopStat==='ALL'&&activeTopSide==='ALL'){
-    source=top10;
+    source=top10.filter(_allOk);
   }else{
     source=_nbaNormalRows(allPicksData).filter(p=>
-      (activeTopStat==='ALL'||p.stat===activeTopStat)&&
+      (activeTopStat==='ALL'?_allOk(p):p.stat===activeTopStat)&&
       (activeTopSide==='ALL'||_nbaTopSideOf(p)===activeTopSide)
     ).slice(0,activeTopSide==='ALL'?12:10);
   }
@@ -5508,7 +5753,7 @@ function renderTop10Cards(picks){
       if(s.true_pct!=null){
         tile(`vs ${p.opp} home + away · ${_bs} ${s.dk_line!=null?s.dk_line:(s.fd_line!=null?s.fd_line:'')}`,s.opp_games?`${s.opp_hits}/${s.opp_games} <small>${s.opp_pct}%</small>`:'—');
         tile(`vs ${p.opp} ${loc} only · ${_bs}`,s.ha_games?`${s.ha_hits}/${s.ha_games} <small>${s.ha_pct}%</small>`:'—');
-        tile(`Season ${_bs} (${s.season_src==='last10'?'last 10':'all games'})`,s.season_games?`${s.season_hits}/${s.season_games} <small>${s.season_pct}%</small>`:'—');
+        tile(`${_nbaSeasonLabel(s)} ${_bs} (${s.season_src==='last10'?'last 10':s.season_src==='without'?'games without him':'all games'})`,s.season_games?`${s.season_hits}/${s.season_games} <small>${s.season_pct}%</small>`:'—');
       }
     }
     if(s.best_bet){
@@ -5557,7 +5802,7 @@ function renderTop10Cards(picks){
             <div class="nbc-meta2">${tip?`⏱ ${tip}`:''}${tip&&p.matchup?' · ':''}${p.matchup||''}</div>
           </div>
         </div>
-        <div class="nbc-tagrow"><span class="nbc-mkt">${s.emoji||''} ${s.stat_label}</span>${formBadge}</div>
+        <div class="nbc-tagrow"><span class="nbc-mkt">${s.emoji||''} ${s.stat_label}</span>${formBadge}${_nbaSoBadge(s,true)}</div>
         ${hero}
         ${tiles.length?`<div class="nbc-tiles">${tiles.join('')}</div>`:''}
         ${recentHtml}
@@ -5620,6 +5865,7 @@ function renderAllByGame(picks){
         const badges = [];
         if(p.form_badge) badges.push(`<span title="Display-only last-5 form versus season average" style="background:${p.form_badge==='HOT'?'rgba(249,115,22,.15)':'rgba(96,165,250,.15)'};color:${p.form_badge==='HOT'?'#fb923c':'#60a5fa'};padding:2px 7px;border-radius:6px;font-size:.65rem;font-weight:800;margin-right:4px">${p.form_badge}</span>`);
         if(p.has_consistency) badges.push(`<span style="background:rgba(245,158,11,.15);color:#fbbf24;padding:2px 7px;border-radius:6px;font-size:.65rem;font-weight:700;margin-right:4px">PICK ${p.pct}%</span>`);
+        if(_nbaSoBadge(p)) badges.push(_nbaSoBadge(p));
         if(_nbaTruePct(p)!=null) badges.push(`<span title="True Prob = (season hit rate + hit rate vs this opponent, home and away) / 2, at the line" style="background:rgba(56,189,248,.14);color:#38bdf8;padding:2px 7px;border-radius:6px;font-size:.65rem;font-weight:800;margin-right:4px">TRUE PROB ${p.normal_side||''} ${_nbaTruePct(p)}%${p.true_pct!=null?' · '+_nbaTpBreak(p):''}</span>`);
         if(p.historical_replay && p.side) badges.push(`<span style="background:${p.side==='UNDER'?'rgba(239,68,68,.15)':'rgba(74,222,128,.15)'};color:${p.side==='UNDER'?'#f87171':'#4ade80'};padding:2px 7px;border-radius:6px;font-size:.65rem;font-weight:700;margin-right:4px">${p.side} ${p.line} · ${p.book||'Archived sportsbook'}</span>`);
         const loc=(p.location||'').toLowerCase();
@@ -7270,6 +7516,7 @@ function _nbaPerfectParlayLocalRows(boardByKey){
    side:side,line:Number(line),odds:american,model_probability:model,exact_app:exactApp,
    true_pct:board.true_pct,season_hits:board.season_hits,season_games:board.season_games,season_src:board.season_src,
    opp_hits:board.opp_hits,opp_games:board.opp_games,opp_src:board.opp_src,ha_hits:board.ha_hits,ha_games:board.ha_games,
+   so_starter:board.so_starter,so_status:board.so_status,so_add:board.so_add,
    implied_probability:implied,edge:edge,coach_edge:edge*100,
    source:source,book:source,_board_mpg:board.mpg,_board_pct:Number(board.pct||0),
    recent_average:board.recent_avg,game_log:(board.recent_glog||[]).map(function(g){return g&&g.v;}),
@@ -7396,7 +7643,7 @@ function renderNbaPerfectParlay(){
   var canSwap=__nbaPerfectParlayPool.some(function(alt){var key=_nbaPerfectParlayPlayerKey(alt);return key!==currentKey&&!used[key]});
   return '<tr>'+
    '<td>'+(i+1)+'</td>'+
-   '<td onclick="nbaCoachDetail('+i+')" style="cursor:pointer"><b style="color:#fff;text-decoration:underline;text-decoration-style:dotted;text-underline-offset:2px">'+_nbaEsc(x.player)+'</b><br><span style="color:#64748b">'+_nbaEsc(x.team||'NBA')+(exact?' · 100% APP PLAY':'')+'</span></td>'+
+   '<td onclick="nbaCoachDetail('+i+')" style="cursor:pointer"><b style="color:#fff;text-decoration:underline;text-decoration-style:dotted;text-underline-offset:2px">'+_nbaEsc(x.player)+'</b><br><span style="color:#64748b">'+_nbaEsc(x.team||'NBA')+(exact?' · 100% APP PLAY':'')+'</span>'+(_nbaSoBadge(x)?'<br>'+_nbaSoBadge(x):'')+'</td>'+
    '<td>'+_nbaEsc(x.category)+'<br><b style="color:'+(x.side==='OVER'?'#4ade80':'#f87171')+'">'+_nbaEsc(x.side)+' '+_nbaEsc(String(x.line))+'</b></td>'+
    '<td>'+_nbaEsc((Number(x.odds)>0?'+':'')+String(x.odds))+'<br><span style="color:#64748b;font-size:.6rem">'+_nbaEsc(x.source||x.book||'Sportsbook')+'</span></td>'+
    '<td style="color:'+(exact?'#fbbf24':'#e5e7eb')+';font-weight:'+(exact?'900':'700')+'">'+Number(x.model_probability*100).toFixed(1)+'%</td>'+
@@ -7520,7 +7767,7 @@ async function nbaCoachSearch(forceMode,presetQuery){
       var formTxt=x.form_category?'<br><span style="color:'+(x.form==='HOT'?'#fb923c':'#7dd3fc')+';font-size:.6rem;font-weight:900">'+_nbaEsc(x.form_category)+(x.double_cold?' · DOUBLE COLD':'')+(x.double_hot?' · DOUBLE HOT':'')+' · '+_nbaEsc(String(x.recent_hits))+'/'+_nbaEsc(String(x.recent_total))+' L5</span>':'';
       var fromTxt=x.base_line!=null?'<br><span style="color:#64748b;font-size:.62rem">'+(moved?'from book '+_nbaEsc(String(x.base_line))+' · ':'book line · ')+_nbaEsc(String(x.base_hits))+'/'+_nbaEsc(String(x.games))+'</span>':'';
       return '<tr tabindex="0" onclick="nbaCoachDetail('+i+')" onkeydown="if(event.key===\'Enter\'||event.key===\' \'){event.preventDefault();nbaCoachDetail('+i+')}">'+
-       '<td>'+(i+1)+'</td><td><b style="color:#fff;text-decoration:underline;text-decoration-style:dotted;text-underline-offset:2px">'+_nbaEsc(x.player)+'</b><br><span style="color:#64748b">'+_nbaEsc(x.team||'NBA')+(x.alternate?' · ALTERNATE':'')+'</span></td>'+
+       '<td>'+(i+1)+'</td><td><b style="color:#fff;text-decoration:underline;text-decoration-style:dotted;text-underline-offset:2px">'+_nbaEsc(x.player)+'</b><br><span style="color:#64748b">'+_nbaEsc(x.team||'NBA')+(x.alternate?' · ALTERNATE':'')+'</span>'+(_nbaSoBadge(x)?'<br>'+_nbaSoBadge(x):'')+'</td>'+
        '<td>'+_nbaEsc(x.category)+'<br><b style="color:'+(x.side==='OVER'?'#4ade80':'#f87171')+'">'+_nbaEsc(x.side)+' '+_nbaEsc(String(x.line))+'</b>'+fromTxt+formTxt+'</td>'+
        '<td>'+_nbaEsc((Number(x.odds)>0?'+':'')+String(x.odds))+'<br><span style="color:#64748b;font-size:.6rem">'+_nbaEsc(x.source||'Sportsbook')+'</span></td>'+
        '<td'+(isSafe&&x.exact_app?' style="color:#fbbf24!important;font-weight:900"':'')+'>'+(x.model_probability==null?'—':Number(x.model_probability*100).toFixed(1)+'%')+(isSafe&&x.games?'<br><span style="color:#64748b;font-size:.6rem">'+_nbaEsc(String(x.hits))+'/'+_nbaEsc(String(x.games))+' at line</span>':'')+(x.true_pct!=null?'<br><span style="color:#64748b;font-size:.58rem">'+_nbaEsc(_nbaTpBreak(x))+'</span>':'')+'</td><td>'+Number(x.implied_probability*100).toFixed(1)+'%</td>'+
