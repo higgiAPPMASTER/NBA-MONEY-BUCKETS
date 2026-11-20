@@ -454,8 +454,8 @@ def _nba_snapshot_standard_rows(result: dict) -> list:
     ranks, seen = {}, set()
     rows = result.get("all_picks") or []
     if not result.get("historical_replay"):
-        rows = _nba_normal_ranked([{**p, **_nba_normal_blend(p)} for p in rows
-                                   if isinstance(p, dict)])
+        rows = _nba_starters_first(_nba_normal_ranked(
+            [{**p, **_nba_normal_blend(p)} for p in rows if isinstance(p, dict)]))
     for p in rows:
         sk   = p.get("stat","")
         if p.get("has_consistency"):
@@ -772,6 +772,70 @@ def _nba_opp_vals(logs, opp, team, stat_key, before=None):
         if len(out) >= _NBA_TP_MATCHUP_GAMES:
             break
     return out
+
+
+# HONEST MINUTES (live boards): MPG = this season's minutes per game played,
+# short nights (under 10 min) included. Game logs drop those short nights, so
+# get_player_gamelogs_espn records every game's minutes separately here.
+# Falls back to the old last-10 average only when he has no game this season.
+_NBA_MIN_LOG: Dict[str, Dict[str, tuple]] = {}
+# STARTERS FIRST: category Top 10 boards and their records put 24+ MPG
+# players first; lower-minute players only fill the remaining spots.
+_NBA_STARTER_MPG = 24.0
+# NBA rule (Oct 2026): partner books take no Unders on players averaging
+# under 12 minutes, so the app never makes an Under on those players.
+_NBA_UNDER_MIN_MPG = 12.0
+
+
+def _nba_honest_mpg(pid, logs, today_str):
+    try:
+        as_of = date.fromisoformat(str(today_str)[:10])
+    except (TypeError, ValueError):
+        as_of = None
+    if as_of is not None:
+        season_start = date(as_of.year if as_of.month >= 10 else as_of.year - 1, 10, 1).isoformat()
+        today = as_of.isoformat()
+        by_date = {}
+        for raw_date, minutes in (_NBA_MIN_LOG.get(str(pid)) or {}).values():
+            d = _nba_et_date(raw_date)
+            if d and season_start <= d < today and minutes > 0:
+                by_date[d] = minutes
+        for g in logs or []:
+            d = _nba_et_date(g.get("date"))
+            if d and season_start <= d < today and d not in by_date:
+                try:
+                    by_date[d] = float(g.get("MIN") or 0)
+                except (TypeError, ValueError):
+                    pass
+        if by_date:
+            return round(sum(by_date.values()) / len(by_date), 1)
+    recent = (logs or [])[:10]
+    return (round(sum(float(l.get("MIN", 0) or 0) for l in recent) / len(recent), 1)
+            if recent else None)
+
+
+def _nba_under_blocked(mpg) -> bool:
+    return mpg is not None and mpg < _NBA_UNDER_MIN_MPG
+
+
+def _nba_low_min_names(rows) -> set:
+    """Players (normalized names) who may not get an Under: MPG under 12."""
+    out = set()
+    for r in rows or []:
+        if isinstance(r, dict) and _nba_under_blocked(r.get("mpg")):
+            out.add(_nn(r.get("player") or r.get("name") or ""))
+    return out
+
+
+def _nba_starters_first(rows):
+    """24+ MPG players first (unknown MPG kept with them), then lower-minute
+    players by most minutes. Stable, so True Prob order holds within starters."""
+    top, below = [], []
+    for p in rows or []:
+        m = p.get("mpg") if isinstance(p, dict) else None
+        (below if m is not None and m < _NBA_STARTER_MPG else top).append(p)
+    below.sort(key=lambda x: (x.get("mpg") or 0), reverse=True)
+    return top + below
 
 
 # STARTER OUT -> BACKUP BUMP (live boards only; feeds True Prob and rankings).
@@ -1187,6 +1251,7 @@ def _nba_hot_cold_rows(today_str, games, rosters, logs_by_player, dk_lookup, pro
                 if len(recent) < minimum:
                     continue
                 versus = [(d, g) for d, g in history if g.get("opp") == opp][:5]
+                no_under = _nba_under_blocked(_nba_honest_mpg(pid, logs_by_player.get(pid, []), today_str))
                 for sk, sc in STAT_CONFIG.items():
                     quote = dk_lookup.get((_nn(pname), sk)) or {}
                     try:
@@ -1202,6 +1267,8 @@ def _nba_hot_cold_rows(today_str, games, rosters, logs_by_player, dk_lookup, pro
                         continue
                     avg = sum(vals) / len(vals)
                     for side, form in (("OVER", "HOT"), ("UNDER", "COLD")):
+                        if side == "UNDER" and no_under:
+                            continue
                         hits = sum(v > line if side == "OVER" else v < line for v in vals)
                         if hits * 5 < len(vals) * 4 or not (avg > line if side == "OVER" else avg < line):
                             continue
@@ -1675,6 +1742,8 @@ def _nba_funnel_rows(today_str, games, rosters, logs_by_player, dk_lookup, props
                     starter = bool(mins) and sum(mins) / len(mins) >= 24
                     start_note = f"{sum(mins) / max(len(mins), 1):.0f} MPG"
                 l10 = logs[:10]
+                no_under = _nba_under_blocked(_nba_honest_mpg(
+                    pid, logs_by_player.get(player.get("id"), logs_by_player.get(pid, [])), today_str))
                 for sk in _NBA_FN_STATS:
                     quote = dk_lookup.get((_nn(pname), sk)) or {}
                     try:
@@ -1702,6 +1771,8 @@ def _nba_funnel_rows(today_str, games, rosters, logs_by_player, dk_lookup, props
                         elif rank > n_teams - tier:
                             side, tag = "OVER", "SOFT"
                         else:
+                            continue
+                        if side == "UNDER" and no_under:
                             continue
                         over = side == "OVER"
                         h10 = sum(v > line if over else v < line for v in vals10)
@@ -2728,6 +2799,9 @@ async def get_player_gamelogs_espn(player_id: str, season: int,
         # Skip garbage time / DNP games
         min_idx = next((i for i, label in enumerate(labels)
                         if str(label).upper() == "MIN"), 0)
+        # Honest MPG keeps every game's minutes, short nights included.
+        _NBA_MIN_LOG.setdefault(str(player_id), {})[str(eid)] = (
+            ev_info.get('gameDate', ''), parse_min(stats[min_idx]))
         if parse_min(stats[min_idx]) < MIN_MINUTES:
             continue
         # Missing/misaligned provider values are not zero-stat performances.
@@ -4138,6 +4212,11 @@ async def _run_analysis_core(selected_date: str = None, force: bool = False) -> 
                             if l['opp'] == a and l.get('player_team') == h
                             and l.get('location') == 'Home']
             opp_logs = opp_logs_all[:10]
+            # Honest MPG (this season, short nights included); replay unchanged.
+            _pmpg = ((round(sum(float(l.get('MIN',0) or 0) for l in all_logs_player[:10])/len(all_logs_player[:10]), 1)
+                      if all_logs_player[:10] else None) if historical_replay
+                     else _nba_honest_mpg(pid, all_logs_player, today_str))
+            _no_under = not historical_replay and _nba_under_blocked(_pmpg)
             for sk, sc in STAT_CONFIG.items():
                 vals = [float(l[sk]) for l in opp_logs]
                 last10 = opp_logs[:10]
@@ -4167,6 +4246,14 @@ async def _run_analysis_core(selected_date: str = None, force: bool = False) -> 
                 # Conflict resolution: streak (matchup-specific) beats MPA Special (rhythm) when they disagree
                 if streak_rec and alt_rec and streak_rec != alt_rec:
                     alt_rec = None
+                # Under 12 MPG: books take no Unders (NBA rule), so drop Under signals.
+                if _no_under:
+                    if line_rec == 'UNDER':
+                        line_rec, line_rec_pct, line_rec_hits = None, None, None
+                    if streak_rec == 'UNDER':
+                        streak_rec, streak_n = None, 0
+                    if alt_rec == 'UNDER':
+                        alt_rec = None
                 # Include pick if consistency pattern OR streak OR MPA Special OR a 70%+ LINE
                 # recommendation. LINE-only picks were previously dropped here; keeping them
                 # opens the parlay pool up to all 70%+ starter plays (user request). They have
@@ -4205,7 +4292,7 @@ async def _run_analysis_core(selected_date: str = None, force: bool = False) -> 
                               'recent_glog': season10,
                               'season_vals': season_vals, 'opp_vals': opp_vals,
                               'gap': round(_nba_season_avg(season10) - dk_line, 1) if season10 and dk_line else None,
-                              'mpg': round(sum(float(l.get('MIN',0) or 0) for l in recent10)/len(recent10), 1) if recent10 else None})
+                              'mpg': _pmpg})
 
         for player in rosters.get(game['away_id'], []):
             pid, pname = player['id'], player['name']
@@ -4218,6 +4305,11 @@ async def _run_analysis_core(selected_date: str = None, force: bool = False) -> 
                             if l['opp'] == h and l.get('player_team') == a
                             and l.get('location') == 'Away']
             opp_logs = opp_logs_all[:10]
+            # Honest MPG (this season, short nights included); replay unchanged.
+            _pmpg = ((round(sum(float(l.get('MIN',0) or 0) for l in all_logs_player[:10])/len(all_logs_player[:10]), 1)
+                      if all_logs_player[:10] else None) if historical_replay
+                     else _nba_honest_mpg(pid, all_logs_player, today_str))
+            _no_under = not historical_replay and _nba_under_blocked(_pmpg)
             for sk, sc in STAT_CONFIG.items():
                 vals = [float(l[sk]) for l in opp_logs]
                 last10 = opp_logs[:10]
@@ -4243,6 +4335,14 @@ async def _run_analysis_core(selected_date: str = None, force: bool = False) -> 
                 # Conflict resolution: streak (matchup-specific) beats MPA Special (rhythm) when they disagree
                 if streak_rec and alt_rec and streak_rec != alt_rec:
                     alt_rec = None
+                # Under 12 MPG: books take no Unders (NBA rule), so drop Under signals.
+                if _no_under:
+                    if line_rec == 'UNDER':
+                        line_rec, line_rec_pct, line_rec_hits = None, None, None
+                    if streak_rec == 'UNDER':
+                        streak_rec, streak_n = None, 0
+                    if alt_rec == 'UNDER':
+                        alt_rec = None
                 # LINE-only 70%+ picks kept too (see home-side note) — opens the parlay pool.
                 if not result and not streak_rec and not alt_rec and not line_rec:
                     continue
@@ -4276,7 +4376,7 @@ async def _run_analysis_core(selected_date: str = None, force: bool = False) -> 
                               'recent_glog': season10,
                               'season_vals': season_vals, 'opp_vals': opp_vals,
                               'gap': round(_nba_season_avg(season10) - dk_line, 1) if season10 and dk_line else None,
-                              'mpg': round(sum(float(l.get('MIN',0) or 0) for l in recent10)/len(recent10), 1) if recent10 else None})
+                              'mpg': _pmpg})
 
     # Sort: consistency picks first (by hit rate), then non-consistency
     # streak/MPA picks. None-safe.
@@ -4330,6 +4430,8 @@ async def _run_analysis_core(selected_date: str = None, force: bool = False) -> 
         for loc,tid,opp_id,opp_name,side in [('Home',game['home_id'],a,a_name,'HOME'),('Away',game['away_id'],h,h_name,'AWAY')]:
             for player in rosters.get(tid,[]):
                 pname,pid = player['name'],player['id']
+                _pmpg = None if historical_replay else _nba_honest_mpg(pid, logs_by_player.get(pid, []), today_str)
+                _no_under = _nba_under_blocked(_pmpg)
                 for sk,sc in STAT_CONFIG.items():
                     ob = odds_lookup.get((_nn(pname),sk),{})
                     if historical_replay:
@@ -4350,7 +4452,7 @@ async def _run_analysis_core(selected_date: str = None, force: bool = False) -> 
                     if not opp_logs:
                         if historical_replay:
                             continue
-                        props_nopick.append({**_form_swing(logs_by_player.get(pid, []), sk),'player':pname,'player_id':pid,'stat':sk,'stat_label':sc['label'],'emoji':sc['emoji'],'team':cur_team,'side':side,'opp_name':opp_name,'line':line,'avg':None,'games':0,'history':'—','recent_glog':season10,'season_vals':season_vals,'opp_vals':opp_vals,'recent_avg':_nba_season_avg(season10),'gap':None,'pick':None,'fd_odds':ob.get('odds',''),'dk_over_odds':dk_over,'dk_under_odds':dk_under,'bookmaker':dk_ob.get('bookmaker') or ob.get('bookmaker',''),'bookmaker_label':dk_ob.get('bookmaker_label') or ob.get('bookmaker_label',''),'matchup':matchup_str})
+                        props_nopick.append({**_form_swing(logs_by_player.get(pid, []), sk),'player':pname,'player_id':pid,'stat':sk,'stat_label':sc['label'],'emoji':sc['emoji'],'team':cur_team,'side':side,'opp_name':opp_name,'line':line,'avg':None,'games':0,'history':'—','recent_glog':season10,'season_vals':season_vals,'opp_vals':opp_vals,'recent_avg':_nba_season_avg(season10),'gap':None,'pick':None,'fd_odds':ob.get('odds',''),'dk_over_odds':dk_over,'dk_under_odds':dk_under,'bookmaker':dk_ob.get('bookmaker') or ob.get('bookmaker',''),'bookmaker_label':dk_ob.get('bookmaker_label') or ob.get('bookmaker_label',''),'matchup':matchup_str,'mpg':_pmpg})
                         continue
                     vals = [float(l[sk]) for l in opp_logs]
                     avg = round(sum(vals)/len(vals),1)
@@ -4358,7 +4460,9 @@ async def _run_analysis_core(selected_date: str = None, force: bool = False) -> 
                     gap = round(avg-line,1) if line is not None else None
                     pick = ('OVER' if replay else
                             ('OVER' if avg>line else ('UNDER' if avg<line else None)))
-                    entry = {**_form_swing(logs_by_player.get(pid, []), sk),'player':pname,'player_id':pid,'stat':sk,'stat_label':sc['label'],'emoji':sc['emoji'],'team':cur_team,'side':side,'opp_name':opp_name,'line':line,'replay_threshold':replay.get('threshold') if replay else None,'avg':avg,'games':len(vals),'history':','.join(str(int(v)) for v in vals[:8]),'recent_glog':season10,'season_vals':season_vals,'opp_vals':opp_vals,'recent_avg':_nba_season_avg(season10),'gap':gap,'pick':pick,'fd_odds':None if historical_replay else ob.get('odds',''),'dk_over_odds':dk_over,'dk_under_odds':dk_under,'bookmaker':dk_ob.get('bookmaker') or ob.get('bookmaker',''),'bookmaker_label':dk_ob.get('bookmaker_label') or ob.get('bookmaker_label',''),'matchup':matchup_str,'historical_replay':historical_replay}
+                    if pick == 'UNDER' and _no_under:
+                        pick = None  # under 12 MPG: no Unders (NBA rule)
+                    entry = {**_form_swing(logs_by_player.get(pid, []), sk),'player':pname,'player_id':pid,'stat':sk,'stat_label':sc['label'],'emoji':sc['emoji'],'team':cur_team,'side':side,'opp_name':opp_name,'line':line,'replay_threshold':replay.get('threshold') if replay else None,'avg':avg,'games':len(vals),'history':','.join(str(int(v)) for v in vals[:8]),'recent_glog':season10,'season_vals':season_vals,'opp_vals':opp_vals,'recent_avg':_nba_season_avg(season10),'gap':gap,'pick':pick,'fd_odds':None if historical_replay else ob.get('odds',''),'dk_over_odds':dk_over,'dk_under_odds':dk_under,'bookmaker':dk_ob.get('bookmaker') or ob.get('bookmaker',''),'bookmaker_label':dk_ob.get('bookmaker_label') or ob.get('bookmaker_label',''),'matchup':matchup_str,'historical_replay':historical_replay,'mpg':_pmpg}
                     (props_picks if pick else props_nopick).append(entry)
     props_picks.sort(key=lambda x:abs(x.get('gap') or 0),reverse=True)
     log.append(f"Props: {len(props_picks)} picks")
@@ -5605,6 +5709,14 @@ function _nbaSoBadge(x,big){
 }
 function _nbaSoEsc(v){return String(v==null?'':v).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];});}
 
+// Starters first: 24+ MPG players lead every category board; lower-minute
+// players (most minutes first) only fill the remaining spots.
+function _nbaStartersFirst(rows){
+  const top=[],below=[];
+  (rows||[]).forEach(p=>{(p&&p.mpg!=null&&p.mpg<24?below:top).push(p);});
+  below.sort((a,b)=>(b.mpg||0)-(a.mpg||0));
+  return top.concat(below);
+}
 function _nbaTopSideOf(p){
   return p&&p.historical_replay&&p.side?p.side:_nbaPickVerdict(p);
 }
@@ -5616,10 +5728,10 @@ function renderTopCategory(){
   if(activeTopStat==='ALL'&&activeTopSide==='ALL'){
     source=top10.filter(_allOk);
   }else{
-    source=_nbaNormalRows(allPicksData).filter(p=>
+    source=_nbaStartersFirst(_nbaNormalRows(allPicksData).filter(p=>
       (activeTopStat==='ALL'?_allOk(p):p.stat===activeTopStat)&&
       (activeTopSide==='ALL'||_nbaTopSideOf(p)===activeTopSide)
-    ).slice(0,activeTopSide==='ALL'?12:10);
+    )).slice(0,activeTopSide==='ALL'?12:10);
   }
   renderTop10Cards(source);
 }
@@ -8863,7 +8975,7 @@ def _nba_coach_source(row):
 
 _NBA_SAFEST_MIN_RATE = 0.80
 
-def _nba_coach_safest_rows(standard, alternate, count=10):
+def _nba_coach_safest_rows(standard, alternate, count=10, no_under_names=None):
     """Safest Bets: 80%+ vs today's opponent at this venue, then the safer line.
 
     A side qualifies when the player's H/A history against today's opponent
@@ -8886,6 +8998,7 @@ def _nba_coach_safest_rows(standard, alternate, count=10):
         name = a.get("player") or a.get("name") or ""
         if stat in STAT_CONFIG and name:
             ladders.setdefault((_nn(name), stat), []).append(a)
+    no_under = no_under_names if no_under_names is not None else _nba_low_min_names(standard)
     out = []
     for r in standard or []:
         stat = r.get("stat") or r.get("stat_key")
@@ -8904,6 +9017,8 @@ def _nba_coach_safest_rows(standard, alternate, count=10):
             continue
         n = len(vals)
         for side in ("OVER", "UNDER"):
+            if side == "UNDER" and _nn(name) in no_under:
+                continue
             hit = (lambda v, ln: v > ln) if side == "OVER" else (lambda v, ln: v < ln)
             base_hits = sum(hit(v, base_line) for v in vals)
             if base_hits / n < _NBA_SAFEST_MIN_RATE:
@@ -8975,9 +9090,9 @@ def _nba_coach_safest_rows(standard, alternate, count=10):
         unique_rows.append(row)
     return unique_rows[:max(1, min(int(count or 10), 10))]
 
-def _nba_coach_rows(standard, alternate, query="", mode="all", count=100):
+def _nba_coach_rows(standard, alternate, query="", mode="all", count=100, no_under_names=None):
     if mode == "safest":
-        return _nba_coach_safest_rows(standard, alternate, count)
+        return _nba_coach_safest_rows(standard, alternate, count, no_under_names)
     q = (query or "").lower().strip()
     cat_terms = {k.lower(): k for k in STAT_CONFIG}
     cat_terms.update({v["label"].lower(): k for k, v in STAT_CONFIG.items()})
@@ -8990,6 +9105,7 @@ def _nba_coach_rows(standard, alternate, query="", mode="all", count=100):
     if mode in ("alternate", "alternate_minus", "alternate_plus"):
         intent_only = True
     wanted_name = re.sub(r"\b(over|under|more|less|safest|edge|alternate|alt|coach|pick|top|best|minus|plus|favorite|underdog|american|odds|plays)\b", " ", q)
+    no_under = no_under_names if no_under_names is not None else _nba_low_min_names(standard)
     def make(src, is_alt):
         out = []
         for r in src or []:
@@ -9008,6 +9124,8 @@ def _nba_coach_rows(standard, alternate, query="", mode="all", count=100):
             if line is None: continue
             sides = [wanted_side] if wanted_side else ["OVER", "UNDER"]
             for side in sides:
+                if side == "UNDER" and _nn(name) in no_under:
+                    continue  # under 12 MPG: no Unders (NBA rule)
                 if is_alt:
                     odds = r.get("over_odds") if side == "OVER" else r.get("under_odds")
                 else:
@@ -9242,6 +9360,7 @@ async def nba_coach_edge(request: Request):
                   else None) or "NBA alternate lines are unavailable for this date."
         raise HTTPException(status_code=404, detail=detail)
     standard_rows = (standard.get("props_picks") or []) + (standard.get("props_nopick") or [])
+    low_min_names = _nba_low_min_names(standard_rows)
     requested_board_keys = body.get("board_keys")
     if isinstance(requested_board_keys, list):
         allowed_board_keys = {
@@ -9258,7 +9377,8 @@ async def nba_coach_edge(request: Request):
         ]
     qcount = re.search(r"\b(?:top|show|count|first)?\s*(\d{1,3})\s*(?:picks?|results?)?\b", str(body.get("query","")), re.I)
     requested_count = min(10, int(qcount.group(1))) if qcount else min(10, int(body.get("count", 10) or 10))
-    rows = _nba_coach_rows(standard_rows, alternate, body.get("query",""), mode, requested_count)
+    rows = _nba_coach_rows(standard_rows, alternate, body.get("query",""), mode, requested_count,
+                           low_min_names)
     if not rows:
         response = {"date":ds,"results":[],
                     "message":("No player has hit 80%+ against today's opponent at this venue with a genuine sportsbook price."
